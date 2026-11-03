@@ -29,6 +29,7 @@
   import { KIND_LABEL, TriggerState, type KindType, type TrigMode } from './lib/trigger.svelte';
   import EventList from './lib/EventList.svelte';
   import Analysis from './lib/Analysis.svelte';
+  import Updater from './lib/Updater.svelte';
   import LoggerView, { type LogView } from './lib/LoggerView.svelte';
   import ExportEditor, { defaultOutput, type OutputCfg } from './lib/ExportEditor.svelte';
   import { drag, stored, store as save } from './lib/drag';
@@ -355,6 +356,27 @@
   }
 
   let bottomTab = $state<'markers' | 'events'>('markers');
+  let updating = $state(false);
+  /** the board restarts (an update): connect to it again when it's back */
+  let reconnectKey = '';
+  async function boardRestarts() {
+    reconnectKey = lastCandidate;
+    note = 'The board is restarting…';
+    await disconnect();
+    for (let k = 0; k < 15; k++) {
+      await new Promise((r) => setTimeout(r, 1000));
+      await scan();
+      const c = candidates.find((x) => x.key === reconnectKey);
+      if (c) {
+        await connect(c);
+        if (dev) {
+          note = `Reconnected: firmware ${info?.fw_version_str ?? ''}`;
+          return;
+        }
+      }
+    }
+    note = 'The board hasn\'t come back yet: connect when it has.';
+  }
 
   // ---- autoset ----------------------------------------------------------------
 
@@ -912,7 +934,9 @@
     if (c) await connect(c);
   }
 
+  let lastCandidate = '';
   async function connect(c: Candidate) {
+    lastCandidate = c.key;
     busy = true;
     error = '';
     try {
@@ -1075,6 +1099,12 @@
       rateHz = 2e6;
       log2n = 0;
       const demo = new DemoLink({ onMeta, onClosed: () => undefined });
+      dev = new Device(demo);
+      info = {
+        proto_version: 1, fw_version: 0x200, fw_version_str: '0.2.0', fpga_id: 0x4e42000b, base_rate_hz: 2_000_000,
+        link: 3, link_name: 'Demo', link_unit: 2048, block_words: 507, caps: CAP.DECIM | CAP.RANGE | CAP.BOARD,
+        build: 'synthetic', mac: '', ip: '',
+      };
       demo.setBuffer(bufferSamples);
       demo.setCalibration($state.snapshot(cal));
       demo.setTrigger(trig.cfg());
@@ -1126,6 +1156,10 @@
 </script>
 
 <svelte:window onkeydown={onKey} />
+
+{#if updating && dev}
+  <Updater {dev} onclose={() => (updating = false)} onrestart={() => { updating = false; boardRestarts(); }} />
+{/if}
 
 {#if analysis}
   <Analysis signals={available} link={activeLink} span={analysis.span} spanLabel={analysis.label} onclose={() => (analysis = null)} onshow={showSpan} />
@@ -1263,6 +1297,9 @@
           {#if info.ip}<dt>IP</dt><dd>{info.ip}</dd>{/if}
           {#if info.mac}<dt>MAC</dt><dd>{info.mac}</dd>{/if}
         </dl>
+        {#if info.caps & CAP.BOARD}
+          <button class="ghost small" onclick={() => (updating = true)} title="Firmware and gateware">Software update…</button>
+        {/if}
       </section>
 
       <section>

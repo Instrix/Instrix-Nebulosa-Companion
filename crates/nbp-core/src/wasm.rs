@@ -148,6 +148,38 @@ pub fn parse_range(p: &[u8]) -> JsValue {
 }
 
 #[wasm_bindgen]
+pub fn parse_update_info(p: &[u8]) -> JsValue {
+    to_js(&crate::update::UpdateInfo::parse(p))
+}
+
+#[wasm_bindgen]
+pub fn enc_update(op: u8, slot: u8, len: u32, crc: u32) -> Vec<u8> {
+    crate::update::enc_update(op, slot, len, crc)
+}
+
+#[wasm_bindgen]
+pub fn enc_flash(addr: u32, len: u32, data: &[u8]) -> Vec<u8> {
+    crate::update::enc_flash(addr, len, data)
+}
+
+#[wasm_bindgen]
+pub fn crc32(p: &[u8]) -> u32 {
+    crate::update::crc32(p)
+}
+
+/// {ok, version, version_str, error}
+#[wasm_bindgen]
+pub fn firmware_check(img: &[u8]) -> JsValue {
+    to_js(&crate::update::firmware_check(img))
+}
+
+/// the raw bitstream of a .bit / .bin; throws what's wrong
+#[wasm_bindgen]
+pub fn bitstream(d: &[u8]) -> Result<Vec<u8>, JsValue> {
+    crate::update::bitstream(d).map_err(|e| JsValue::from_str(&e))
+}
+
+#[wasm_bindgen]
 pub fn status_name(s: u8) -> String {
     msg::status::name(s).into()
 }

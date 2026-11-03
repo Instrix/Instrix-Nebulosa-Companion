@@ -16,6 +16,7 @@
 //! - [`trigger`]: edge trigger on the full-rate samples
 //! - [`recording`]: the .nbrec file format
 //! - [`session`]: the session log: interval summaries over days, bounded memory, .nblog files
+//! - [`update`]: software update: layouts, CRC-32, .nbfw / .bit checks
 //! - [`pipeline`]: all of the above for one connection
 
 pub mod analysis;
@@ -30,6 +31,7 @@ pub mod session;
 pub mod stream;
 pub mod trigger;
 pub mod units;
+pub mod update;
 
 #[cfg(feature = "wasm")]
 pub mod wasm;

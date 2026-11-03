@@ -97,7 +97,108 @@ class Generator {
   }
 }
 
-/** A Link to the synthetic device; commands are accepted and ignored. */
+/**
+ * A simulated board's software-update side (for trying the updater with no
+ * hardware): a 1 MB flash, two 448 KB slots, UPDATE ops as the firmware's
+ * update_app.c answers them.
+ */
+class FakeBoard {
+  flash = new Uint8Array(1 << 20).fill(0xff);
+  slotSize = 448 * 1024;
+  active = 0;
+  fwVersion = 0x000200;
+  slots = [
+    { kind: 1, len: 300_000, crc: 0x1234abcd, id: 0x4e42000b },
+    { kind: 0, len: 0, crc: 0, id: 0 },
+  ];
+  msg = '';
+
+  info(result = 0): Uint8Array<ArrayBuffer> {
+    const b = new Uint8Array(136);
+    const d = new DataView(b.buffer);
+    d.setUint32(0, this.fwVersion, true);
+    d.setUint32(4, 0x5a3f9e01, true);
+    d.setUint32(8, 211_000, true);
+    new TextEncoder().encodeInto('Nov  3 2026 18:00:00', b.subarray(16, 40));
+    d.setUint32(40, 0x000100, true);
+    b[44] = this.active;
+    b[45] = 1 - this.active;
+    b[47] = result;
+    d.setUint32(48, this.slotSize, true);
+    this.slots.forEach((sl, k) => {
+      const o = 52 + k * 16;
+      b[o] = sl.kind;
+      d.setUint32(o + 4, sl.len, true);
+      d.setUint32(o + 8, sl.crc, true);
+      d.setUint32(o + 12, sl.id, true);
+    });
+    new TextEncoder().encodeInto(this.msg, b.subarray(88, 135));
+    return b;
+  }
+
+  request(cmd: number, p: Uint8Array): Reply {
+    const d = new DataView(p.buffer, p.byteOffset, p.byteLength);
+    const ok = (payload: Uint8Array = new Uint8Array(), status = 0): Reply => ({ ty: cmd | 0x40, status, payload });
+    const addr = p.length >= 8 ? d.getUint32(0, true) : 0;
+    const len = p.length >= 8 ? d.getUint32(4, true) : 0;
+    const activeRange = (a: number, n: number) => a < (this.active + 1) * this.slotSize && a + n > this.active * this.slotSize;
+    switch (cmd) {
+      case 0x3d: // FLASH_ERASE
+        if ((addr | len) & 4095) return ok(undefined, 3);
+        if (activeRange(addr, len)) return ok(undefined, 8);
+        this.flash.fill(0xff, addr, addr + len);
+        return ok();
+      case 0x3c: // FLASH_WRITE
+        if (len > 256 || (addr & 255) + len > 256) return ok(undefined, 3);
+        if (activeRange(addr, len)) return ok(undefined, 8);
+        for (let k = 0; k < len; k++) this.flash[addr + k] &= p[8 + k];
+        return ok();
+      case 0x3b: {
+        // FLASH_READ
+        const out = new Uint8Array(8 + len);
+        out.set(p.subarray(0, 8));
+        out.set(this.flash.subarray(addr, addr + len), 8);
+        return ok(out);
+      }
+      case 0x3f: {
+        // UPDATE
+        const o = p[0], slot = p[1], n = d.getUint32(4, true), crc = d.getUint32(8, true);
+        if (o === 0) return ok(this.info());
+        const data = this.flash.subarray(slot * this.slotSize, slot * this.slotSize + n);
+        if (o === 1 || o === 2) {
+          if (core.crc32(data) !== crc) {
+            this.msg = 'CRC mismatch: the slot holds something else';
+            return ok(this.info(6), 6);
+          }
+          if (o === 1) {
+            this.slots[slot] = { kind: 1, len: n, crc, id: 0x4e42000c };
+            this.active = slot;
+            this.msg = 'gateware tested (DONE, ID 4E42000C): active';
+          } else {
+            const c = core.firmware_check(data);
+            if (!c.ok) {
+              this.msg = c.error;
+              return ok(this.info(3), 3);
+            }
+            this.slots[slot] = { kind: 2, len: n, crc, id: c.version };
+            this.fwVersion = c.version;
+            this.msg = `firmware ${c.version_str} staged: restarting to install`;
+          }
+          return ok(this.info());
+        }
+        if (o === 3) {
+          this.active = 1 - this.active;
+          this.msg = 'previous gateware active again';
+          return ok(this.info());
+        }
+        return ok(this.info());
+      }
+    }
+    return ok();
+  }
+}
+
+/** A Link to the synthetic device; most commands are accepted and ignored. */
 export class DemoLink implements Link {
   readonly description = 'Demo device (synthetic, 2 MS/s)';
   private pipeline = new core.Pipeline();
@@ -118,7 +219,10 @@ export class DemoLink implements Link {
     );
   }
 
-  async request(cmd: number): Promise<Reply> {
+  private board = new FakeBoard();
+
+  async request(cmd: number, payload = new Uint8Array()): Promise<Reply> {
+    if (cmd >= 0x3b && cmd <= 0x3f) return this.board.request(cmd, payload);
     return { ty: cmd | 0x40, status: 0, payload: new Uint8Array() };
   }
   async setBuffer(samples: number) {
