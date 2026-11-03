@@ -185,15 +185,17 @@
       }
 
       // trigger: the level on the source's plot, the time on all
-      if (trig.mode !== 'roll') {
+      if (trig.detecting) {
         const col = cssVar('--trig');
         ctx.strokeStyle = col;
         ctx.fillStyle = col;
         ctx.lineWidth = dpr;
         ctx.setLineDash([6 * dpr, 4 * dpr]);
         if (sig === trig.source) {
-          const y = u.valToPos(trig.level, 'y', true);
-          if (y >= top && y <= top + height) {
+          for (const lv of trig.levels()) {
+            const y = u.valToPos(lv, 'y', true);
+            if (!(y >= top && y <= top + height)) continue;
+            ctx.setLineDash([6 * dpr, 4 * dpr]);
             ctx.beginPath();
             ctx.moveTo(left, y);
             ctx.lineTo(left + width, y);
@@ -206,6 +208,31 @@
             ctx.lineTo(left + width - 8 * dpr, y + 6 * dpr);
             ctx.fill();
           }
+          ctx.setLineDash([6 * dpr, 4 * dpr]);
+        }
+        // every logged event on screen: a tick on the source's plot
+        const ev = trig.events;
+        if (sig === trig.source && ev.length) {
+          const x0 = u.scales.x.min ?? 0;
+          const x1 = u.scales.x.max ?? 0;
+          let lo = 0, hi = ev.length;
+          while (lo < hi) {
+            const mid = (lo + hi) >> 1;
+            if (ev[mid].t < x0) lo = mid + 1;
+            else hi = mid;
+          }
+          ctx.setLineDash([]);
+          ctx.globalAlpha = 0.8;
+          for (let k = lo, drawn = 0; k < ev.length && ev[k].t <= x1 && drawn < 4000; k++, drawn++) {
+            const x = xOf(ev[k].t);
+            ctx.beginPath();
+            ctx.moveTo(x - 4 * dpr, top);
+            ctx.lineTo(x + 4 * dpr, top);
+            ctx.lineTo(x, top + 6 * dpr);
+            ctx.fill();
+          }
+          ctx.globalAlpha = 1;
+          ctx.setLineDash([6 * dpr, 4 * dpr]);
         }
         if (trig.shown != null) {
           const x = xOf(trig.shown);
@@ -414,7 +441,7 @@
       markersKey(),
       signals.map((s) => `${axes[s].auto},${axes[s].min},${axes[s].max},${axes[s].log}`).join(';'),
       `${trace.mean}${trace.range}${trace.sigma}`,
-      `${trig.mode},${trig.source},${trig.level},${trig.shown}`,
+      `${trig.mode},${trig.log},${trig.source},${trig.levels().join()},${trig.shown},${trig.logVersion}`,
       plots.map((p) => `${p.u.width}x${p.u.height}`).join(),
     ].join('|');
     if (key === drawnKey) return;

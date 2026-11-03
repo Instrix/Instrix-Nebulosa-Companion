@@ -12,7 +12,7 @@ use crate::msg::{self, BlockHdr};
 use crate::buffer::{pack, unpack, Moments3, SampleBuffer, SpanStats};
 use crate::recording::{Recorder, Recording, RecordingStatus};
 use crate::stream::{StreamCounters, StreamDecoder, Word, TS_PERIOD_S};
-use crate::trigger::{Trigger, TriggerCfg, TriggerInfo};
+use crate::trigger::{Event, Trigger, TriggerCfg, TriggerInfo};
 use crate::units::Calibration;
 use serde::Serialize;
 
@@ -129,6 +129,15 @@ impl Pipeline {
         self.trig.set(cfg);
     }
 
+    /// Trigger events with seq ≥ `since` (at most `max`), oldest first.
+    pub fn events_since(&self, since: u64, max: usize) -> Vec<Event> {
+        self.trig.events_since(since, max)
+    }
+
+    pub fn clear_events(&mut self) {
+        self.trig.clear_events();
+    }
+
     pub fn set_calibration(&mut self, cal: Calibration) {
         if let Some(r) = &mut self.rec {
             r.calibration(&cal);
@@ -190,7 +199,7 @@ impl Pipeline {
             if self.next_ts != Some(ts) {
                 self.trig.gap();
             }
-            self.trig.feed(ts as f64 * TS_PERIOD_S, self.trig.value(i, v));
+            self.trig.feed(ts as f64 * TS_PERIOD_S, self.trig.value(i, v), dt);
         }
         if let Some(r) = &mut self.rec {
             r.sample(ts, step, pack(ic, vc, range, dirty));

@@ -18,6 +18,7 @@ import {
   type Meta,
   type RawSpanStats,
   type Reply,
+  type TrigEvent,
   type TriggerCfg,
 } from './nbp';
 
@@ -171,6 +172,14 @@ class WebUsbLink implements Link {
 
   async setTrigger(c: TriggerCfg) {
     this.pipeline.set_trigger(c);
+  }
+
+  async events(since: number, max: number) {
+    return this.pipeline.events_since(BigInt(since), max) as TrigEvent[];
+  }
+
+  async clearEvents() {
+    this.pipeline.clear_events();
   }
 
   async close() {

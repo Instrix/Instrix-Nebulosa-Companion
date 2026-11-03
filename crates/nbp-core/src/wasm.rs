@@ -51,6 +51,15 @@ impl Pipeline {
         Ok(())
     }
 
+    /// [Event] with seq ≥ since
+    pub fn events_since(&self, since: u64, max: usize) -> JsValue {
+        to_js(&self.0.events_since(since, max))
+    }
+
+    pub fn clear_events(&mut self) {
+        self.0.clear_events();
+    }
+
     pub fn set_buffer_samples(&mut self, n: usize) {
         self.0.set_buffer_samples(n);
     }

@@ -165,6 +165,20 @@ async fn set_trigger(state: State<'_, AppState>, cfg: nbp_core::trigger::Trigger
     Ok(())
 }
 
+/// Trigger events with seq ≥ since, at most max.
+#[tauri::command]
+async fn query_events(state: State<'_, AppState>, since: u64, max: usize) -> Result<Vec<nbp_core::trigger::Event>, String> {
+    Ok(pipe(&state).map(|p| p.lock().unwrap().events_since(since, max.min(10_000))).unwrap_or_default())
+}
+
+#[tauri::command]
+async fn clear_events(state: State<'_, AppState>) -> Result<(), String> {
+    if let Some(p) = pipe(&state) {
+        p.lock().unwrap().clear_events();
+    }
+    Ok(())
+}
+
 /// [t0, t1] in `bins` columns: SampleBuffer::lod's flat f64 layout, raw bytes.
 #[tauri::command]
 async fn query_lod(state: State<'_, AppState>, t0: f64, t1: f64, bins: usize) -> Result<Response, String> {
@@ -193,7 +207,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_usb, discover, connect, disconnect, request, set_buffer, set_calibration, set_trigger, query_lod, query_stats,
             query_value, recordings_dir, list_recordings, start_recording, stop_recording, open_recording, export_csv,
-            count_samples, save_bytes
+            count_samples, save_bytes, query_events, clear_events
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

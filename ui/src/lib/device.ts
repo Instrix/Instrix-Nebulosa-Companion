@@ -13,6 +13,7 @@ import {
   type Meta,
   type RawSpanStats,
   type Reply,
+  type TrigEvent,
   type TriggerCfg,
 } from './nbp';
 
@@ -37,6 +38,9 @@ export interface Link {
   /** codes to units, for samples from now on */
   setCalibration(c: Calibration): Promise<void>;
   setTrigger(c: TriggerCfg): Promise<void>;
+  /** trigger events with seq ≥ since, oldest first */
+  events(since: number, max: number): Promise<TrigEvent[]>;
+  clearEvents(): Promise<void>;
   close(): Promise<void>;
 }
 

@@ -138,14 +138,34 @@ export interface Meta {
   recording: { active: boolean; samples: number; bytes: number; seconds: number };
 }
 
+/** trigger.rs Kind */
+export type TriggerKind =
+  | { type: 'edge'; slope: 'rise' | 'fall' | 'both'; level: number }
+  | { type: 'window'; low: number; high: number; when: 'enter' | 'exit' | 'both' }
+  | { type: 'pulse'; polarity: 'high' | 'low'; level: number; cond: 'any' | 'gt' | 'lt' | 'within'; min: number; max: number }
+  | { type: 'timeout'; polarity: 'high' | 'low'; level: number; time: number };
+
 /** trigger.rs TriggerCfg */
 export interface TriggerCfg {
   enabled: boolean;
   source: 'i' | 'v' | 'p';
-  slope: 'rise' | 'fall' | 'both';
-  level: number;
+  kind: TriggerKind;
   hysteresis: number;
   holdoff: number;
+  /** moving average, s (0: none) */
+  filter: number;
+}
+
+/** trigger.rs Event: width / peak / mean / integral are NaN (null) for edges */
+export interface TrigEvent {
+  seq: number;
+  t: number;
+  /** e rise, f fall, n enter, x exit, p pulse, t timeout */
+  what: 'e' | 'f' | 'n' | 'x' | 'p' | 't';
+  width: number | null;
+  peak: number | null;
+  mean: number | null;
+  integral: number | null;
 }
 
 /** units.rs Calibration */
