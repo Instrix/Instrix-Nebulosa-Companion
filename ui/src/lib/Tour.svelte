@@ -192,7 +192,7 @@
   .spot {
     position: fixed;
     z-index: 81;
-    border-radius: 8px;
+    border-radius: var(--r);
     box-shadow: 0 0 0 3px var(--accent);
     pointer-events: none;
     transition:
@@ -207,7 +207,7 @@
     width: min(340px, calc(100vw - 20px));
     background: var(--panel);
     border: 1px solid var(--border);
-    border-radius: 10px;
+    border-radius: var(--r-lg);
     padding: 14px 16px 12px;
     box-shadow: 0 10px 30px #0007;
     transition:
@@ -232,7 +232,7 @@
     font-size: 11px;
     padding: 0 4px;
     border: 1px solid var(--border);
-    border-radius: 3px;
+    border-radius: var(--r-sm);
   }
   .demo {
     width: 100%;

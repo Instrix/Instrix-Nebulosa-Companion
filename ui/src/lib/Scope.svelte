@@ -858,7 +858,7 @@
     flex-direction: column;
     background: var(--scope-bg);
     border: 1px solid var(--scope-border);
-    border-radius: 6px;
+    border-radius: var(--r);
     overflow: hidden;
     color: var(--scope-text);
   }
@@ -875,7 +875,7 @@
     bottom: 3px;
     border: 1.5px solid var(--m);
     border-top: 0;
-    border-radius: 0 0 3px 3px;
+    border-radius: 0 0 var(--r-sm) var(--r-sm);
     background: color-mix(in srgb, var(--m) 12%, transparent);
     display: flex;
     align-items: center;
@@ -931,7 +931,7 @@
     background: #000;
     color: #fff;
     border: 1px solid var(--m);
-    border-radius: 3px;
+    border-radius: var(--r-sm);
     padding: 0 5px;
     white-space: nowrap;
     font-weight: 600;
@@ -959,7 +959,7 @@
     font-weight: 700;
     font-size: 11px;
     padding: 0 5px;
-    border-radius: 3px;
+    border-radius: var(--r-sm);
     pointer-events: none;
   }
   .hintbar {
@@ -998,7 +998,7 @@
     font: 600 11px ui-monospace, monospace;
     pointer-events: none;
     padding: 1px 6px;
-    border-radius: 3px;
+    border-radius: var(--r-sm);
     background: #000c;
     white-space: nowrap;
   }
@@ -1041,7 +1041,7 @@
     font: 12px ui-monospace, monospace;
     background: #000a;
     padding: 1px 6px;
-    border-radius: 3px;
+    border-radius: var(--r-sm);
     pointer-events: none;
   }
   .empty {

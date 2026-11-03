@@ -110,7 +110,7 @@
     padding: 4px;
     background: var(--panel);
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: var(--r);
     box-shadow: 0 8px 24px #0006;
     font-size: 13px;
     outline: none;
@@ -122,7 +122,7 @@
     width: 100%;
     padding: 5px 8px;
     border: 0;
-    border-radius: 5px;
+    border-radius: var(--r-sm);
     background: transparent;
     color: inherit;
     text-align: left;

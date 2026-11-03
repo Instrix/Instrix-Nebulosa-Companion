@@ -297,7 +297,7 @@
     height: min(680px, 88vh);
     background: var(--panel);
     border: 1px solid var(--border);
-    border-radius: 10px;
+    border-radius: var(--r-lg);
     padding: 14px 18px;
     display: flex;
     flex-direction: column;
@@ -339,7 +339,7 @@
   .seg {
     display: inline-flex;
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: var(--r);
     overflow: hidden;
   }
   .seg button {

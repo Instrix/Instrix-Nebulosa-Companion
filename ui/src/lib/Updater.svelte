@@ -197,7 +197,7 @@
     width: min(620px, 92vw);
     background: var(--panel);
     border: 1px solid var(--border);
-    border-radius: 10px;
+    border-radius: var(--r-lg);
     padding: 14px 18px;
     display: flex;
     flex-direction: column;
@@ -232,7 +232,7 @@
     margin-left: 6px;
     padding: 0 5px;
     border: 1px solid var(--border);
-    border-radius: 3px;
+    border-radius: var(--r-sm);
   }
   b.tag {
     border-color: var(--ok);
@@ -250,7 +250,7 @@
     display: inline-block;
     padding: 8px 12px;
     border: 1px dashed var(--border);
-    border-radius: 6px;
+    border-radius: var(--r);
     cursor: pointer;
   }
   .chosen {
@@ -270,7 +270,7 @@
   .bar {
     flex: 1;
     height: 8px;
-    border-radius: 4px;
+    border-radius: var(--r-sm);
     background: var(--border);
     overflow: hidden;
   }

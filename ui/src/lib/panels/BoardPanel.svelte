@@ -301,7 +301,7 @@
   .fe {
     border: 1px solid var(--border);
     border-left: 3px solid var(--muted);
-    border-radius: 6px;
+    border-radius: var(--r);
     padding: 6px 8px;
     display: flex;
     flex-direction: column;
@@ -329,7 +329,7 @@
   .dot {
     width: 8px;
     height: 8px;
-    border-radius: 50%;
+    border-radius: var(--r-dot);
     background: var(--muted);
   }
   .fe.on .dot {
@@ -389,7 +389,7 @@
     overflow: auto;
     background: var(--panel);
     border: 1px solid var(--border);
-    border-radius: 10px;
+    border-radius: var(--r-lg);
     padding: 14px 18px;
     display: flex;
     flex-direction: column;

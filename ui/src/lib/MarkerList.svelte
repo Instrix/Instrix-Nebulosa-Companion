@@ -86,7 +86,7 @@
     min-height: 0;
     overflow-y: auto;
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: var(--r);
     background: var(--panel);
   }
   table {
@@ -123,7 +123,7 @@
     display: inline-block;
     width: 8px;
     height: 8px;
-    border-radius: 2px;
+    border-radius: var(--r-sm);
     background: var(--m);
     margin-right: 6px;
   }

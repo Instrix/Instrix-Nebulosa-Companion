@@ -44,3 +44,42 @@ export function stepScale(d: 1 | -1) {
 export function restoreScale() {
   if (canScale && uiScale.value !== 1) return setScale(uiScale.value);
 }
+
+
+// ---- theme: dark (the default), light, or the system's -------------------------
+export type Theme = 'dark' | 'light' | 'system';
+const THEME_KEY = 'nebulosa.theme';
+
+function loadTheme(): Theme {
+  try {
+    const v = new URLSearchParams(location.search).get('theme') ?? localStorage.getItem(THEME_KEY);
+    return v === 'light' || v === 'system' ? v : 'dark';
+  } catch {
+    return 'dark';
+  }
+}
+
+export const uiTheme = $state({ value: loadTheme() });
+
+const systemDark = typeof matchMedia !== 'undefined' ? matchMedia('(prefers-color-scheme: dark)') : null;
+
+/** data-theme on <html>: what the CSS reads (index.html sets it first, before the first paint) */
+function applyTheme() {
+  const t = uiTheme.value === 'system' ? (systemDark?.matches ? 'dark' : 'light') : uiTheme.value;
+  document.documentElement.dataset.theme = t;
+}
+
+export function setTheme(t: Theme) {
+  uiTheme.value = t;
+  try {
+    localStorage.setItem(THEME_KEY, t);
+  } catch {
+    /* storage unavailable */
+  }
+  applyTheme();
+}
+
+if (typeof document !== 'undefined') {
+  applyTheme();
+  systemDark?.addEventListener('change', () => uiTheme.value === 'system' && applyTheme());
+}

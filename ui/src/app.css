@@ -1,11 +1,14 @@
 :root {
+  /* INSTRIX brand (Instrix-Docs, guide 04): ink text, Signal Blue accents;
+     on light the darkened Signal Blue, so white on it stays readable (AA) */
   --bg: #f6f7f9;
   --panel: #ffffff;
   --border: #e3e6eb;
-  --text: #1b1f24;
+  --text: #292b31;
   --muted: #6b7380;
   --grid: #e9ecf0;
-  --accent: #6a4cff;
+  --accent: #23699f;
+  --signal: #5ca9e1;
   --accent-2: #0a9e8a;
   --ok: #1f9d55;
   --warn: #b7791f;
@@ -24,24 +27,29 @@
   --live: #3ccf7a;
   --hold: #f5a524;
   --trig: #e8e8e8;
+  /* corners */
+  --r-sm: 4px;
+  --r: 6px;
+  --r-lg: 10px;
+  --r-dot: 50%;
   color-scheme: light;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #0f1115;
-    --panel: #161920;
-    --border: #262b34;
-    --text: #e6e8ec;
-    --muted: #8a93a3;
-    --grid: #232833;
-    --accent: #9b85ff;
-    --accent-2: #3cc9b3;
-    --ok: #3ccf7a;
-    --warn: #e0a84a;
-    --danger: #ff6b6b;
-    color-scheme: dark;
-  }
+/* the theme: data-theme on <html>, set by the app (dark by default) */
+:root[data-theme='dark'] {
+  /* charcoal grounds, Paper White text */
+  --bg: #161826;
+  --panel: #1d2030;
+  --border: #2c3044;
+  --text: #e9e9ed;
+  --muted: #9398ab;
+  --grid: #272b3d;
+  --accent: #2f80c0;
+  --accent-2: #3cc9b3;
+  --ok: #3ccf7a;
+  --warn: #e0a84a;
+  --danger: #ff6b6b;
+  color-scheme: dark;
 }
 
 * {
@@ -66,7 +74,7 @@ select {
 
 button {
   padding: 6px 12px;
-  border-radius: 6px;
+  border-radius: var(--r);
   border: 1px solid var(--border);
   background: var(--bg);
   cursor: pointer;
@@ -101,7 +109,7 @@ button.small {
 input:not([type='checkbox']):not([type='range']),
 select {
   padding: 6px 8px;
-  border-radius: 6px;
+  border-radius: var(--r);
   border: 1px solid var(--border);
   background: var(--bg);
   width: 100%;

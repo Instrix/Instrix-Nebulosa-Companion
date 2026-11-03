@@ -256,7 +256,7 @@
   .seg {
     display: inline-flex;
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: var(--r);
     overflow: hidden;
     flex: 1;
   }
@@ -291,7 +291,7 @@
   .card {
     border: 1px solid var(--border);
     border-left: 3px solid var(--c, var(--border));
-    border-radius: 6px;
+    border-radius: var(--r);
     padding: 8px 10px;
     background: var(--panel);
   }

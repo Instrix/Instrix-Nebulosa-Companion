@@ -6,6 +6,9 @@
   // Help: getting started, keys and mouse, troubleshooting, about. ? or F1.
   import { isNative } from './device';
   import { hex, type Info } from './nbp';
+  // INSTRIX brand logos (Instrix-Docs/brand/logo): the white one only on the dark theme
+  import logo from '../assets/instrix-horizontal.svg';
+  import logoWhite from '../assets/instrix-horizontal-white.svg';
 
   let {
     tab = $bindable('start'),
@@ -161,10 +164,12 @@
       <p class="muted small">Before a release, docs/hardware-test.md lists what to check on a real board.</p>
     {:else if tab === 'about'}
       <div class="about">
-        <div class="brand"><span class="logo">◉</span><b>Nebulosa Companion</b></div>
+        <img class="instrix light" src={logo} alt="INSTRIX" />
+        <img class="instrix dark" src={logoWhite} alt="INSTRIX" />
+        <div class="brand"><b>Nebulosa Companion</b></div>
         <p>The desktop and browser app for the INSTRIX Nebulosa power profiler: current, voltage and power at up to 2 MS/s, a scope, a logger for days, triggers, analysis and export.</p>
         <dl>
-          <dt>Version</dt><dd>{__APP_VERSION__}{#if __APP_COMMIT__} <small class="muted">({__APP_COMMIT__})</small>{/if}</dd>
+          <dt>Version</dt><dd>{__APP_VERSION__}{#if __APP_COMMIT__}{' '}<small class="muted">({__APP_COMMIT__})</small>{/if}</dd>
           <dt>Built</dt><dd>{__APP_BUILT__}</dd>
           <dt>Runs as</dt><dd>{isNative ? 'Desktop app (Tauri)' : 'Browser (WebUSB)'}</dd>
           {#if info}
@@ -211,7 +216,7 @@
     overflow: auto;
     background: var(--panel);
     border: 1px solid var(--border);
-    border-radius: 10px;
+    border-radius: var(--r-lg);
     padding: 14px 18px;
   }
   header {
@@ -284,8 +289,20 @@
     gap: 8px;
     font-size: 18px;
   }
-  .logo {
-    color: var(--accent);
+  .instrix {
+    height: 26px;
+    width: auto;
+    align-self: flex-start;
+    margin: 4px 0 2px;
+  }
+  .instrix.dark {
+    display: none;
+  }
+  :global(:root[data-theme='dark']) .instrix.light {
+    display: none;
+  }
+  :global(:root[data-theme='dark']) .instrix.dark {
+    display: block;
   }
   .about dt {
     color: var(--muted);
@@ -302,7 +319,7 @@
     padding: 1px 5px;
     border: 1px solid var(--border);
     border-bottom-width: 2px;
-    border-radius: 4px;
+    border-radius: var(--r-sm);
   }
   h2 {
     margin: 0;
@@ -339,6 +356,6 @@
     padding: 1px 5px;
     border: 1px solid var(--border);
     border-bottom-width: 2px;
-    border-radius: 4px;
+    border-radius: var(--r-sm);
   }
 </style>

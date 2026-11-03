@@ -359,7 +359,7 @@
   .seg {
     display: inline-flex;
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: var(--r);
     overflow: hidden;
   }
   .seg.wide {
@@ -399,7 +399,7 @@
   }
   .field {
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: var(--r);
     padding: 6px;
     display: flex;
     flex-direction: column;
@@ -438,7 +438,7 @@
   }
   .preview {
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: var(--r);
     overflow: hidden;
   }
   .ph {

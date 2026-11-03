@@ -252,7 +252,7 @@
     height: 56px;
     background: var(--scope-bg);
     border: 1px solid var(--scope-border);
-    border-radius: 6px;
+    border-radius: var(--r);
     overflow: hidden;
   }
   canvas {
@@ -282,7 +282,7 @@
     pointer-events: auto;
     padding: 0 6px;
     border: 1px solid var(--hold);
-    border-radius: 3px;
+    border-radius: var(--r-sm);
     background: #000c;
     color: var(--hold);
     cursor: pointer;

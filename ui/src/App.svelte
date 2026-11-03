@@ -41,7 +41,9 @@
   import BoardPanel from './lib/panels/BoardPanel.svelte';
   import Help, { type HelpTab } from './lib/Help.svelte';
   import Tour, { markTourSeen, tourSeen, type TourStep } from './lib/Tour.svelte';
-  import { SCALES, canScale, restoreScale, setScale, stepScale, uiScale } from './lib/uiScale.svelte';
+  import { SCALES, canScale, restoreScale, setScale, setTheme, stepScale, uiScale, uiTheme } from './lib/uiScale.svelte';
+  import instrixIcon from './assets/instrix-icon.svg';
+  import instrixIconWhite from './assets/instrix-icon-white.svg';
   import * as boardCmd from './lib/board';
   import LoggerView, { type LogView } from './lib/LoggerView.svelte';
   import ExportEditor, { defaultOutput, type OutputCfg } from './lib/ExportEditor.svelte';
@@ -1003,6 +1005,11 @@
       })),
       { sep: true },
       { label: canScale ? 'Bigger / smaller: Ctrl + / Ctrl −' : 'Use Ctrl + / Ctrl − / Ctrl 0', disabled: true },
+      { sep: true },
+      { head: 'Theme' },
+      { label: 'Dark', checked: uiTheme.value === 'dark', run: () => setTheme('dark') },
+      { label: 'Light', checked: uiTheme.value === 'light', run: () => setTheme('light') },
+      { label: "The system's", checked: uiTheme.value === 'system', run: () => setTheme('system') },
     ]);
   }
 
@@ -1521,7 +1528,8 @@
   <header>
     <div class="brand">
       <button class="ghost side-btn" class:on={leftOpen} onclick={() => toggleSide('left')} title="Show / hide the settings ( [ )" aria-label="Settings panel">◧</button>
-      <span class="logo">◉</span>
+      <img class="logo light" src={instrixIcon} alt="INSTRIX" />
+      <img class="logo dark" src={instrixIconWhite} alt="INSTRIX" />
       <strong>Nebulosa</strong>
       <span class="muted">Companion</span>
     </div>
@@ -1541,7 +1549,7 @@
           <span class="dot"></span><span class="muted">Not connected</span>
         {/if}
       {/if}
-      <button class="ghost side-btn" onclick={(e) => scaleMenu(e)} title="UI scale: bigger / smaller (Ctrl + / −)" aria-label="UI scale"
+      <button class="ghost side-btn" onclick={(e) => scaleMenu(e)} title="Appearance: UI scale (Ctrl + / −), theme" aria-label="UI scale"
         >Aa{#if canScale && uiScale.value !== 1}<small class="scale-pct">{Math.round(uiScale.value * 100)}%</small>{/if}</button
       >
       <button class="ghost side-btn" onclick={(e) => helpMenu(e)} title="Help, walkthrough, about (?)" aria-label="Help" data-tour="help">?</button>
@@ -1920,7 +1928,17 @@
     align-items: center;
   }
   .logo {
-    color: var(--accent);
+    height: 18px;
+    width: auto;
+  }
+  .logo.dark {
+    display: none;
+  }
+  :global(:root[data-theme='dark']) .logo.light {
+    display: none;
+  }
+  :global(:root[data-theme='dark']) .logo.dark {
+    display: block;
   }
   .status {
     display: flex;
@@ -1931,7 +1949,7 @@
   .dot {
     width: 8px;
     height: 8px;
-    border-radius: 50%;
+    border-radius: var(--r-dot);
     background: var(--muted);
   }
   .dot.ok {
@@ -1972,7 +1990,7 @@
   .modes {
     display: inline-flex;
     border: 1px solid var(--border);
-    border-radius: 7px;
+    border-radius: var(--r);
     overflow: hidden;
   }
   .modes button {
@@ -2003,7 +2021,7 @@
     font: 600 11px ui-monospace, monospace;
     letter-spacing: 0.08em;
     padding: 3px 8px;
-    border-radius: 4px;
+    border-radius: var(--r-sm);
     border: 1px solid transparent;
   }
   .badge.run {
@@ -2115,7 +2133,7 @@
     gap: 10px;
     margin: 0 12px 6px;
     padding: 6px 10px;
-    border-radius: 6px;
+    border-radius: var(--r);
     font-size: 13px;
     border: 1px solid var(--warn);
     background: color-mix(in srgb, var(--warn) 12%, transparent);
@@ -2162,7 +2180,7 @@
     width: 40px;
     height: 3px;
     margin-left: -20px;
-    border-radius: 2px;
+    border-radius: var(--r-sm);
     background: var(--border);
   }
   .splitter:hover::after,
@@ -2180,7 +2198,7 @@
   .tabs button {
     border: 1px solid var(--border);
     border-bottom: 0;
-    border-radius: 6px 6px 0 0;
+    border-radius: var(--r) var(--r) 0 0;
     background: var(--bg);
     padding: 3px 12px;
     font-size: 12px;
@@ -2328,7 +2346,7 @@
       padding: 3px 8px;
       border: 1px solid var(--border);
       border-left: 3px solid var(--c);
-      border-radius: 6px;
+      border-radius: var(--r);
       font-size: 12px;
     }
     .row {
@@ -2403,7 +2421,7 @@
     .seg {
       display: inline-flex;
       border: 1px solid var(--border);
-      border-radius: 6px;
+      border-radius: var(--r);
       overflow: hidden;
     }
     .seg button {

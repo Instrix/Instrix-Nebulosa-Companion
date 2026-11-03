@@ -115,7 +115,7 @@
 <style>
   .wrap {
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: var(--r);
     background: var(--panel);
     display: flex;
     flex-direction: column;

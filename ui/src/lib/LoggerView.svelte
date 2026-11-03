@@ -319,7 +319,7 @@
     font: 600 11px ui-monospace, monospace;
     letter-spacing: 0.08em;
     padding: 3px 8px;
-    border-radius: 4px;
+    border-radius: var(--r-sm);
     border: 1px solid var(--hold);
     background: var(--hold);
     color: #000;
@@ -332,7 +332,7 @@
   .seg {
     display: inline-flex;
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: var(--r);
     overflow: hidden;
   }
   .seg button {
@@ -364,7 +364,7 @@
     flex-direction: column;
     background: var(--scope-bg);
     border: 1px solid var(--scope-border);
-    border-radius: 6px;
+    border-radius: var(--r);
     overflow: hidden;
     color: var(--scope-text);
   }
@@ -384,7 +384,7 @@
     position: absolute;
     font: 600 11px ui-monospace, monospace;
     padding: 1px 6px;
-    border-radius: 3px;
+    border-radius: var(--r-sm);
     background: #000c;
     pointer-events: none;
   }
