@@ -426,6 +426,9 @@
       );
       u.over.addEventListener('wheel', onWheel(u), { passive: false });
       u.over.addEventListener('dblclick', onDbl(u));
+      // before uPlot's own mousedown (selection): grab a trigger level line
+      u.over.addEventListener('mousedown', levelDown(sig, u), { capture: true });
+      u.over.addEventListener('mousemove', levelHover(sig, u));
       ro?.observe(el);
       plots.push({ sig, u });
     });
@@ -467,6 +470,60 @@
       } else {
         view.zoom(store, Math.sign(e.deltaY), u.posToVal(e.offsetX, 'x'));
       }
+    };
+  }
+
+  // ---- dragging the trigger level -------------------------------------------
+  const GRAB_PX = 6;
+
+  /** the level line (index into trig.levels()) under the pointer, or -1 */
+  function levelAt(sig: Signal, u: uPlot, offsetY: number): number {
+    if (!trig.detecting || sig !== trig.source) return -1;
+    const lv = trig.levels();
+    let best = -1, bestD = GRAB_PX + 1;
+    lv.forEach((v, k) => {
+      const d = Math.abs(u.valToPos(v, 'y') - offsetY);
+      if (d < bestD) {
+        bestD = d;
+        best = k;
+      }
+    });
+    return best;
+  }
+
+  function setLevel(k: number, v: number) {
+    if (trig.kind !== 'window') trig.level = v;
+    else if (k === 0) trig.low = v;
+    else trig.high = v;
+  }
+
+  function levelHover(sig: Signal, u: uPlot) {
+    return (e: MouseEvent) => {
+      if (e.buttons) return;
+      u.over.style.cursor = levelAt(sig, u, e.offsetY) >= 0 ? 'ns-resize' : '';
+    };
+  }
+
+  function levelDown(sig: Signal, u: uPlot) {
+    return (e: MouseEvent) => {
+      if (e.button !== 0) return;
+      const k = levelAt(sig, u, e.offsetY);
+      if (k < 0) return;
+      // ours, not uPlot's selection
+      e.stopImmediatePropagation();
+      e.preventDefault();
+      const top = u.over.getBoundingClientRect().top;
+      const move = (ev: MouseEvent) => {
+        const v = u.posToVal(Math.min(u.over.clientHeight, Math.max(0, ev.clientY - top)), 'y');
+        // a log axis has no zero or negatives
+        setLevel(k, axes[sig].log ? Math.max(v, 1e-15) : v);
+      };
+      const up = () => {
+        window.removeEventListener('mousemove', move);
+        window.removeEventListener('mouseup', up);
+      };
+      window.addEventListener('mousemove', move);
+      window.addEventListener('mouseup', up);
     };
   }
 

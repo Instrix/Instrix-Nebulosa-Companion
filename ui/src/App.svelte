@@ -279,9 +279,19 @@
     // depends on the settings only, not on what rearm reads
     untrack(() => {
       trig.resetLog();
-      trig.rearm(store, view);
+      trig.settingsChanged(store);
     });
   });
+
+  // a new mode (or link) re-arms: the screen may freeze or start following
+  $effect(() => {
+    void trig.mode;
+    void activeLink;
+    untrack(() => trig.rearm(store, view));
+  });
+
+  // keep the trigger settings across sessions
+  $effect(() => trig.save());
 
   function setMode(m: TrigMode) {
     trig.mode = m;
@@ -676,8 +686,8 @@
     return bps >= 1e6 ? `${(bps / 1e6).toFixed(2)} MB/s` : `${(bps / 1e3).toFixed(0)} kB/s`;
   }
 
-  /** an SI text field: shows `value`, writes back what parses */
-  function siInput(node: HTMLInputElement, p: { get: () => number; set: (v: number) => void; unit: string }) {
+  /** an SI text field: shows `value`, writes back what parses. Pass `v` (the value) so outside changes show. */
+  function siInput(node: HTMLInputElement, p: { get: () => number; set: (v: number) => void; unit: string; v?: number }) {
     let cur = p;
     const show = () => (node.value = fmtSI(cur.get(), cur.unit, 4));
     const commit = () => {
@@ -987,12 +997,12 @@
 
         {#if trig.kind === 'window'}
           <div class="row">
-            <label>Low <input use:siInput={{ get: () => trig.low, set: (v) => (trig.low = v), unit }} /></label>
-            <label>High <input use:siInput={{ get: () => trig.high, set: (v) => (trig.high = v), unit }} /></label>
+            <label>Low <input use:siInput={{ get: () => trig.low, set: (v) => (trig.low = v), unit, v: trig.low }} /></label>
+            <label>High <input use:siInput={{ get: () => trig.high, set: (v) => (trig.high = v), unit, v: trig.high }} /></label>
           </div>
         {:else}
           <div class="row">
-            <label>Level <input use:siInput={{ get: () => trig.level, set: (v) => (trig.level = v), unit }} /></label>
+            <label>Level <input use:siInput={{ get: () => trig.level, set: (v) => (trig.level = v), unit, v: trig.level }} /></label>
             <button class="ghost small fifty" onclick={level50} title="Halfway between the screen's min and max">50%</button>
           </div>
         {/if}

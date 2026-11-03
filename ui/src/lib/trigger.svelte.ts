@@ -44,6 +44,13 @@ export const EVENT_LABEL: Record<TrigEvent['what'], string> = {
   t: '⌛ timeout',
 };
 
+const SAVE_KEY = 'nebulosa.trigger';
+/** the settings kept across sessions */
+const SAVED = [
+  'mode', 'log', 'source', 'kind', 'slope', 'level', 'low', 'high', 'when', 'polarity', 'cond',
+  'minWidth', 'maxWidth', 'timeout', 'hysteresis', 'holdoff', 'filter', 'position',
+] as const;
+
 export class TriggerState {
   mode = $state<TrigMode>('roll');
   /** detect and log events in Roll mode too */
@@ -83,6 +90,26 @@ export class TriggerState {
   /** only triggers after this are used (mode change, arming) */
   private after = -Infinity;
   private lastShownWall = 0;
+
+  constructor() {
+    try {
+      const v = JSON.parse(localStorage.getItem(SAVE_KEY) ?? 'null');
+      if (v && typeof v === 'object')
+        for (const k of SAVED) if (k in v && typeof v[k] === typeof this[k]) (this as Record<string, unknown>)[k] = v[k];
+    } catch {
+      /* storage unavailable */
+    }
+  }
+
+  /** Saves the settings (call from an effect: it reads them all). */
+  save() {
+    const v = Object.fromEntries(SAVED.map((k) => [k, this[k]]));
+    try {
+      localStorage.setItem(SAVE_KEY, JSON.stringify(v));
+    } catch {
+      /* storage unavailable */
+    }
+  }
 
   get detecting() {
     return this.mode !== 'roll' || this.log;
@@ -152,7 +179,13 @@ export class TriggerState {
     }
   }
 
-  /** Starts over from now: a new mode, new settings, or Single armed. */
+  /** New settings: only triggers found with them count; the screen stays where it is. */
+  settingsChanged(store: SampleStore) {
+    this.after = store.tEnd;
+    if (this.status === 'trigd') this.status = 'wait';
+  }
+
+  /** Starts over from now: a new mode, or Single armed. */
   rearm(store: SampleStore, view: View) {
     this.after = store.tEnd;
     this.shown = null;
