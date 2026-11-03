@@ -10,7 +10,7 @@
 // sample (for screenshots); `&log=i,p`, `&trace=mean,range,sigma` set the view.
 
 import type { Link, LinkEvents } from './device';
-import { core, type AnalysisRequest, type AnalysisResult, type Calibration, type Meta, type RawSpanStats, type Reply, type TrigEvent, type TriggerCfg } from './nbp';
+import { core, type ExportCfg, type AnalysisRequest, type AnalysisResult, type Calibration, type Meta, type RawSpanStats, type Reply, type TrigEvent, type TriggerCfg } from './nbp';
 
 const RATE = 2_000_000;
 const TICK_MS = 40;
@@ -167,6 +167,10 @@ export class DemoLink implements Link {
 
   async clearSession() {
     this.pipeline.clear_session();
+  }
+
+  async exportPreview(cfg: ExportCfg, wallOffset: number, rows: number) {
+    return this.pipeline.export_preview(cfg, wallOffset, rows);
   }
 
   async setMath(expr: string | null) {

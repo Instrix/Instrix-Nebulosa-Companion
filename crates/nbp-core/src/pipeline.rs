@@ -96,6 +96,8 @@ pub struct Pipeline {
     file_header: Option<String>,
     session: SessionLog,
     log: Option<LogWriter>,
+    /// exporting (the logger's formats): summaries, or every sample through the tap
+    export: Option<(crate::export::Data, crate::export::RawTap, Vec<crate::export::Chunk>)>,
     responses: Vec<Frame>,
     expect_seq: Option<u32>,
     stats: DataStats,
@@ -123,6 +125,7 @@ impl Pipeline {
             file_header: None,
             session: SessionLog::new(0.1),
             log: None,
+            export: None,
             responses: Vec::new(),
             expect_seq: None,
             stats: DataStats::default(),
@@ -157,6 +160,12 @@ impl Pipeline {
     pub fn set_calibration(&mut self, cal: Calibration) {
         if let Some(r) = &mut self.rec {
             r.calibration(&cal);
+        }
+        if let Some((_, tap, out)) = &mut self.export {
+            // samples so far with the old calibration, then the new one
+            tap.flush();
+            out.append(&mut tap.done);
+            out.push(crate::export::Chunk::Calibration(cal.clone()));
         }
         self.buf.set_calibration(cal.clone());
         self.cal = cal;
@@ -224,6 +233,9 @@ impl Pipeline {
         if let Some(r) = &mut self.rec {
             r.sample(ts, step, pack(ic, vc, range, dirty));
         }
+        if let Some((crate::export::Data::Raw, tap, _)) = &mut self.export {
+            tap.sample(ts, step, pack(ic, vc, range, dirty), m);
+        }
         self.next_ts = Some(ts + step as u64);
     }
 
@@ -240,10 +252,79 @@ impl Pipeline {
             self.accum.seconds += dur;
         }
         let done = self.session.take_pending();
+        if let Some((crate::export::Data::Summary, _, out)) = &mut self.export {
+            if !done.is_empty() {
+                out.push(crate::export::Chunk::Entries(done.clone()));
+            }
+        }
         if let Some(w) = &mut self.log {
             w.add(&done);
         }
     }
+
+    /// Starts an export: summaries (one row per interval) or every sample;
+    /// chunks come from [`take_export`](Self::take_export).
+    pub fn start_export(&mut self, data: crate::export::Data) {
+        self.export = Some((data, crate::export::RawTap::default(), Vec::new()));
+    }
+
+    /// What an export with `cfg` would write for the latest `rows` rows
+    /// (text; HDF5: its datasets and a few values).
+    pub fn export_preview(&self, cfg: &crate::export::ExportCfg, wall_offset: f64, rows: usize) -> String {
+        use crate::export::{Chunk, Data, Exporter, Format};
+        let chunk = match cfg.data {
+            Data::Summary => Chunk::Entries(self.session.last(rows)),
+            Data::Raw => {
+                let Some((_, t1)) = self.buf.time_range() else { return String::new() };
+                let dt = (1u64 << self.decoder.log2n) as f64 * TS_PERIOD_S;
+                let x = self.buf.extract(t1 - (rows as f64 - 0.5) * dt, t1 + dt);
+                match x.runs.into_iter().last() {
+                    Some((t0, dt, packed, math)) => Chunk::Raw {
+                        ts0: (t0 / TS_PERIOD_S).round() as u64,
+                        step: (dt / TS_PERIOD_S).round() as u32,
+                        math: math.unwrap_or_else(|| vec![f32::NAN; packed.len()]),
+                        packed,
+                    },
+                    None => return String::new(),
+                }
+            }
+        };
+        let mut x = Exporter::new(cfg.clone(), self.cal.clone(), wall_offset);
+        if matches!(cfg.format, Format::Hdf5) {
+            let cols = x.columns(&chunk);
+            return cfg
+                .fields
+                .iter()
+                .zip(cols)
+                .map(|(f, c)| format!("/{}  float64[n]  {:?}…", f.label, c.iter().take(3).collect::<Vec<_>>()))
+                .collect::<Vec<_>>()
+                .join("\n");
+        }
+        let mut out = x.header();
+        x.text(&chunk, &mut out);
+        String::from_utf8_lossy(&out).into_owned()
+    }
+
+    /// Chunks for the export's writer (whole raw runs of 64 Ki samples unless `flush`).
+    pub fn take_export(&mut self, flush: bool) -> Vec<crate::export::Chunk> {
+        let Some((_, tap, out)) = &mut self.export else { return Vec::new() };
+        if flush {
+            tap.flush();
+        }
+        let mut v = std::mem::take(out);
+        v.append(&mut tap.done);
+        v
+    }
+
+    /// The export's last chunks; it stops.
+    pub fn stop_export(&mut self) -> Vec<crate::export::Chunk> {
+        self.session.close();
+        self.feed_session();
+        let v = self.take_export(true);
+        self.export = None;
+        v
+    }
+
 
     /// Starts the session log over at a new interval (s).
     pub fn set_log_interval(&mut self, interval: f64) {

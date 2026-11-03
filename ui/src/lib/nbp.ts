@@ -223,3 +223,25 @@ export type AnalysisResult =
   | { kind: 'psd'; freq: number[]; psd: number[]; segments: number; resolution: number; rms: number }
   | { kind: 'maxwindow'; t: number; width: number; mean: number; span_mean: number }
   | { kind: 'empty'; reason: string };
+
+/** export.rs: what the logger writes */
+export type ExportWhat = 'time' | 'i' | 'v' | 'p' | 'm' | 'count' | 'range' | 'dirty' | 'charge' | 'energy';
+export interface ExportField {
+  what: ExportWhat;
+  stat: 'mean' | 'min' | 'max' | 'std';
+  label: string;
+  /** value × scale is written */
+  scale: number;
+  decimals: number;
+}
+export type ExportFormat =
+  | { type: 'csv'; separator: string; decimal_comma: boolean; header: boolean }
+  | { type: 'txt'; width: number; header: boolean }
+  | { type: 'jsonl' }
+  | { type: 'hdf5' };
+export interface ExportCfg {
+  data: 'summary' | 'raw';
+  format: ExportFormat;
+  time: 'relative' | 'unix' | 'iso';
+  fields: ExportField[];
+}

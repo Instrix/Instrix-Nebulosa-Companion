@@ -88,6 +88,12 @@ impl Pipeline {
         self.0.clear_session();
     }
 
+    /// What an export (export.rs ExportCfg) would write for the latest rows
+    pub fn export_preview(&self, cfg: JsValue, wall_offset: f64, rows: usize) -> Result<String, JsValue> {
+        let c: crate::export::ExportCfg = serde_wasm_bindgen::from_value(cfg)?;
+        Ok(self.0.export_preview(&c, wall_offset, rows))
+    }
+
     pub fn set_buffer_samples(&mut self, n: usize) {
         self.0.set_buffer_samples(n);
     }

@@ -12,6 +12,7 @@ import {
   type AnalysisRequest,
   type AnalysisResult,
   type Calibration,
+  type ExportCfg,
   type Meta,
   type RawSpanStats,
   type Reply,
@@ -42,6 +43,8 @@ export interface Link {
   sessionStats(t0: number, t1: number): Promise<RawSpanStats | null>;
   setLogInterval(s: number): Promise<void>;
   clearSession(): Promise<void>;
+  /** what an export would write for the latest rows (preview) */
+  exportPreview(cfg: ExportCfg, wallOffset: number, rows: number): Promise<string>;
   /** the math channel's expression, or null for none; resolves to an error message, or null */
   setMath(expr: string | null): Promise<string | null>;
   /** codes to units, for samples from now on */

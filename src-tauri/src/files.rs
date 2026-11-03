@@ -253,3 +253,231 @@ pub fn export_csv(pipe: &SharedPipeline, t0: f64, t1: f64, path: &str) -> Result
     w.flush().map_err(|e| e.to_string())?;
     Ok(rows)
 }
+
+// ---- exports (the logger's formats) ------------------------------------------------
+
+use crate::link::{ChunkSink, ChunkSinkInner};
+use nbp_core::export::{Chunk, ExportCfg, Exporter, Format};
+
+/// Chunks waiting for the formatter: 64 of up to 64 Ki samples (~2 s at 2 MS/s).
+const EXPORT_QUEUE: usize = 64;
+/// HDF5 chunk length (elements per dataset chunk). Not 65536: hdf5-pure 0.47
+/// encodes that chunk dimension in a width libhdf5 2.0 rejects ("stored chunk
+/// dimension encoding length does not match"); 65535 and below read fine.
+const H5_CHUNK: usize = 32768;
+
+pub struct ExportWriter {
+    pub path: PathBuf,
+    thread: JoinHandle<Result<u64, String>>,
+    pub error: Arc<Mutex<Option<String>>>,
+    pub dropped: Arc<AtomicU64>,
+}
+
+#[derive(Serialize)]
+pub struct ExportDone {
+    pub path: String,
+    pub rows: u64,
+    pub bytes: u64,
+}
+
+pub fn export_ext(f: &Format) -> &'static str {
+    match f {
+        Format::Csv { .. } => "csv",
+        Format::Txt { .. } => "txt",
+        Format::Jsonl => "jsonl",
+        Format::Hdf5 => "h5",
+    }
+}
+
+/// Starts exporting: the formatter thread, the metadata sidecar (<file>.json),
+/// and the pipeline's tap; the dispatcher feeds the thread from then on.
+pub fn start_export(
+    path: PathBuf,
+    cfg: ExportCfg,
+    wall_offset: f64,
+    header_json: &str,
+    pipe: &SharedPipeline,
+    sink: &ChunkSink,
+) -> Result<ExportWriter, String> {
+    let cal = pipe.lock().unwrap().calibration().clone();
+    let meta = format!("{{\"export\":{},\"session\":{}}}", serde_json::to_string(&cfg).unwrap_or_default(), header_json);
+    let side = path.with_extension(format!("{}.json", export_ext(&cfg.format)));
+    std::fs::write(&side, meta).map_err(|e| format!("{}: {e}", side.display()))?;
+    let (tx, rx) = mpsc::sync_channel::<Chunk>(EXPORT_QUEUE);
+    let error: Arc<Mutex<Option<String>>> = Arc::default();
+    let err2 = error.clone();
+    let p2 = path.clone();
+    let header = header_json.to_string();
+    let data = cfg.data;
+    let thread = std::thread::spawn(move || -> Result<u64, String> {
+        let mut x = Exporter::new(cfg.clone(), cal, wall_offset);
+        let res = if matches!(cfg.format, Format::Hdf5) { write_h5(&p2, &mut x, &header, rx) } else { write_text(&p2, &mut x, rx) };
+        if let Err(e) = &res {
+            *err2.lock().unwrap() = Some(e.clone());
+        }
+        res.map(|_| x.rows)
+    });
+    let dropped: Arc<AtomicU64> = Arc::default();
+    let mut p = pipe.lock().unwrap();
+    p.start_export(data);
+    *sink.lock().unwrap() = Some(ChunkSinkInner { tx, dropped: dropped.clone() });
+    Ok(ExportWriter { path, thread, error, dropped })
+}
+
+fn write_text(path: &Path, x: &mut Exporter, rx: mpsc::Receiver<Chunk>) -> Result<(), String> {
+    let f = std::fs::File::create(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut w = std::io::BufWriter::with_capacity(8 << 20, f);
+    w.write_all(&x.header()).map_err(|e| e.to_string())?;
+    let mut buf = Vec::with_capacity(4 << 20);
+    for c in rx {
+        buf.clear();
+        x.text(&c, &mut buf);
+        w.write_all(&buf).map_err(|e| e.to_string())?;
+    }
+    w.flush().map_err(|e| e.to_string())?;
+    w.into_inner().map_err(|e| e.to_string())?.sync_all().map_err(|e| e.to_string())
+}
+
+/// HDF5: one f64 dataset per field (unlimited, chunked), appended a chunk at a time.
+fn write_h5(path: &Path, x: &mut Exporter, header: &str, rx: mpsc::Receiver<Chunk>) -> Result<(), String> {
+    use hdf5_pure::{AttrValue, File, FileAccessProperties, FileBuilder, MaxExtent, SyncPolicy};
+    let e = |e: hdf5_pure::Error| e.to_string();
+    // dataset names from the labels: unique, no '/'
+    let mut names: Vec<String> = Vec::new();
+    for f in &x.cfg().fields {
+        let mut n: String = f.label.chars().map(|c| if c == '/' || c == '.' { '_' } else { c }).collect();
+        if n.trim().is_empty() {
+            n = format!("{:?}", f.what).to_lowercase();
+        }
+        let base = n.clone();
+        let mut k = 2;
+        while names.contains(&n) {
+            n = format!("{base}_{k}");
+            k += 1;
+        }
+        names.push(n);
+    }
+    let mut b = FileBuilder::new();
+    b.set_attr("nebulosa", AttrValue::String(header.to_string()));
+    for (n, f) in names.iter().zip(&x.cfg().fields) {
+        b.create_dataset(n)
+            .with_f64_data(&[])
+            .with_shape(&[0])
+            .with_maxshape(&[MaxExtent::Unlimited])
+            .with_chunks(&[H5_CHUNK as u64])
+            .set_attr("label", AttrValue::String(f.label.clone()))
+            .set_attr("scale", AttrValue::F64(f.scale));
+    }
+    b.write(path).map_err(e)?;
+    // no fsync per append (each append is still crash-atomic); one at close
+    let file = File::open_rw_with_options(path, FileAccessProperties::new().with_sync_policy(SyncPolicy::OnClose)).map_err(e)?;
+    let mut cols: Vec<Vec<f64>> = vec![Vec::new(); names.len()];
+    let flush = |cols: &mut Vec<Vec<f64>>, all: bool| -> Result<(), String> {
+        for (k, n) in names.iter().enumerate() {
+            let take = if all { cols[k].len() } else { cols[k].len() / H5_CHUNK * H5_CHUNK };
+            if take > 0 {
+                file.dataset(n).map_err(e)?.append(&cols[k][..take]).map_err(e)?;
+                cols[k].drain(..take);
+            }
+        }
+        Ok(())
+    };
+    for c in rx {
+        for (k, v) in x.columns(&c).into_iter().enumerate() {
+            cols[k].extend(v);
+        }
+        flush(&mut cols, false)?;
+    }
+    flush(&mut cols, true)?;
+    file.close().map_err(e)
+}
+
+/// Stops the export: the last chunks, then waits for the writer.
+pub fn stop_export(w: ExportWriter, pipe: &SharedPipeline, sink: &ChunkSink) -> Result<ExportDone, String> {
+    let (s, last) = {
+        let mut p = pipe.lock().unwrap();
+        let s = sink.lock().unwrap().take();
+        (s, p.stop_export())
+    };
+    if let Some(s) = s {
+        for c in last {
+            // the last ones may wait: the stream is no longer feeding the queue
+            if s.tx.send(c).is_err() {
+                break;
+            }
+        }
+    }
+    let rows = w.thread.join().map_err(|_| "export writer crashed".to_string())??;
+    let lost = w.dropped.load(Ordering::Relaxed);
+    if lost > 0 {
+        return Err(format!("{}: the writer didn't keep up, {lost} chunks were lost", w.path.display()));
+    }
+    let bytes = std::fs::metadata(&w.path).map(|m| m.len()).unwrap_or(0);
+    Ok(ExportDone { path: w.path.display().to_string(), rows, bytes })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nbp_core::buffer::pack;
+    use nbp_core::export::*;
+
+    fn cfg(format: Format) -> ExportCfg {
+        ExportCfg {
+            data: Data::Raw,
+            format,
+            time: TimeFmt::Relative,
+            fields: vec![
+                Field { what: What::Time, stat: Stat::Mean, label: "t (s)".into(), scale: 1.0, decimals: 7 },
+                Field { what: What::I, stat: Stat::Mean, label: "I (mA)".into(), scale: 1e3, decimals: 4 },
+            ],
+        }
+    }
+
+    fn chunk(k: u64) -> Chunk {
+        Chunk::Raw { ts0: k * 65536, step: 1, packed: (0..65536).map(|_| pack(8192, 3300, 0, false)).collect(), math: vec![f32::NAN; 65536] }
+    }
+
+    #[test]
+    fn csv_writer() {
+        let path = std::env::temp_dir().join(format!("neb-csv-{}.csv", std::process::id()));
+        let mut c = cfg(Format::Csv { separator: ";".into(), decimal_comma: true, header: true });
+        c.fields[0].decimals = 7;
+        let mut x = Exporter::new(c, Default::default(), 0.0);
+        let (tx, rx) = mpsc::sync_channel(8);
+        let p2 = path.clone();
+        let h = std::thread::spawn(move || write_text(&p2, &mut x, rx).map(|_| x.rows));
+        tx.send(chunk(0)).unwrap();
+        drop(tx);
+        assert_eq!(h.join().unwrap().unwrap(), 65536);
+        let s = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = s.lines().collect();
+        assert_eq!(lines.len(), 65537);
+        assert_eq!(lines[0], "t (s);I (mA)");
+        assert_eq!(lines[2], "0,0000005;1000,0000");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn h5_roundtrip() {
+        let dir = std::env::temp_dir().join(format!("neb-h5-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("x.h5");
+        let mut x = Exporter::new(cfg(Format::Hdf5), Default::default(), 0.0);
+        let (tx, rx) = mpsc::sync_channel(8);
+        let p2 = path.clone();
+        let h = std::thread::spawn(move || write_h5(&p2, &mut x, "{\"a\":1}", rx).map(|_| x.rows));
+        for k in 0..3 {
+            tx.send(chunk(k)).unwrap();
+        }
+        drop(tx);
+        assert_eq!(h.join().unwrap().unwrap(), 3 * 65536);
+        let f = hdf5_pure::File::open(&path).unwrap();
+        let i = f.dataset("I (mA)").unwrap().read_f64().unwrap();
+        let t = f.dataset("t (s)").unwrap().read_f64().unwrap();
+        assert_eq!(i.len(), 3 * 65536);
+        assert!((i[100] - 1000.0).abs() < 1e-9);
+        assert!((t[65536 * 2] - 65536.0 * 2.0 * 500e-9).abs() < 1e-12);
+        println!("h5 at {}", path.display());
+    }
+}

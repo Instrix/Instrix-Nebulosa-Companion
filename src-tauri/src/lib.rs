@@ -24,6 +24,7 @@ struct AppState {
     math: std::sync::Mutex<Option<String>>,
     recording: std::sync::Mutex<Option<files::Writer>>,
     logging: std::sync::Mutex<Option<files::Writer>>,
+    exporting: std::sync::Mutex<Option<files::ExportWriter>>,
     /// session log interval, s (applied at connect too)
     log_interval: std::sync::Mutex<Option<f64>>,
 }
@@ -66,6 +67,7 @@ async fn connect(state: State<'_, AppState>, target: Target, events: Events) -> 
 async fn disconnect(state: State<'_, AppState>) -> Result<(), String> {
     let _ = stop_recording(state.clone()).await;
     let _ = stop_logging(state.clone()).await;
+    let _ = stop_export(state.clone()).await;
     state.conn.lock().await.take();
     state.pipe.lock().unwrap().take();
     Ok(())
@@ -133,6 +135,49 @@ async fn stop_logging(state: State<'_, AppState>) -> Result<Option<files::Loggin
     tokio::task::spawn_blocking(move || files::stop_log(w, &pipe, &sink)).await.map_err(|e| e.to_string())?.map(Some)
 }
 
+#[tauri::command]
+async fn export_preview(
+    state: State<'_, AppState>,
+    cfg: nbp_core::export::ExportCfg,
+    wall_offset: f64,
+    rows: usize,
+) -> Result<String, String> {
+    Ok(pipe(&state).map(|p| p.lock().unwrap().export_preview(&cfg, wall_offset, rows.min(50))).unwrap_or_default())
+}
+
+/// Starts an export in the logger's chosen format into ~/Documents/Nebulosa; returns the path.
+#[tauri::command]
+async fn start_export(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    cfg: nbp_core::export::ExportCfg,
+    wall_offset: f64,
+    header: String,
+) -> Result<String, String> {
+    if state.exporting.lock().unwrap().is_some() {
+        return Err("already exporting".into());
+    }
+    if cfg.fields.is_empty() {
+        return Err("no fields chosen".into());
+    }
+    let conn = state.conn.lock().await;
+    let c = conn.as_ref().ok_or("connect to a device to log")?;
+    let path = files::recordings_dir(&app)?.join(format!("{}.{}", files::timestamp(), files::export_ext(&cfg.format)));
+    let w = files::start_export(path.clone(), cfg, wall_offset, &header, &c.pipe, &c.export)?;
+    *state.exporting.lock().unwrap() = Some(w);
+    Ok(path.display().to_string())
+}
+
+#[tauri::command]
+async fn stop_export(state: State<'_, AppState>) -> Result<Option<files::ExportDone>, String> {
+    let Some(w) = state.exporting.lock().unwrap().take() else { return Ok(None) };
+    let conn = state.conn.lock().await;
+    let c = conn.as_ref().ok_or("connection gone")?;
+    let (pipe, sink) = (c.pipe.clone(), c.export.clone());
+    drop(conn);
+    tokio::task::spawn_blocking(move || files::stop_export(w, &pipe, &sink)).await.map_err(|e| e.to_string())?.map(Some)
+}
+
 /// The session log's interval, s; it starts over.
 #[tauri::command]
 async fn set_log_interval(state: State<'_, AppState>, interval: f64) -> Result<(), String> {
@@ -172,6 +217,9 @@ struct DiskStatus {
     free: u64,
     recording_error: Option<String>,
     logging_error: Option<String>,
+    export_error: Option<String>,
+    /// the export file's size so far
+    export_bytes: u64,
     dropped: u64,
 }
 
@@ -183,11 +231,16 @@ fn disk_status(app: AppHandle, state: State<'_, AppState>) -> Result<DiskStatus,
     let dropped = [&state.recording, &state.logging]
         .iter()
         .filter_map(|w| w.lock().unwrap().as_ref().map(|w| w.dropped.load(std::sync::atomic::Ordering::Relaxed)))
-        .sum();
+        .sum::<u64>()
+        + state.exporting.lock().unwrap().as_ref().map_or(0, |w| w.dropped.load(std::sync::atomic::Ordering::Relaxed));
+    let export_error = state.exporting.lock().unwrap().as_ref().and_then(|w| w.error.lock().unwrap().clone());
+    let export_bytes = state.exporting.lock().unwrap().as_ref().and_then(|w| std::fs::metadata(&w.path).ok()).map_or(0, |m| m.len());
     Ok(DiskStatus {
         free: files::free_space(&dir),
         recording_error: err(&state.recording),
         logging_error: err(&state.logging),
+        export_error,
+        export_bytes,
         dropped,
     })
 }
@@ -347,7 +400,7 @@ pub fn run() {
             list_usb, discover, connect, disconnect, request, set_buffer, set_calibration, set_trigger, query_lod, query_stats,
             query_value, recordings_dir, list_recordings, start_recording, stop_recording, open_recording, export_csv,
             count_samples, save_bytes, query_events, clear_events, analyze, set_math, start_logging, stop_logging, set_log_interval, clear_session, session_lod, session_stats,
-            disk_status, open_log
+            disk_status, open_log, start_export, stop_export, export_preview
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

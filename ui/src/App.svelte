@@ -30,6 +30,7 @@
   import EventList from './lib/EventList.svelte';
   import Analysis from './lib/Analysis.svelte';
   import LoggerView, { type LogView } from './lib/LoggerView.svelte';
+  import ExportEditor, { defaultOutput, type OutputCfg } from './lib/ExportEditor.svelte';
   import { drag, stored, store as save } from './lib/drag';
 
   /** full-rate buffer sizes, MB (4 bytes per sample) */
@@ -470,7 +471,22 @@
   let logInterval = $state(stored('nebulosa.logInterval', 0.1, (v) => LOG_INTERVALS.includes(v)));
   let logging = $state<Meta['logging'] | null>(null);
   let logPath = $state('');
-  let logRaw = $state(false);
+  let exporting = $state(false);
+  let exportBytes = $state(0);
+  let logStarted = $state(0);
+  let nowTick = $state(Date.now());
+  /** the logger's output (format, data, fields): kept across sessions */
+  let out = $state<OutputCfg>(loadOut());
+  function loadOut(): OutputCfg {
+    try {
+      const v = JSON.parse(localStorage.getItem('nebulosa.output') ?? 'null');
+      if (v && v.kind && v.cfg?.fields) return v;
+    } catch {
+      /* storage unavailable */
+    }
+    return defaultOutput();
+  }
+  $effect(() => save('nebulosa.output', $state.snapshot(out)));
   let rawCapGB = $state(stored('nebulosa.rawCapGB', 20));
   let rawByLogger = false;
   let diskFree = $state<number | null>(null);
@@ -489,6 +505,7 @@
   }
 
   async function startLog() {
+    if (out.kind !== 'native') return startExportLog();
     error = '';
     try {
       save('nebulosa.rawCapGB', rawCapGB);
@@ -505,7 +522,8 @@
         math: mathInfo.on ? $state.snapshot(mathInfo) : null,
       });
       note = `Logging to ${logPath}`;
-      if (logRaw && !recording?.active) {
+      logStarted = Date.now();
+      if (out.cfg.data === 'raw' && !recording?.active) {
         await toggleRecording();
         rawByLogger = true;
       }
@@ -514,7 +532,48 @@
     }
   }
 
+  async function startExportLog() {
+    error = '';
+    try {
+      logPath = await native.startExport($state.snapshot(out.cfg), wallOffset, logHeader());
+      exporting = true;
+      exportBytes = 0;
+      logStarted = Date.now();
+      note = `Logging to ${logPath}`;
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  function logHeader() {
+    return {
+      app: 'Nebulosa Companion',
+      created: new Date().toISOString(),
+      wall_offset: wallOffset,
+      interval: logInterval,
+      link: dev?.link.description,
+      device: info,
+      rate_hz: rateHz,
+      decimation: { log2n, mode: decimMode },
+      calibration: $state.snapshot(cal),
+      math: mathInfo.on ? $state.snapshot(mathInfo) : null,
+    };
+  }
+
   async function stopLog(reason?: string) {
+    if (exporting) {
+      try {
+        const r = await native.stopExport();
+        if (r) note = `${reason ? reason + ' ' : ''}Saved ${r.path.split(/[\\/]/).pop()} · ${r.rows.toLocaleString()} rows · ${fmtBytesSize(r.bytes)}`;
+      } catch (e) {
+        error = String(e);
+      } finally {
+        exporting = false;
+        logStarted = 0;
+      }
+      return;
+    }
+    logStarted = 0;
     try {
       const r = await native.stopLogging();
       if (rawByLogger && recording?.active) await toggleRecording();
@@ -528,10 +587,21 @@
 
   /** every 2 s while writing: stop cleanly on a write error, a low disk, or the raw limit */
   async function watchdog() {
-    if (!isNative || !(logging?.active || recording?.active)) return;
+    nowTick = Date.now();
+    if (!isNative || !(logging?.active || recording?.active || exporting)) return;
     try {
       const d = await native.diskStatus();
       diskFree = d.free;
+      exportBytes = d.export_bytes;
+      if (exporting && d.export_error) {
+        error = `Logging stopped: ${d.export_error}`;
+        await stopLog();
+        return;
+      }
+      if (exporting && d.free < 3e8) {
+        await stopLog('Disk nearly full:');
+        return;
+      }
       if (d.logging_error) {
         error = `Logging stopped: ${d.logging_error}`;
         await stopLog();
@@ -1251,33 +1321,46 @@
       <small class="muted">
         Per interval: min, max, mean, σ of every signal. In memory: bounded (older intervals merge 10×, then 100×), ~{fmtBytesSize(sess.bytes)} now.
       </small>
+      {#if logging?.active || exporting}
+        <button class="danger" onclick={() => stopLog()}>■ Stop logging</button>
+        <dl>
+          <dt>File</dt><dd class="wrap">{logPath.split(/[\\/]/).pop()}</dd>
+          {#if logging?.active}<dt>Entries</dt><dd>{logging.entries.toLocaleString()}</dd>{/if}
+          <dt>Size</dt><dd>{fmtBytesSize(logging?.active ? logging.bytes : exportBytes)}</dd>
+          {#if recording?.active}<dt>Raw</dt><dd>{fmtBytesSize(recording.bytes)}</dd>{/if}
+          {#if logStarted}<dt>For</dt><dd>{fmtTime((nowTick - logStarted) / 1000)}</dd>{/if}
+          {#if diskFree != null}<dt>Disk free</dt><dd>{fmtBytesSize(diskFree)}</dd>{/if}
+        </dl>
+      {/if}
+      <details class="out" open={!logging?.active && !exporting}>
+        <summary><h2>Output</h2></summary>
+        <ExportEditor
+          bind:out
+          link={activeLink}
+          {wallOffset}
+          interval={logInterval}
+          {rateHz}
+          mathOn={mathInfo.on}
+          disabled={!!logging?.active || exporting}
+        />
+        {#if out.kind === 'native' && out.cfg.data === 'raw'}
+          <label>
+            Raw recording limit
+            <select bind:value={rawCapGB} disabled={!!logging?.active}>
+              {#each [1, 5, 20, 100, 500] as g (g)}<option value={g}>{g} GB ({fmtTime((g * 1e9) / 4 / (rateHz || 2e6))} at {fmtRate(rateHz || 2e6)})</option>{/each}
+            </select>
+          </label>
+        {/if}
+      </details>
       {#if isNative}
-        {#if logging?.active}
-          <button class="danger" onclick={() => stopLog()}>■ Stop logging</button>
-          <dl>
-            <dt>File</dt><dd class="wrap">{logPath.split(/[\\/]/).pop()}</dd>
-            <dt>Entries</dt><dd>{logging.entries.toLocaleString()}</dd>
-            <dt>Size</dt><dd>{fmtBytesSize(logging.bytes)}</dd>
-            {#if recording?.active}<dt>Raw</dt><dd>{fmtBytesSize(recording.bytes)}</dd>{/if}
-            {#if diskFree != null}<dt>Disk free</dt><dd>{fmtBytesSize(diskFree)}</dd>{/if}
-          </dl>
-        {:else}
-          <label class="check"><input type="checkbox" bind:checked={logRaw} /> Also record every raw sample</label>
-          {#if logRaw}
-            <label>
-              Raw recording limit
-              <select bind:value={rawCapGB}>
-                {#each [1, 5, 20, 100, 500] as g (g)}<option value={g}>{g} GB ({fmtTime((g * 1e9) / 4 / (rateHz || 2e6))} at {fmtRate(rateHz || 2e6)})</option>{/each}
-              </select>
-            </label>
-          {/if}
-          <button class="primary" onclick={startLog} disabled={!dev || !!dev.link.playback}>● Start logging to file</button>
-          <small class="muted">
-            {fmtBytesSize(((24 * 3600) / logInterval) * 120)} a day at {fmtTime(logInterval)}{logRaw ? `, plus ${fmtBytesSize(4 * (rateHz || 2e6) * 86400)} a day of raw samples` : ''}. Stops cleanly when the disk runs low.
-          </small>
+        {#if !logging?.active && !exporting}
+          <button class="primary" onclick={startLog} disabled={!dev || !!dev.link.playback || (out.kind !== 'native' && !out.cfg.fields.length)}>
+            ● Start logging to file
+          </button>
+          <small class="muted">To ~/Documents/Nebulosa. Stops cleanly when the disk runs low.</small>
         {/if}
       {:else}
-        <small class="muted">Logging to a file needs the desktop app; here the session stays in memory (bounded).</small>
+        <small class="muted">Writing files needs the desktop app; here the session stays in memory (bounded). The preview shows what would be written.</small>
       {/if}
       <button class="ghost" onclick={newSession} disabled={!sess.has_data}>New session</button>
     </section>
@@ -1823,6 +1906,21 @@
     flex-direction: column;
     min-width: 0;
     min-height: 0;
+  }
+  details.out summary {
+    cursor: pointer;
+    list-style: none;
+    margin-bottom: 6px;
+  }
+  details.out summary h2 {
+    display: inline;
+  }
+  details.out summary::before {
+    content: '▸ ';
+    color: var(--muted);
+  }
+  details.out[open] summary::before {
+    content: '▾ ';
   }
   .modes {
     display: inline-flex;

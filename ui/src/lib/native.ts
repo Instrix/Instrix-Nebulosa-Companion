@@ -3,7 +3,7 @@
 
 import { Channel, invoke } from '@tauri-apps/api/core';
 import type { Candidate, Link, LinkEvents } from './device';
-import { hex, type AnalysisRequest, type AnalysisResult, type Calibration, type Info, type Meta, type RawSpanStats, type Reply, type TrigEvent, type TriggerCfg } from './nbp';
+import { hex, type ExportCfg, type AnalysisRequest, type AnalysisResult, type Calibration, type Info, type Meta, type RawSpanStats, type Reply, type TrigEvent, type TriggerCfg } from './nbp';
 
 type Event = ({ event: 'meta' } & Meta) | { event: 'closed'; reason: string };
 
@@ -67,6 +67,10 @@ class NativeLink implements Link {
 
   clearSession() {
     return invoke<void>('clear_session');
+  }
+
+  exportPreview(cfg: ExportCfg, wallOffset: number, rows: number) {
+    return invoke<string>('export_preview', { cfg, wallOffset, rows });
   }
 
   async setMath(expr: string | null) {
@@ -166,7 +170,14 @@ export async function pickSave(defaultPath: string, name: string, ext: string): 
 export const startLogging = (header: unknown) => invoke<string>('start_logging', { header: JSON.stringify(header) });
 export const stopLogging = () => invoke<{ path: string; entries: number; bytes: number } | null>('stop_logging');
 export const diskStatus = () =>
-  invoke<{ free: number; recording_error: string | null; logging_error: string | null; dropped: number }>('disk_status');
+  invoke<{
+    free: number;
+    recording_error: string | null;
+    logging_error: string | null;
+    export_error: string | null;
+    export_bytes: number;
+    dropped: number;
+  }>('disk_status');
 
 /** Opens a session log (.nblog) for viewing. */
 export async function openLog(path: string, ev: LinkEvents): Promise<{ link: Link; header: Record<string, unknown> }> {
@@ -180,6 +191,10 @@ export async function openLog(path: string, ev: LinkEvents): Promise<{ link: Lin
   }
   return { link: new NativeLink(`Log ${name}`, true), header: h };
 }
+
+export const startExport = (cfg: ExportCfg, wallOffset: number, header: unknown) =>
+  invoke<string>('start_export', { cfg, wallOffset, header: JSON.stringify(header) });
+export const stopExport = () => invoke<{ path: string; rows: number; bytes: number } | null>('stop_export');
 
 export const exportCsv = (t0: number, t1: number, path: string) => invoke<number>('export_csv', { t0, t1, path });
 export const saveBytes = (path: string, bytes: Uint8Array) => invoke<void>('save_bytes', { path, bytes: Array.from(bytes) });

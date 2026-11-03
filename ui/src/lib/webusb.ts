@@ -17,6 +17,7 @@ import {
   type AnalysisRequest,
   type AnalysisResult,
   type Calibration,
+  type ExportCfg,
   type Meta,
   type RawSpanStats,
   type Reply,
@@ -182,6 +183,10 @@ class WebUsbLink implements Link {
 
   async clearSession() {
     this.pipeline.clear_session();
+  }
+
+  async exportPreview(cfg: ExportCfg, wallOffset: number, rows: number) {
+    return this.pipeline.export_preview(cfg, wallOffset, rows);
   }
 
   async setMath(expr: string | null) {

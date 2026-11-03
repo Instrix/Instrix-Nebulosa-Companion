@@ -88,6 +88,41 @@ fn main() {
         let ms = t.elapsed().as_secs_f64() * 1e3 / k as f64;
         println!("{label:<28} {ms:7.2} ms  ({:4.1} % of a core at 30 / s)", ms * 30.0 / 10.0);
     }
+    // formatting every sample (the writer's thread), 4 columns
+    use nbp_core::export::*;
+    let chunks: Vec<Chunk> = (0..n / 65536)
+        .map(|k| Chunk::Raw {
+            ts0: (k * 65536) as u64,
+            step: 1,
+            packed: (0..65536u32).map(|j| nbp_core::buffer::pack((8000 + j % 999) as u16, 3300, 4, false)).collect(),
+            math: vec![f32::NAN; 65536],
+        })
+        .collect();
+    let fields = vec![
+        Field { what: What::Time, stat: Stat::Mean, label: "t".into(), scale: 1.0, decimals: 7 },
+        Field { what: What::I, stat: Stat::Mean, label: "I".into(), scale: 1e6, decimals: 3 },
+        Field { what: What::V, stat: Stat::Mean, label: "V".into(), scale: 1.0, decimals: 4 },
+        Field { what: What::P, stat: Stat::Mean, label: "P".into(), scale: 1e3, decimals: 4 },
+    ];
+    for (label, format) in [
+        ("csv every sample", Format::Csv { separator: ",".into(), decimal_comma: false, header: true }),
+        ("jsonl every sample", Format::Jsonl),
+    ] {
+        let mut x = Exporter::new(ExportCfg { data: Data::Raw, format, time: TimeFmt::Relative, fields: fields.clone() }, Default::default(), 0.0);
+        let mut out = Vec::with_capacity(1 << 26);
+        let t = Instant::now();
+        let mut bytes = 0usize;
+        for c in &chunks {
+            out.clear();
+            x.text(c, &mut out);
+            bytes += out.len();
+        }
+        let s = t.elapsed().as_secs_f64();
+        let rate = (chunks.len() * 65536) as f64 / s;
+        println!("{label:<28} {:7.1} M rows/s ({:4.1} % of a core at 2 MS/s), {:.0} B/row = {:.0} MB/s at 2 MS/s",
+            rate / 1e6, 2e6 / rate * 100.0, bytes as f64 / (chunks.len() * 65536) as f64, bytes as f64 / (chunks.len() * 65536) as f64 * 2.0);
+    }
+
     let t = Instant::now();
     for _ in 0..50 {
         std::hint::black_box(p.stats(m.t_start, m.t_end));

@@ -78,6 +78,13 @@ impl Sink {
 /// Where recording / log bytes go (a writer thread), while on.
 pub type RecSink = Arc<Mutex<Option<Sink>>>;
 
+/// Where export chunks go (the formatter / writer thread), while exporting.
+pub struct ChunkSinkInner {
+    pub tx: std::sync::mpsc::SyncSender<nbp_core::export::Chunk>,
+    pub dropped: Arc<std::sync::atomic::AtomicU64>,
+}
+pub type ChunkSink = Arc<Mutex<Option<ChunkSinkInner>>>;
+
 pub(crate) enum Writer {
     Tcp(tokio::net::tcp::OwnedWriteHalf),
     Usb { iface: nusb::Interface, ep: u8 },
@@ -108,6 +115,8 @@ pub struct Conn {
     pub rec: RecSink,
     /// where session-log file bytes go, while logging
     pub log: RecSink,
+    /// where export chunks go, while exporting
+    pub export: ChunkSink,
     pub description: String,
 }
 
@@ -125,8 +134,9 @@ impl Conn {
         let pending: Pending = Arc::default();
         let rec: RecSink = Arc::default();
         let log: RecSink = Arc::default();
-        tasks.push(tokio::spawn(dispatch(in_rx, pipe.clone(), pending.clone(), rec.clone(), log.clone(), events)));
-        Ok(Conn { writer, pending, seq: 0, tasks, pipe, rec, log, description })
+        let export: ChunkSink = Arc::default();
+        tasks.push(tokio::spawn(dispatch(in_rx, pipe.clone(), pending.clone(), rec.clone(), log.clone(), export.clone(), events)));
+        Ok(Conn { writer, pending, seq: 0, tasks, pipe, rec, log, export, description })
     }
 
     /// One command, its response. The protocol has one command in flight at
@@ -165,6 +175,7 @@ async fn dispatch(
     pending: Pending,
     rec: RecSink,
     log: RecSink,
+    export: ChunkSink,
     events: Events,
 ) {
     // recording bytes to the writer thread (whole blocks; all of it on `flush`)
@@ -179,6 +190,13 @@ async fn dispatch(
             let b = p.take_log();
             if !b.is_empty() {
                 s.send(b);
+            }
+        }
+        if let Some(s) = export.lock().unwrap().as_ref() {
+            for c in p.take_export(flush) {
+                if s.tx.try_send(c).is_err() {
+                    s.dropped.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
             }
         }
     };

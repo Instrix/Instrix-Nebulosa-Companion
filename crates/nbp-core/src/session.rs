@@ -64,6 +64,11 @@ impl LogEntry {
         LogEntry { t0, dur, ch: [Ch::from(&m.i), Ch::from(&m.v), Ch::from(&m.p), Ch::from(&m.m)] }
     }
 
+    /// An entry from moments (tests, exports).
+    pub fn from_m_pub(t0: f64, dur: f64, m: &Moments3) -> LogEntry {
+        Self::from_m(t0, dur, m)
+    }
+
     pub fn moments3(&self) -> Moments3 {
         Moments3 { i: self.ch[0].moments(), v: self.ch[1].moments(), p: self.ch[2].moments(), m: self.ch[3].moments() }
     }
@@ -229,6 +234,12 @@ impl SessionLog {
             }
             None => t.building = Some((e, 1)),
         }
+    }
+
+    /// The newest `n` fine entries (oldest first).
+    pub fn last(&self, n: usize) -> Vec<LogEntry> {
+        let k = self.fine.entries.len().saturating_sub(n);
+        self.fine.entries.iter().skip(k).copied().collect()
     }
 
     /// Fine entries finished since the last call (for the log file).

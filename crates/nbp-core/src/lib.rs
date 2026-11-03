@@ -7,6 +7,7 @@
 //!
 //! - [`analysis`]: histogram / CDF, PSD, worst window over a span
 //! - [`buffer`]: every sample, with a summary pyramid for fast span queries
+//! - [`export`]: logger output: CSV / TXT / JSON Lines / HDF5 columns, configurable fields
 //! - [`frame`]: message header, encoding, a resyncing byte-stream parser
 //! - [`math`]: the math channel's expressions
 //! - [`msg`]: command codes and payload structs
@@ -19,6 +20,7 @@
 
 pub mod analysis;
 pub mod buffer;
+pub mod export;
 pub mod frame;
 pub mod math;
 pub mod msg;
