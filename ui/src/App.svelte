@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import Scope, { SIGNAL_INFO, type AxisCfg, type TraceCfg } from './lib/Scope.svelte';
   import Overview from './lib/Overview.svelte';
   import Meter, { type AccumView, type MarkerRow, type Scope as MeterScope, type Summary } from './lib/Meter.svelte';
@@ -24,6 +24,7 @@
   import * as native from './lib/native';
   import * as web from './lib/webusb';
   import { DemoLink, demoRequested, demoSelection } from './lib/demo';
+  import { TriggerState, type TrigMode } from './lib/trigger.svelte';
 
   /** full-rate buffer sizes, MB (4 bytes per sample) */
   const BUFFER_CHOICES = [64, 128, 256, 512, 1024, 2048];
@@ -54,6 +55,7 @@
   // ---- data and view ------------------------------------------------------
   const store = new SampleStore();
   const view = new View();
+  const trig = new TriggerState();
   function loadBufferMB(): number {
     try {
       const v = Number(localStorage.getItem(BUFFER_KEY));
@@ -119,6 +121,32 @@
   function resetCal() {
     cal = core.default_calibration();
     applyCal();
+  }
+
+  // ---- trigger ------------------------------------------------------------
+  let activeLink: Link | null = null;
+  function setLink(l: Link | null) {
+    activeLink = l;
+  }
+
+  // any trigger setting change: to the core, and start over
+  $effect(() => {
+    const cfg = trig.cfg();
+    activeLink?.setTrigger(cfg);
+    // depends on the settings only, not on what rearm reads
+    untrack(() => trig.rearm(store, view));
+  });
+
+  function setMode(m: TrigMode) {
+    trig.mode = m;
+  }
+
+  /** level halfway between the screen's min and max of the source */
+  async function level50() {
+    if (store.empty) return;
+    const st = await store.stats(...view.span(store));
+    const m = st[trig.source];
+    if (m.n) trig.level = (m.min + m.max) / 2;
   }
 
   async function applyBuffer() {
@@ -274,7 +302,9 @@
       dev = d;
       await link.setBuffer(bufferSamples);
       await link.setCalibration($state.snapshot(cal));
+      await link.setTrigger(trig.cfg());
       store.attach(link);
+      setLink(link);
       info = await d.info();
       clearData();
       await applyDecimation();
@@ -288,6 +318,7 @@
 
   function reset() {
     store.attach(null);
+    setLink(null);
     dev = null;
     info = null;
     streaming = false;
@@ -303,6 +334,7 @@
 
   function onMeta(m: Meta) {
     store.update(m);
+    trig.update(m.trigger.recent, m.trigger.count, store, view);
     runMoments = m.run;
     stats = m.stats;
     if (m.stream_id !== streamId) {
@@ -396,11 +428,22 @@
       const demo = new DemoLink({ onMeta, onClosed: () => undefined });
       demo.setBuffer(bufferSamples);
       demo.setCalibration($state.snapshot(cal));
+      demo.setTrigger(trig.cfg());
       store.attach(demo);
+      setLink(demo);
       stopDemo = () => demo.close();
       // screenshot helpers: &log=i,p  &trace=mean,range,sigma
       const q = new URLSearchParams(location.search);
       for (const sg of (q.get('log') ?? '').split(',')) if (sg in axes) axes[sg as Signal].log = true;
+      const tg = q.get('trig');
+      if (tg) {
+        const [src, slope, level, mode, pos] = tg.split(',');
+        trig.source = src as Signal;
+        trig.slope = slope as typeof trig.slope;
+        trig.level = Number(level);
+        trig.mode = mode as TrigMode;
+        if (pos) trig.position = Number(pos);
+      }
       const div = Number(q.get('div'));
       if (div && TIME_DIVS.includes(div)) view.divIndex = TIME_DIVS.indexOf(div);
       const tr = q.get('trace');
@@ -536,6 +579,58 @@
     {/if}
 
     <section>
+      <h2>Trigger</h2>
+      <div class="seg wide" role="group" aria-label="Display mode">
+        {#each [['roll', 'Roll'], ['auto', 'Auto'], ['normal', 'Normal'], ['single', 'Single']] as [m, label] (m)}
+          <button class:on={trig.mode === m} onclick={() => setMode(m as TrigMode)}>{label}</button>
+        {/each}
+      </div>
+      {#if trig.mode !== 'roll'}
+        <div class="axis">
+          <span>Source</span>
+          <div class="seg">
+            {#each SIGNALS as sg (sg)}
+              <button class:on={trig.source === sg} onclick={() => (trig.source = sg)} style="color: {trig.source === sg ? '' : `var(${SIGNAL_INFO[sg].color})`}">{SIGNAL_INFO[sg].sym}</button>
+            {/each}
+          </div>
+        </div>
+        <div class="axis">
+          <span>Edge</span>
+          <div class="seg">
+            <button class:on={trig.slope === 'rise'} onclick={() => (trig.slope = 'rise')} title="Rising">↑ Rise</button>
+            <button class:on={trig.slope === 'fall'} onclick={() => (trig.slope = 'fall')} title="Falling">↓ Fall</button>
+            <button class:on={trig.slope === 'both'} onclick={() => (trig.slope = 'both')} title="Either">↕</button>
+          </div>
+        </div>
+        <div class="row">
+          <label>
+            Level
+            <input use:siInput={{ get: () => trig.level, set: (v) => (trig.level = v), unit: SIGNAL_INFO[trig.source].unit }} />
+          </label>
+          <button class="ghost small fifty" onclick={level50} title="Halfway between the screen's min and max">50%</button>
+        </div>
+        <div class="row">
+          <label title="The trigger re-arms only after the signal has gone this far back past the level: noise on the level doesn't fire it again and again">
+            Noise reject
+            <input use:siInput={{ get: () => trig.hysteresis, set: (v) => (trig.hysteresis = Math.abs(v)), unit: SIGNAL_INFO[trig.source].unit }} />
+          </label>
+          <label title="Minimum time between triggers">
+            Holdoff
+            <input use:siInput={{ get: () => trig.holdoff, set: (v) => (trig.holdoff = Math.max(0, v)), unit: 's' }} />
+          </label>
+        </div>
+        <label>
+          Position {Math.round(trig.position * 100)} % pre-trigger
+          <input type="range" min="0.1" max="0.9" step="0.05" bind:value={trig.position} />
+        </label>
+        {#if trig.mode === 'single'}
+          <button class="primary" onclick={() => trig.rearm(store, view)}>Arm</button>
+        {/if}
+        <small class="muted">{trig.count} triggers</small>
+      {/if}
+    </section>
+
+    <section>
       <h2>Signals</h2>
       <div class="chips">
         {#each SIGNALS as s (s)}
@@ -623,6 +718,11 @@
         onclick={toggleLive}
         title="Follow the newest data (Space)">{view.live ? 'LIVE' : 'HOLD'}</button
       >
+      {#if trig.mode !== 'roll'}
+        <span class="badge trig {trig.status}" title="Trigger: {trig.mode}">
+          {({ roll: 'ROLL', wait: 'WAIT', trigd: "TRIG'D", auto: 'AUTO', stop: 'STOP' } as const)[trig.status]}
+        </span>
+      {/if}
       <div class="tdiv">
         <button class="ghost small" onclick={() => view.zoom(store, -1)} disabled={view.divIndex === 0} title="Faster (+, wheel)">−</button>
         <span class="mono">{fmtTime(view.timeDiv)}/div</span>
@@ -655,7 +755,7 @@
       <Overview {store} {view} />
     </div>
     <div class="scope-wrap">
-      <Scope {store} {view} {signals} {axes} {trace} />
+      <Scope {store} {view} {signals} {axes} {trace} {trig} />
     </div>
     <footer>
       {#if stats}
@@ -879,6 +979,39 @@
     background: var(--hold);
     border-color: var(--hold);
     color: #000;
+  }
+  .badge.trig {
+    border-color: var(--muted);
+    color: var(--muted);
+  }
+  .badge.trig.trigd {
+    background: var(--live);
+    border-color: var(--live);
+    color: #000;
+  }
+  .badge.trig.wait {
+    border-color: var(--hold);
+    color: var(--hold);
+  }
+  .badge.trig.auto {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  .badge.trig.stop {
+    background: var(--danger);
+    border-color: var(--danger);
+    color: #fff;
+  }
+  .seg.wide {
+    display: flex;
+  }
+  .seg.wide button {
+    flex: 1;
+  }
+  .fifty {
+    flex: none !important;
+    align-self: flex-end;
+    margin-bottom: 2px;
   }
   .tdiv {
     display: inline-flex;

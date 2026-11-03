@@ -18,6 +18,7 @@ import {
   type Meta,
   type RawSpanStats,
   type Reply,
+  type TriggerCfg,
 } from './nbp';
 
 const FILTERS: USBDeviceFilter[] = [
@@ -166,6 +167,10 @@ class WebUsbLink implements Link {
 
   async setCalibration(c: Calibration) {
     this.pipeline.set_calibration(c);
+  }
+
+  async setTrigger(c: TriggerCfg) {
+    this.pipeline.set_trigger(c);
   }
 
   async close() {

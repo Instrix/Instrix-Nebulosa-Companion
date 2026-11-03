@@ -13,6 +13,7 @@ import {
   type Meta,
   type RawSpanStats,
   type Reply,
+  type TriggerCfg,
 } from './nbp';
 
 export interface LinkEvents {
@@ -33,6 +34,7 @@ export interface Link {
   valueAt(t: number): Promise<[number, number, number] | null>;
   /** codes to units, for samples from now on */
   setCalibration(c: Calibration): Promise<void>;
+  setTrigger(c: TriggerCfg): Promise<void>;
   close(): Promise<void>;
 }
 

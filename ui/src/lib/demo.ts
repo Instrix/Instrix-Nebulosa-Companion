@@ -10,7 +10,7 @@
 // sample (for screenshots); `&log=i,p`, `&trace=mean,range,sigma` set the view.
 
 import type { Link, LinkEvents } from './device';
-import { core, type Calibration, type Meta, type RawSpanStats, type Reply } from './nbp';
+import { core, type Calibration, type Meta, type RawSpanStats, type Reply, type TriggerCfg } from './nbp';
 
 const RATE = 2_000_000;
 const TICK_MS = 40;
@@ -126,6 +126,10 @@ export class DemoLink implements Link {
   }
   async setCalibration(c: Calibration) {
     this.pipeline.set_calibration(c);
+  }
+
+  async setTrigger(c: TriggerCfg) {
+    this.pipeline.set_trigger(c);
   }
   async lod(t0: number, t1: number, bins: number) {
     return this.pipeline.lod(t0, t1, bins);

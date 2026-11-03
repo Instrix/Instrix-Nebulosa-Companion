@@ -134,6 +134,17 @@ export interface Meta {
   buffer_samples: number;
   /** s per sample at the current decimation */
   sample_period: number;
+  trigger: { count: number; recent: number[] };
+}
+
+/** trigger.rs TriggerCfg */
+export interface TriggerCfg {
+  enabled: boolean;
+  source: 'i' | 'v' | 'p';
+  slope: 'rise' | 'fall' | 'both';
+  level: number;
+  hysteresis: number;
+  holdoff: number;
 }
 
 /** units.rs Calibration */

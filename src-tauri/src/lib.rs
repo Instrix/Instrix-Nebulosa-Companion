@@ -18,6 +18,7 @@ struct AppState {
     /// applied at connect
     buffer_samples: std::sync::Mutex<Option<usize>>,
     cal: std::sync::Mutex<Calibration>,
+    trigger: std::sync::Mutex<nbp_core::trigger::TriggerCfg>,
 }
 
 fn pipe(state: &State<'_, AppState>) -> Option<SharedPipeline> {
@@ -43,6 +44,7 @@ async fn connect(state: State<'_, AppState>, target: Target, events: Events) -> 
     let samples = state.buffer_samples.lock().unwrap().unwrap_or(nbp_core::pipeline::DEFAULT_BUFFER_SAMPLES);
     let cal = state.cal.lock().unwrap().clone();
     let c = Conn::open(target, events, samples, cal).await?;
+    c.pipe.lock().unwrap().set_trigger(state.trigger.lock().unwrap().clone());
     let d = c.description.clone();
     *state.pipe.lock().unwrap() = Some(c.pipe.clone());
     *slot = Some(c);
@@ -87,6 +89,15 @@ async fn set_calibration(state: State<'_, AppState>, cal: Calibration) -> Result
     Ok(())
 }
 
+#[tauri::command]
+async fn set_trigger(state: State<'_, AppState>, cfg: nbp_core::trigger::TriggerCfg) -> Result<(), String> {
+    *state.trigger.lock().unwrap() = cfg.clone();
+    if let Some(p) = pipe(&state) {
+        p.lock().unwrap().set_trigger(cfg);
+    }
+    Ok(())
+}
+
 /// [t0, t1] in `bins` columns: SampleBuffer::lod's flat f64 layout, raw bytes.
 #[tauri::command]
 async fn query_lod(state: State<'_, AppState>, t0: f64, t1: f64, bins: usize) -> Result<Response, String> {
@@ -112,7 +123,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
-            list_usb, discover, connect, disconnect, request, set_buffer, set_calibration, query_lod, query_stats,
+            list_usb, discover, connect, disconnect, request, set_buffer, set_calibration, set_trigger, query_lod, query_stats,
             query_value
         ])
         .run(tauri::generate_context!())

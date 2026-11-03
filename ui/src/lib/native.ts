@@ -3,7 +3,7 @@
 
 import { Channel, invoke } from '@tauri-apps/api/core';
 import type { Candidate, Link, LinkEvents } from './device';
-import { hex, type Calibration, type Info, type Meta, type RawSpanStats, type Reply } from './nbp';
+import { hex, type Calibration, type Info, type Meta, type RawSpanStats, type Reply, type TriggerCfg } from './nbp';
 
 type Event = ({ event: 'meta' } & Meta) | { event: 'closed'; reason: string };
 
@@ -51,6 +51,10 @@ class NativeLink implements Link {
 
   setCalibration(cal: Calibration) {
     return invoke<void>('set_calibration', { cal });
+  }
+
+  setTrigger(cfg: TriggerCfg) {
+    return invoke<void>('set_trigger', { cfg });
   }
 
   close() {

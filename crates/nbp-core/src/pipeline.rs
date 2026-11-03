@@ -11,6 +11,7 @@ use crate::frame::{Frame, FrameParser};
 use crate::msg::{self, BlockHdr};
 use crate::buffer::{Moments3, SampleBuffer, SpanStats};
 use crate::stream::{StreamCounters, StreamDecoder, Word, TS_PERIOD_S};
+use crate::trigger::{Trigger, TriggerCfg, TriggerInfo};
 use crate::units::Calibration;
 use serde::Serialize;
 
@@ -62,6 +63,7 @@ pub struct Meta {
     pub buffer_samples: u64,
     /// s per sample at the current decimation
     pub sample_period: f64,
+    pub trigger: TriggerInfo,
 }
 
 /// Samples the buffer holds by default (4 bytes each): 64 MB.
@@ -72,6 +74,9 @@ pub struct Pipeline {
     decoder: StreamDecoder,
     buf: SampleBuffer,
     run: Moments3,
+    trig: Trigger,
+    /// timestamp the next sample should have (a jump: samples missing)
+    next_ts: Option<u64>,
     responses: Vec<Frame>,
     expect_seq: Option<u32>,
     stats: DataStats,
@@ -93,6 +98,8 @@ impl Pipeline {
             decoder: StreamDecoder::new(),
             buf: SampleBuffer::new(DEFAULT_BUFFER_SAMPLES, Calibration::default()),
             run: Moments3::default(),
+            trig: Trigger::default(),
+            next_ts: None,
             responses: Vec::new(),
             expect_seq: None,
             stats: DataStats::default(),
@@ -111,6 +118,10 @@ impl Pipeline {
 
     /// Rescales the buffer's samples too; the since-start statistics and the
     /// accumulators apply it from now on.
+    pub fn set_trigger(&mut self, cfg: TriggerCfg) {
+        self.trig.set(cfg);
+    }
+
     pub fn set_calibration(&mut self, cal: Calibration) {
         self.buf.set_calibration(cal.clone());
         self.cal = cal;
@@ -162,6 +173,8 @@ impl Pipeline {
             self.decoder = StreamDecoder::new();
             self.buf.clear();
             self.run = Moments3::default();
+            self.trig.reset();
+            self.next_ts = None;
             self.stats = DataStats { resyncs, ..Default::default() };
             self.expect_seq = None;
             self.accum = Accum::default();
@@ -201,6 +214,14 @@ impl Pipeline {
                 self.run.v.add(v);
                 self.run.p.add(i * v);
                 self.buf.push(s.ts, s.step, s.current, s.voltage, s.range, s.dirty);
+                if self.trig.enabled() {
+                    if self.next_ts != Some(s.ts) {
+                        self.trig.gap();
+                    }
+                    let x = self.trig.value(i, v);
+                    self.trig.feed(s.ts as f64 * TS_PERIOD_S, x);
+                }
+                self.next_ts = Some(s.ts + s.step as u64);
             }
         }
         self.buf.touch();
@@ -225,6 +246,7 @@ impl Pipeline {
             version: self.buf.version,
             buffer_samples: self.buf.capacity(),
             sample_period: (1u64 << self.decoder.log2n) as f64 * TS_PERIOD_S,
+            trigger: self.trig.info(),
         }
     }
 

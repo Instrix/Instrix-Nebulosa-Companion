@@ -50,6 +50,8 @@ export class View {
   live = $state(true);
   /** right edge while on HOLD, s */
   end = $state(0);
+  /** right edge set by the trigger while LIVE (null: follow the newest sample) */
+  anchor = $state<number | null>(null);
   markers = $state<Marker[]>([]);
   active = $state<number | null>(null);
   private nextId = 1;
@@ -127,7 +129,7 @@ export class View {
   /** The span on screen, kept inside the history. */
   span(store: SampleStore): [number, number] {
     const w = this.windowS;
-    let end = this.live ? store.tEnd : this.end;
+    let end = this.live ? (this.anchor ?? store.tEnd) : this.end;
     end = Math.min(end, store.tEnd);
     end = Math.max(end, Math.min(store.tStart + w, store.tEnd));
     return [end - w, end];
@@ -135,7 +137,7 @@ export class View {
 
   hold(store: SampleStore) {
     if (this.live) {
-      this.end = store.tEnd;
+      this.end = this.span(store)[1];
       this.live = false;
     }
   }

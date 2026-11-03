@@ -10,6 +10,7 @@
 //! - [`msg`]: command codes and payload structs
 //! - [`stream`]: the FPGA sample stream, format 5
 //! - [`units`]: codes to A / V (calibration)
+//! - [`trigger`]: edge trigger on the full-rate samples
 //! - [`pipeline`]: all of the above for one connection
 
 pub mod buffer;
@@ -17,6 +18,7 @@ pub mod frame;
 pub mod msg;
 pub mod pipeline;
 pub mod stream;
+pub mod trigger;
 pub mod units;
 
 #[cfg(feature = "wasm")]

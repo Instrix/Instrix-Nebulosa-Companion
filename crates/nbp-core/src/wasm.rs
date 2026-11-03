@@ -44,6 +44,13 @@ impl Pipeline {
         to_js(&self.0.value_at(t))
     }
 
+    /// TriggerCfg (trigger.rs)
+    pub fn set_trigger(&mut self, cfg: JsValue) -> Result<(), JsValue> {
+        let c: crate::trigger::TriggerCfg = serde_wasm_bindgen::from_value(cfg)?;
+        self.0.set_trigger(c);
+        Ok(())
+    }
+
     pub fn set_buffer_samples(&mut self, n: usize) {
         self.0.set_buffer_samples(n);
     }

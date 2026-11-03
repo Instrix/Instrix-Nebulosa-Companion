@@ -41,6 +41,7 @@
   import type { Lod, PointValue, SampleStore } from './store';
   import { DIVS_X, DIVS_Y, fmtTime, markerColor, markerName, type Marker, type View } from './view.svelte';
   import { fmtSI, prefixFor } from './si';
+  import type { TriggerState } from './trigger.svelte';
 
   let {
     store,
@@ -48,12 +49,14 @@
     signals,
     axes,
     trace,
+    trig,
   }: {
     store: SampleStore;
     view: View;
     signals: Signal[];
     axes: Record<Signal, AxisCfg>;
     trace: TraceCfg;
+    trig: TriggerState;
   } = $props();
 
   const MIN_FRAME_MS = 33;
@@ -74,6 +77,8 @@
   let geo = $state<{ m: Marker; x0: number; x1: number | null; c0: boolean; c1: boolean }[]>([]);
   /** per-plot labels: the active dual marker's statistics, single markers' values */
   let dualStats = $state<{ m: Marker; x: number; vals: Record<Signal, { mean: number; integral: number }> } | null>(null);
+  /** the trigger's x in the marker bar, or null off screen */
+  let trigX = $state<number | null>(null);
   let singleVals = $state<{ m: Marker; x: number; v: PointValue }[]>([]);
   let readout = $state<{ t: number; v: Partial<Record<Signal, { avg: number; min: number; max: number } | null>> } | null>(
     null,
@@ -179,6 +184,42 @@
         }
       }
 
+      // trigger: the level on the source's plot, the time on all
+      if (trig.mode !== 'roll') {
+        const col = cssVar('--trig');
+        ctx.strokeStyle = col;
+        ctx.fillStyle = col;
+        ctx.lineWidth = dpr;
+        ctx.setLineDash([6 * dpr, 4 * dpr]);
+        if (sig === trig.source) {
+          const y = u.valToPos(trig.level, 'y', true);
+          if (y >= top && y <= top + height) {
+            ctx.beginPath();
+            ctx.moveTo(left, y);
+            ctx.lineTo(left + width, y);
+            ctx.stroke();
+            // "T" tag on the right edge
+            ctx.setLineDash([]);
+            ctx.beginPath();
+            ctx.moveTo(left + width, y);
+            ctx.lineTo(left + width - 8 * dpr, y - 6 * dpr);
+            ctx.lineTo(left + width - 8 * dpr, y + 6 * dpr);
+            ctx.fill();
+          }
+        }
+        if (trig.shown != null) {
+          const x = xOf(trig.shown);
+          if (inside(x)) {
+            ctx.setLineDash([2 * dpr, 3 * dpr]);
+            ctx.beginPath();
+            ctx.moveTo(x, top);
+            ctx.lineTo(x, top + height);
+            ctx.stroke();
+          }
+        }
+        ctx.setLineDash([]);
+      }
+
       // markers
       for (const m of view.markers) {
         const col = markerColor(m);
@@ -255,7 +296,8 @@
               ...axis,
               splits: divisions(DIVS_X),
               size: last ? 28 : 6,
-              values: (_u, v) => (last ? v.map((x, k) => (k % 2 ? '' : fmtTime(x - span[1], 2))) : v.map(() => '')),
+              // seconds from the trigger when there is one on screen, else from the right edge
+              values: (_u, v) => (last ? v.map((x, k) => (k % 2 ? '' : fmtTime(x - origin(), 2))) : v.map(() => '')),
             },
             {
               ...axis,
@@ -287,7 +329,7 @@
                 }
                 const L = lod;
                 readout = {
-                  t: L.t[k] - span[1],
+                  t: L.t[k] - origin(),
                   v: Object.fromEntries(
                     signals.map((s) => {
                       const c = L.ch[s];
@@ -307,6 +349,11 @@
       plots.push({ sig, u });
     });
     drawnKey = '';
+  }
+
+  /** time zero on the axis */
+  function origin() {
+    return trig.mode !== 'roll' && trig.shown != null ? trig.shown : span[1];
   }
 
   function onWheel(u: uPlot) {
@@ -346,6 +393,7 @@
       markersKey(),
       signals.map((s) => `${axes[s].auto},${axes[s].min},${axes[s].max},${axes[s].log}`).join(';'),
       `${trace.mean}${trace.range}${trace.sigma}`,
+      `${trig.mode},${trig.source},${trig.level},${trig.shown}`,
       plots.map((p) => `${p.u.width}x${p.u.height}`).join(),
     ].join('|');
     if (key === drawnKey) return;
@@ -382,6 +430,8 @@
     const width = u.bbox.width / dpr;
     if (left !== area.left || width !== area.width) area = { left, width };
     const x = (t: number) => left + u.valToPos(t, 'x');
+    const tx = trig.shown == null ? null : x(trig.shown);
+    trigX = tx != null && tx >= left && tx <= left + width ? tx : null;
     const g = [];
     const singles: Promise<{ m: Marker; x: number; v: PointValue }>[] = [];
     let dual: Promise<typeof dualStats> = Promise.resolve(null);
@@ -513,7 +563,10 @@
         </div>
       {/if}
     {/each}
-    {#if !geo.length}
+    {#if trig.mode !== 'roll' && trigX != null}
+      <span class="tflag" style="left: {trigX}px" title="Trigger">T</span>
+    {/if}
+    {#if !geo.length && trigX == null}
       <span class="hintbar" style="left: {area.left}px">drag across a plot: dual marker · double-click: single marker</span>
     {/if}
   </div>
@@ -655,6 +708,18 @@
     font-size: 11px;
     line-height: 1;
     cursor: pointer;
+  }
+  .tflag {
+    position: absolute;
+    top: 2px;
+    transform: translateX(-50%);
+    background: var(--trig);
+    color: #000;
+    font-weight: 700;
+    font-size: 11px;
+    padding: 0 5px;
+    border-radius: 3px;
+    pointer-events: none;
   }
   .hintbar {
     position: absolute;
