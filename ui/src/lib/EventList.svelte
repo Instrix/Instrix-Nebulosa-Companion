@@ -115,6 +115,8 @@
     background: var(--panel);
     display: flex;
     flex-direction: column;
+    height: 100%;
+    min-height: 0;
   }
   .bar {
     display: flex;
@@ -129,8 +131,8 @@
     flex: 1;
   }
   .list {
-    max-height: 150px;
-    min-height: 40px;
+    flex: 1;
+    min-height: 0;
     overflow-y: auto;
   }
   table {

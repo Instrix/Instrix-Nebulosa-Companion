@@ -327,6 +327,44 @@
 
   let bottomTab = $state<'markers' | 'events'>('markers');
 
+  // ---- splitter between the plots and the lists ----------------------------
+  const SPLIT_KEY = 'nebulosa.listHeight';
+  function loadSplit() {
+    try {
+      const v = Number(localStorage.getItem(SPLIT_KEY));
+      if (v >= 60) return v;
+    } catch {
+      /* storage unavailable */
+    }
+    return 190;
+  }
+  let listH = $state(loadSplit());
+  let mainEl: HTMLElement;
+
+  function startSplit(e: PointerEvent) {
+    e.preventDefault();
+    const el = e.currentTarget as HTMLElement;
+    el.setPointerCapture(e.pointerId);
+    const y0 = e.clientY;
+    const h0 = listH;
+    // keep the plots at least ~200 px and the list at least one row
+    const max = Math.max(80, mainEl.clientHeight - 260);
+    const move = (ev: PointerEvent) => (listH = Math.round(Math.min(max, Math.max(60, h0 - (ev.clientY - y0)))));
+    const up = () => {
+      el.removeEventListener('pointermove', move);
+      el.removeEventListener('pointerup', up);
+      el.removeEventListener('pointercancel', up);
+      try {
+        localStorage.setItem(SPLIT_KEY, String(listH));
+      } catch {
+        /* storage unavailable */
+      }
+    };
+    el.addEventListener('pointermove', move);
+    el.addEventListener('pointerup', up);
+    el.addEventListener('pointercancel', up);
+  }
+
   async function applyBuffer() {
     try {
       localStorage.setItem(BUFFER_KEY, String(bufferMB));
@@ -1025,7 +1063,7 @@
     {/if}
   </aside>
 
-  <main>
+  <main bind:this={mainEl}>
     <div class="strip">
       <span class="badge" class:run={streaming} class:stop={!streaming}>{streaming ? 'RUN' : 'STOP'}</span>
       <button
@@ -1085,7 +1123,16 @@
     <div class="scope-wrap">
       <Scope bind:this={scope} {store} {view} {signals} {axes} {trace} {trig} />
     </div>
-    <div class="markers-wrap">
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      class="splitter"
+      role="separator"
+      aria-orientation="horizontal"
+      title="Drag to resize; double-click to reset"
+      onpointerdown={startSplit}
+      ondblclick={() => (listH = 190)}
+    ></div>
+    <div class="markers-wrap" style="height: {listH}px">
       <div class="tabs">
         <button class:on={bottomTab === 'markers'} onclick={() => (bottomTab = 'markers')}>Markers <small>{view.markers.length}</small></button>
         <button class:on={bottomTab === 'events'} onclick={() => (bottomTab = 'events')}>Events <small>{trig.count.toLocaleString()}</small></button>
@@ -1455,6 +1502,40 @@
   }
   .markers-wrap {
     padding: 0 12px 10px;
+    display: flex;
+    flex-direction: column;
+    flex: none;
+    min-height: 0;
+  }
+  .markers-wrap > :global(:last-child) {
+    flex: 1;
+    min-height: 0;
+  }
+  .splitter {
+    flex: none;
+    height: 8px;
+    margin: -2px 12px 2px;
+    cursor: row-resize;
+    touch-action: none;
+    position: relative;
+  }
+  .splitter::after {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 3px;
+    width: 40px;
+    height: 3px;
+    margin-left: -20px;
+    border-radius: 2px;
+    background: var(--border);
+  }
+  .splitter:hover::after,
+  .splitter:active::after {
+    background: var(--accent);
+    width: 100%;
+    left: 0;
+    margin-left: 0;
   }
   .tabs {
     display: flex;

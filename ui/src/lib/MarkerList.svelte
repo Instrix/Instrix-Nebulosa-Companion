@@ -73,8 +73,8 @@
 
 <style>
   .list {
-    max-height: 150px;
-    min-height: 64px;
+    height: 100%;
+    min-height: 0;
     overflow-y: auto;
     border: 1px solid var(--border);
     border-radius: 6px;
