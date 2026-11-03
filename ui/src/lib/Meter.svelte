@@ -64,10 +64,6 @@
     hold = $bindable(false),
     hasSelection,
     onclear,
-    markers,
-    active,
-    onpick,
-    ondelete,
   }: {
     summary: Summary | null;
     accum: AccumView | null;
@@ -76,10 +72,6 @@
     hold: boolean;
     hasSelection: boolean;
     onclear: () => void;
-    markers: MarkerRow[];
-    active: number | null;
-    onpick: (id: number) => void;
-    ondelete: (id: number) => void;
   } = $props();
 
   const STORAGE_KEY = 'nebulosa.meter.metrics';
@@ -163,41 +155,6 @@
     <div class="global">
       {#each global as m (m.key)}
         <span><span class="muted">{m.label}</span> {summary ? (m.key === 'n' ? fmtN(summary.n) : fmtTime(summary.duration)) : '–'}</span>
-      {/each}
-    </div>
-  {/if}
-
-  {#if markers.length}
-    <div class="card marks">
-      <div class="head"><span class="name">Markers</span></div>
-      {#each markers as m (m.id)}
-        <div
-          class="mark"
-          class:on={m.id === active}
-          style="--m: {m.color}"
-          role="button"
-          tabindex="0"
-          onclick={() => onpick(m.id)}
-          onkeydown={(e) => e.key === 'Enter' && onpick(m.id)}
-        >
-          <div class="mhead">
-            <span class="mname">{m.name}</span>
-            <span class="muted">{m.dt == null ? 'at marker' : `Δt ${fmtTime(m.dt)}`}</span>
-            <button class="ghost x" onclick={(e) => { e.stopPropagation(); ondelete(m.id); }} title="Delete">✕</button>
-          </div>
-          <dl>
-            {#each signals as sig (sig)}
-              {@const info = SIGNAL_INFO[sig]}
-              {@const c = m.ch[sig]}
-              <dt style="color: var({info.color})">{m.dt == null ? info.sym : `${info.sym} avg`}</dt>
-              <dd>{c ? fmtSI(c.mean, info.unit, 4) : '–'}</dd>
-              {#if m.dt != null && info.integral}
-                <dt style="color: var({info.color})">∫{info.sym}</dt>
-                <dd>{c ? fmtSI(c.integral, info.integral, 4) : '–'}</dd>
-              {/if}
-            {/each}
-          </dl>
-        </div>
       {/each}
     </div>
   {/if}
@@ -316,39 +273,6 @@
   }
   .accum {
     --c: var(--accent);
-  }
-  .marks {
-    --c: var(--sel);
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-  .mark {
-    border: 1px solid var(--border);
-    border-left: 3px solid var(--m);
-    border-radius: 4px;
-    padding: 4px 8px;
-    cursor: pointer;
-  }
-  .mark.on {
-    border-color: var(--m);
-    background: color-mix(in srgb, var(--m) 10%, transparent);
-  }
-  .mhead {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 12px;
-  }
-  .mname {
-    color: var(--m);
-    font-weight: 700;
-    font-family: ui-monospace, monospace;
-  }
-  .x {
-    margin-left: auto;
-    padding: 0 4px;
-    font-size: 11px;
   }
   .muted {
     color: var(--muted);

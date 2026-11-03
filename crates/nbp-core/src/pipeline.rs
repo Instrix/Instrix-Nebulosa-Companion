@@ -9,7 +9,8 @@
 
 use crate::frame::{Frame, FrameParser};
 use crate::msg::{self, BlockHdr};
-use crate::buffer::{Moments3, SampleBuffer, SpanStats};
+use crate::buffer::{pack, unpack, Moments3, SampleBuffer, SpanStats};
+use crate::recording::{Recorder, Recording, RecordingStatus};
 use crate::stream::{StreamCounters, StreamDecoder, Word, TS_PERIOD_S};
 use crate::trigger::{Trigger, TriggerCfg, TriggerInfo};
 use crate::units::Calibration;
@@ -64,6 +65,7 @@ pub struct Meta {
     /// s per sample at the current decimation
     pub sample_period: f64,
     pub trigger: TriggerInfo,
+    pub recording: RecordingStatus,
 }
 
 /// Samples the buffer holds by default (4 bytes each): 64 MB.
@@ -77,6 +79,9 @@ pub struct Pipeline {
     trig: Trigger,
     /// timestamp the next sample should have (a jump: samples missing)
     next_ts: Option<u64>,
+    rec: Option<Recorder>,
+    /// opened from a file: its header
+    file_header: Option<String>,
     responses: Vec<Frame>,
     expect_seq: Option<u32>,
     stats: DataStats,
@@ -100,6 +105,8 @@ impl Pipeline {
             run: Moments3::default(),
             trig: Trigger::default(),
             next_ts: None,
+            rec: None,
+            file_header: None,
             responses: Vec::new(),
             expect_seq: None,
             stats: DataStats::default(),
@@ -123,6 +130,9 @@ impl Pipeline {
     }
 
     pub fn set_calibration(&mut self, cal: Calibration) {
+        if let Some(r) = &mut self.rec {
+            r.calibration(&cal);
+        }
         self.buf.set_calibration(cal.clone());
         self.cal = cal;
     }
@@ -161,6 +171,86 @@ impl Pipeline {
             }
         }
         self.stats.resyncs = self.parsers.iter().map(|p| p.resyncs).sum();
+    }
+
+    /// One sample, decoded: buffer, statistics, integrals, trigger, recording.
+    #[inline]
+    fn sample(&mut self, ts: u64, step: u32, ic: u16, vc: u16, range: u8, dirty: bool) {
+        let i = self.cal.current(ic, range);
+        let v = self.cal.voltage(vc);
+        let dt = step as f64 * TS_PERIOD_S;
+        self.accum.charge += i * dt;
+        self.accum.energy += i * v * dt;
+        self.accum.seconds += dt;
+        self.run.i.add(i);
+        self.run.v.add(v);
+        self.run.p.add(i * v);
+        self.buf.push(ts, step, ic, vc, range, dirty);
+        if self.trig.enabled() {
+            if self.next_ts != Some(ts) {
+                self.trig.gap();
+            }
+            self.trig.feed(ts as f64 * TS_PERIOD_S, self.trig.value(i, v));
+        }
+        if let Some(r) = &mut self.rec {
+            r.sample(ts, step, pack(ic, vc, range, dirty));
+        }
+        self.next_ts = Some(ts + step as u64);
+    }
+
+    // ---- recording ----------------------------------------------------------
+
+    /// Starts writing every sample from now on; the file's bytes come from
+    /// [`Pipeline::take_recording`].
+    pub fn start_recording(&mut self, header_json: &str) {
+        self.rec = Some(Recorder::new(header_json, &self.cal));
+    }
+
+    /// Bytes for the file since the last call (whole blocks unless `flush`).
+    pub fn take_recording(&mut self, flush: bool) -> Vec<u8> {
+        self.rec.as_mut().map(|r| r.take(flush)).unwrap_or_default()
+    }
+
+    /// The file's last bytes; recording stops.
+    pub fn stop_recording(&mut self) -> Option<(Vec<u8>, RecordingStatus)> {
+        let r = self.rec.take()?;
+        let mut st = r.status;
+        let last = r.finish();
+        st.bytes += last.len() as u64;
+        st.active = false;
+        Some((last, st))
+    }
+
+    /// A recording, loaded whole (its samples, statistics, integrals).
+    pub fn from_recording(bytes: &[u8]) -> Result<Pipeline, String> {
+        let rec = Recording::parse(bytes)?;
+        let mut p = Pipeline::new();
+        p.buf = SampleBuffer::new(rec.samples().max(1) as usize, rec.calibration.clone());
+        p.cal = rec.calibration.clone();
+        p.stream_id = 1;
+        for (ts0, step, s) in &rec.blocks {
+            for (k, &w) in s.iter().enumerate() {
+                let (ic, vc, r, d) = unpack(w);
+                p.sample(ts0 + k as u64 * *step as u64, *step, ic, vc, r, d);
+            }
+            p.decoder.log2n = step.trailing_zeros() as u8;
+        }
+        p.buf.touch();
+        p.file_header = Some(rec.header_json);
+        Ok(p)
+    }
+
+    pub fn file_header(&self) -> Option<&str> {
+        self.file_header.as_deref()
+    }
+
+    /// Every sample in [t0, t1): f(time s, A, V, range)
+    pub fn for_each_sample(&self, t0: f64, t1: f64, f: impl FnMut(f64, f64, f64, u8)) {
+        self.buf.for_each(t0, t1, f);
+    }
+
+    pub fn count_samples(&self, t0: f64, t1: f64) -> u64 {
+        self.buf.count(t0, t1)
     }
 
     fn on_data(&mut self, p: &[u8]) {
@@ -204,24 +294,7 @@ impl Pipeline {
         for c in p[BlockHdr::LEN..BlockHdr::LEN + n * 4].chunks_exact(4) {
             let w = u32::from_be_bytes([c[0], c[1], c[2], c[3]]);
             if let Word::Sample(s) = self.decoder.feed(w) {
-                let i = self.cal.current(s.current, s.range);
-                let v = self.cal.voltage(s.voltage);
-                let dt = s.step as f64 * TS_PERIOD_S;
-                self.accum.charge += i * dt;
-                self.accum.energy += i * v * dt;
-                self.accum.seconds += dt;
-                self.run.i.add(i);
-                self.run.v.add(v);
-                self.run.p.add(i * v);
-                self.buf.push(s.ts, s.step, s.current, s.voltage, s.range, s.dirty);
-                if self.trig.enabled() {
-                    if self.next_ts != Some(s.ts) {
-                        self.trig.gap();
-                    }
-                    let x = self.trig.value(i, v);
-                    self.trig.feed(s.ts as f64 * TS_PERIOD_S, x);
-                }
-                self.next_ts = Some(s.ts + s.step as u64);
+                self.sample(s.ts, s.step, s.current, s.voltage, s.range, s.dirty);
             }
         }
         self.buf.touch();
@@ -247,6 +320,7 @@ impl Pipeline {
             buffer_samples: self.buf.capacity(),
             sample_period: (1u64 << self.decoder.log2n) as f64 * TS_PERIOD_S,
             trigger: self.trig.info(),
+            recording: self.rec.as_ref().map(|r| r.status).unwrap_or_default(),
         }
     }
 

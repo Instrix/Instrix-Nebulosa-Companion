@@ -23,12 +23,12 @@ const LEVEL_SHIFTS: [u32; 3] = [6, 12, 18];
 
 /// Packed sample: [13:0] current code, [27:14] voltage code, [30:28] range, [31] dirty.
 #[inline]
-fn pack(i: u16, v: u16, range: u8, dirty: bool) -> u32 {
+pub fn pack(i: u16, v: u16, range: u8, dirty: bool) -> u32 {
     (i as u32 & 0x3FFF) | ((v as u32 & 0x3FFF) << 14) | ((range as u32 & 7) << 28) | ((dirty as u32) << 31)
 }
 
 #[inline]
-fn unpack(w: u32) -> (u16, u16, u8, bool) {
+pub fn unpack(w: u32) -> (u16, u16, u8, bool) {
     ((w & 0x3FFF) as u16, ((w >> 14) & 0x3FFF) as u16, ((w >> 28) & 7) as u8, w >> 31 != 0)
 }
 
@@ -435,6 +435,24 @@ impl SampleBuffer {
             return Some((i, v, unpack(w).2));
         }
         None
+    }
+
+    /// Every sample in [t0, t1): f(time s, current A, voltage V, range).
+    pub fn for_each(&self, t0: f64, t1: f64, mut f: impl FnMut(f64, f64, f64, u8)) {
+        for k in 0..self.segs.len() {
+            let Some((a, b)) = self.span_in(k, t0, t1) else { continue };
+            let s = self.segs[k];
+            for idx in a..b {
+                let w = self.raw[(idx % self.cap) as usize];
+                let (i, v) = self.phys(w);
+                f(Self::time_of(&s, idx), i, v, unpack(w).2);
+            }
+        }
+    }
+
+    /// Samples in [t0, t1).
+    pub fn count(&self, t0: f64, t1: f64) -> u64 {
+        (0..self.segs.len()).filter_map(|k| self.span_in(k, t0, t1)).map(|(a, b)| b - a).sum()
     }
 
     /// [t0, t1] in `bins` columns, flat: `[layout, rows, cols, raw, then each

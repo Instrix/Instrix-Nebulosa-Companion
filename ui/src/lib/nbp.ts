@@ -135,6 +135,7 @@ export interface Meta {
   /** s per sample at the current decimation */
   sample_period: number;
   trigger: { count: number; recent: number[] };
+  recording: { active: boolean; samples: number; bytes: number; seconds: number };
 }
 
 /** trigger.rs TriggerCfg */

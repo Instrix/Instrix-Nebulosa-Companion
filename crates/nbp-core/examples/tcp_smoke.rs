@@ -36,6 +36,12 @@ fn main() {
     request(&mut s, &mut p, 2, msg::cmd::SET_SOURCE, &msg::enc_source(msg::SRC_STUB_RANDOM));
     request(&mut s, &mut p, 3, msg::cmd::SET_DECIMATION, &msg::enc_decim(0, 0));
     request(&mut s, &mut p, 4, msg::cmd::STREAM_START, &msg::enc_stream_start(msg::START_FLUSH));
+    // record everything to a file (third argument), like the app does
+    let rec_path = std::env::args().nth(3);
+    let mut file = Vec::new();
+    if rec_path.is_some() {
+        p.start_recording("{\"test\":true}");
+    }
 
     let mut buf = vec![0u8; 1 << 16];
     let t = Instant::now();
@@ -44,10 +50,26 @@ fn main() {
         if let Ok(n) = s.read(&mut buf) {
             let t0 = Instant::now();
             p.push(0, &buf[..n]);
+            file.extend(p.take_recording(false));
             busy += t0.elapsed();
         }
     }
     request(&mut s, &mut p, 5, msg::cmd::STREAM_STOP, &[]);
+    if let Some(path) = &rec_path {
+        file.extend(p.take_recording(true));
+        let (last, st) = p.stop_recording().unwrap();
+        file.extend(last);
+        std::fs::write(path, &file).unwrap();
+        let t0 = Instant::now();
+        let q = Pipeline::from_recording(&std::fs::read(path).unwrap()).unwrap();
+        let (a, b) = (p.meta(), q.meta());
+        println!(
+            "recorded {} samples, {:.1} MB ({:.2} B/sample); reloaded in {:.0} ms: {} samples, mean I {:.6e} vs {:.6e}, charge {:.6e} vs {:.6e}",
+            st.samples, st.bytes as f64 / 1e6, st.bytes as f64 / st.samples as f64, t0.elapsed().as_secs_f64() * 1e3,
+            b.run.n(), b.run.i.mean, a.run.i.mean, b.accum.charge, a.accum.charge
+        );
+        assert_eq!(b.run.n(), a.run.n());
+    }
     let m = p.meta();
     let el = t.elapsed().as_secs_f64();
     println!("{:#?}", m.stats);

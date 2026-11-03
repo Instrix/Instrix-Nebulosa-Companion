@@ -2,6 +2,7 @@
   import { onMount, untrack } from 'svelte';
   import Scope, { SIGNAL_INFO, type AxisCfg, type TraceCfg } from './lib/Scope.svelte';
   import Overview from './lib/Overview.svelte';
+  import MarkerList from './lib/MarkerList.svelte';
   import Meter, { type AccumView, type MarkerRow, type Scope as MeterScope, type Summary } from './lib/Meter.svelte';
   import { View, TIME_DIVS, fmtTime, markerColor, markerName } from './lib/view.svelte';
   import { Moments, SampleStore, type SpanStats } from './lib/store';
@@ -79,15 +80,151 @@
   });
 
   // ---- meter --------------------------------------------------------------
-  let runMoments: Meta['run'] | null = null;
+  let runMoments = $state.raw<Meta['run'] | null>(null);
   let meterScope = $state<MeterScope>('window');
   let hold = $state(false);
   let summary = $state<Summary | null>(null);
-  let markerRows = $state<MarkerRow[]>([]);
+  let markerRows = $state<(MarkerRow & { t0: number })[]>([]);
   let accum: Accum | null = null;
   let accumBase: Accum = { charge: 0, energy: 0, seconds: 0 };
   let accumView = $state<AccumView | null>(null);
   let streamId = -1;
+
+  // ---- files ------------------------------------------------------------
+  let recording = $state<Meta['recording'] | null>(null);
+  let recFiles = $state<native.RecFile[]>([]);
+  let recDir = $state('');
+  let note = $state('');
+  /** a recording open for playback: its header */
+  let playback = $state<Record<string, unknown> | null>(null);
+  let fitPending = false;
+  let scope: Scope;
+
+  async function refreshRecordings() {
+    if (!isNative) return;
+    try {
+      recFiles = await native.listRecordings();
+      recDir = await native.recordingsDir();
+    } catch (e) {
+      console.warn('recordings', e);
+    }
+  }
+
+  async function toggleRecording() {
+    error = '';
+    try {
+      if (recording?.active) {
+        const r = await native.stopRecording();
+        if (r) note = `Saved ${r.path.split(/[\\/]/).pop()} · ${fmtBytesSize(r.bytes)} · ${fmtTime(r.seconds)}`;
+        refreshRecordings();
+      } else {
+        const path = await native.startRecording({
+          app: 'Nebulosa Companion',
+          created: new Date().toISOString(),
+          link: dev?.link.description,
+          device: info,
+          rate_hz: rateHz,
+          decimation: { log2n, mode: decimMode },
+          source,
+          calibration: $state.snapshot(cal),
+        });
+        note = `Recording to ${path}`;
+      }
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  async function openRecording(path: string) {
+    busy = true;
+    error = '';
+    try {
+      await disconnect();
+      const { link, header } = await native.openRecording(path, {
+        onMeta,
+        onClosed: () => undefined,
+      });
+      dev = new Device(link);
+      playback = header;
+      store.attach(link);
+      setLink(link);
+      trig.mode = 'roll';
+      clearData();
+      fitPending = true;
+    } catch (e) {
+      error = String(e);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function openFile() {
+    const p = await native.pickRecording();
+    if (p) await openRecording(p);
+  }
+
+  /** the whole recording on screen */
+  function fitAll() {
+    if (store.empty) return;
+    const len = store.tEnd - store.tStart;
+    let k = TIME_DIVS.findIndex((d) => d * 10 >= len);
+    if (k < 0) k = TIME_DIVS.length - 1;
+    view.divIndex = k;
+    view.live = false;
+    view.end = store.tStart + view.windowS;
+  }
+
+  /** the span to export: the active dual marker, else the screen */
+  function exportSpan(): [number, number] {
+    return view.selection ?? view.span(store);
+  }
+
+  async function exportCsv() {
+    error = '';
+    try {
+      const [t0, t1] = exportSpan();
+      const n = await native.countSamples(t0, t1);
+      if (!n) throw new Error('no samples in the span');
+      if (n > 5e6 && !confirm(`${(n / 1e6).toFixed(1)} M samples, about ${fmtBytesSize(n * 60)} of CSV. Export?`)) return;
+      const path = await native.pickSave(`${recDir || '.'}/${stamp()}.csv`, 'CSV', 'csv');
+      if (!path) return;
+      const rows = await native.exportCsv(t0, t1, path);
+      note = `Exported ${rows.toLocaleString()} samples to ${path.split(/[\\/]/).pop()}`;
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  async function exportPng() {
+    error = '';
+    try {
+      const canvas = scope.snapshot();
+      const blob = await new Promise<Blob | null>((r) => canvas.toBlob(r, 'image/png'));
+      if (!blob) throw new Error('no image');
+      if (isNative) {
+        const path = await native.pickSave(`${recDir || '.'}/${stamp()}.png`, 'PNG image', 'png');
+        if (!path) return;
+        await native.saveBytes(path, new Uint8Array(await blob.arrayBuffer()));
+        note = `Saved ${path.split(/[\\/]/).pop()}`;
+      } else {
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `nebulosa-${stamp()}.png`;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+      }
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  function stamp() {
+    return new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+  }
+
+  function fmtBytesSize(b: number) {
+    return b >= 1e9 ? `${(b / 1e9).toFixed(2)} GB` : b >= 1e6 ? `${(b / 1e6).toFixed(1)} MB` : `${(b / 1e3).toFixed(0)} kB`;
+  }
 
   // ---- link counters ------------------------------------------------------
   let stats = $state<DataStats | null>(null);
@@ -178,8 +315,8 @@
       else if (store.empty) summary = null;
       else summary = summarize(await store.stats(...view.span(store)));
       markerRows = await Promise.all(
-        view.markers.map(async (m): Promise<MarkerRow> => {
-          const base = { id: m.id, name: markerName(m), color: markerColor(m) };
+        view.markers.map(async (m): Promise<MarkerRow & { t0: number }> => {
+          const base = { id: m.id, name: markerName(m), color: markerColor(m), t0: m.t0 };
           if (m.t1 == null) {
             const v = await store.valueAt(m.t0);
             return { ...base, dt: null, ch: Object.fromEntries(SIGNALS.map((s) => [s, v ? { mean: v[s], integral: NaN } : null])) as MarkerRow['ch'] };
@@ -254,6 +391,20 @@
     else if (e.key === 'ArrowRight') view.pan(store, 0.1);
   }
 
+  /** fits the screen to a marker: a dual one fills ~80 % of it, a single one is centred */
+  function zoomToMarker(id: number) {
+    const m = view.markers.find((x) => x.id === id);
+    if (!m) return;
+    view.active = id;
+    view.hold(store);
+    const len = m.t1 == null ? view.windowS : (m.t1 - m.t0) / 0.8;
+    let k = TIME_DIVS.findIndex((d) => d * 10 >= len);
+    if (k < 0) k = TIME_DIVS.length - 1;
+    view.divIndex = k;
+    const mid = m.t1 == null ? m.t0 : (m.t0 + m.t1) / 2;
+    view.end = mid + view.windowS / 2;
+  }
+
   function addSingleMarker() {
     if (store.empty) return;
     view.hold(store);
@@ -320,6 +471,8 @@
     store.attach(null);
     setLink(null);
     dev = null;
+    playback = null;
+    recording = null;
     info = null;
     streaming = false;
     stats = null;
@@ -334,6 +487,11 @@
 
   function onMeta(m: Meta) {
     store.update(m);
+    recording = m.recording;
+    if (fitPending && !store.empty) {
+      fitPending = false;
+      fitAll();
+    }
     trig.update(m.trigger.recent, m.trigger.count, store, view);
     runMoments = m.run;
     stats = m.stats;
@@ -419,6 +577,7 @@
 
   onMount(() => {
     scan();
+    refreshRecordings();
     const t = setInterval(refreshMeter, 250);
     let stopDemo = () => {};
     if (demoRequested) {
@@ -516,6 +675,43 @@
         {:else}
           <p class="warn small">This browser has no WebUSB. Use Chrome or Edge, or the desktop app.</p>
         {/if}
+      </section>
+      {#if isNative}
+        <section>
+          <h2>
+            Recordings
+            <button class="ghost small" onclick={openFile} disabled={busy}>Open file…</button>
+          </h2>
+          <div class="recs">
+            {#each recFiles as f (f.path)}
+              <button class="device" onclick={() => openRecording(f.path)} disabled={busy} title={f.path}>
+                <span>{f.name.replace(/\.nbrec$/, '')}</span>
+                <small>{fmtBytesSize(f.bytes)} · {new Date(f.modified).toLocaleString()}</small>
+              </button>
+            {:else}
+              <p class="muted small">None yet. Connect and press REC.</p>
+            {/each}
+          </div>
+          {#if recDir}<small class="muted path" title={recDir}>{recDir}</small>{/if}
+        </section>
+      {/if}
+    {:else if playback}
+      <section>
+        <h2>Recording <button class="ghost small" onclick={disconnect}>Close</button></h2>
+        <dl>
+          <dt>File</dt><dd class="wrap">{dev.link.description.replace(/^Recording /, '')}</dd>
+          {#if playback.created}<dt>Recorded</dt><dd>{new Date(String(playback.created)).toLocaleString()}</dd>{/if}
+          {#if playback.link}<dt>From</dt><dd class="wrap">{playback.link}</dd>{/if}
+          {#if playback.device}
+            {@const d = playback.device as Info}
+            <dt>Firmware</dt><dd>{d.fw_version_str}</dd>
+            <dt>FPGA</dt><dd>{hex(d.fpga_id)}</dd>
+          {/if}
+          {#if playback.rate_hz}<dt>Rate</dt><dd>{fmtRate(Number(playback.rate_hz))}</dd>{/if}
+          <dt>Length</dt><dd>{fmtTime(store.tEnd - store.tStart)}</dd>
+          <dt>Samples</dt><dd>{(runMoments?.i.n ?? 0).toLocaleString()}</dd>
+        </dl>
+        <button onclick={fitAll}>Show all</button>
       </section>
     {:else if info}
       <section>
@@ -706,6 +902,9 @@
     {#if error}
       <p class="error">{error}</p>
     {/if}
+    {#if note}
+      <p class="note small">{note} <button class="ghost small" onclick={() => (note = '')}>✕</button></p>
+    {/if}
   </aside>
 
   <main>
@@ -741,6 +940,17 @@
           <button class="ghost small" onclick={() => view.clearMarkers()} title="Remove all markers">Clear</button>
         {/if}
       </div>
+      <div class="tdiv">
+        {#if isNative && dev && !dev.link.playback}
+          <button class="small rec" class:on={recording?.active} onclick={toggleRecording} title="Record every sample to a file">
+            {#if recording?.active}■ Stop · {fmtTime(recording.seconds)} · {fmtBytesSize(recording.bytes)}{:else}● REC{/if}
+          </button>
+        {/if}
+        {#if isNative}
+          <button class="ghost small" onclick={exportCsv} disabled={store.empty} title="Every sample of the active dual marker's span (or the screen) as CSV">CSV</button>
+        {/if}
+        <button class="ghost small" onclick={exportPng} disabled={store.empty} title="The plots as a PNG image">PNG</button>
+      </div>
       <span class="legend muted" title="Each pixel column covers many samples">
         {#if trace.mean}<span class="key"><i class="line"></i>mean</span>{/if}
         {#if trace.range}<span class="key"><i class="band"></i>min–max</span>{/if}
@@ -755,7 +965,18 @@
       <Overview {store} {view} />
     </div>
     <div class="scope-wrap">
-      <Scope {store} {view} {signals} {axes} {trace} {trig} />
+      <Scope bind:this={scope} {store} {view} {signals} {axes} {trace} {trig} />
+    </div>
+    <div class="markers-wrap">
+      <MarkerList
+        rows={markerRows}
+        active={view.active}
+        origin={trig.mode !== 'roll' && trig.shown != null ? trig.shown : store.tEnd}
+        onpick={(id) => (view.active = id)}
+        ondelete={(id) => view.remove(id)}
+        onzoom={zoomToMarker}
+        onclear={() => view.clearMarkers()}
+      />
     </div>
     <footer>
       {#if stats}
@@ -784,10 +1005,6 @@
       bind:hold
       hasSelection={!!view.selection}
       onclear={clearAccum}
-      markers={markerRows}
-      active={view.active}
-      onpick={(id) => (view.active = id)}
-      ondelete={(id) => view.remove(id)}
     />
   </div>
 </div>
@@ -1008,6 +1225,42 @@
   .seg.wide button {
     flex: 1;
   }
+  .rec {
+    color: var(--danger);
+    border-color: var(--danger);
+    background: transparent;
+    font-weight: 600;
+  }
+  .rec.on {
+    background: var(--danger);
+    color: #fff;
+    animation: blink 1.6s ease-in-out infinite;
+  }
+  @keyframes blink {
+    50% {
+      opacity: 0.75;
+    }
+  }
+  .recs {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 260px;
+    overflow-y: auto;
+  }
+  .path {
+    font-size: 11px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .wrap {
+    word-break: break-all;
+  }
+  .note {
+    color: var(--ok);
+    word-break: break-word;
+  }
   .fifty {
     flex: none !important;
     align-self: flex-end;
@@ -1064,7 +1317,10 @@
   .scope-wrap {
     flex: 1;
     min-height: 0;
-    padding: 8px 12px 12px;
+    padding: 8px 12px 8px;
+  }
+  .markers-wrap {
+    padding: 0 12px 10px;
   }
   footer {
     display: flex;

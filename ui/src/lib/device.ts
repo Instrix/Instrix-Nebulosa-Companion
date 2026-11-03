@@ -24,6 +24,8 @@ export interface LinkEvents {
 /** Raw transport: one command at a time, its response. */
 export interface Link {
   readonly description: string;
+  /** a recording opened for playback, not a device */
+  readonly playback?: boolean;
   request(cmd: number, payload?: Uint8Array, timeoutMs?: number): Promise<Reply>;
   /** samples the full-rate buffer holds (resizing drops its contents) */
   setBuffer(samples: number): Promise<void>;

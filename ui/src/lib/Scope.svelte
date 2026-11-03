@@ -351,6 +351,27 @@
     drawnKey = '';
   }
 
+  /** The plots as one image (for export): each plot's canvas, stacked, with its name. */
+  export function snapshot(): HTMLCanvasElement {
+    const dpr = devicePixelRatio;
+    const cs = plots.map((p) => p.u.ctx.canvas);
+    const out = document.createElement('canvas');
+    out.width = Math.max(1, ...cs.map((c) => c.width));
+    out.height = Math.max(1, cs.reduce((h, c) => h + c.height, 0));
+    const ctx = out.getContext('2d')!;
+    ctx.fillStyle = cssVar('--scope-bg');
+    ctx.fillRect(0, 0, out.width, out.height);
+    let y = 0;
+    for (const { sig, u } of plots) {
+      ctx.drawImage(u.ctx.canvas, 0, y);
+      ctx.fillStyle = cssVar(SIGNAL_INFO[sig].color);
+      ctx.font = `600 ${11 * dpr}px ui-monospace, monospace`;
+      ctx.fillText(SIGNAL_INFO[sig].name.toUpperCase(), 84 * dpr, y + 16 * dpr);
+      y += u.ctx.canvas.height;
+    }
+    return out;
+  }
+
   /** time zero on the axis */
   function origin() {
     return trig.mode !== 'roll' && trig.shown != null ? trig.shown : span[1];

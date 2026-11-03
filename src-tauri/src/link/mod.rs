@@ -33,6 +33,10 @@ pub enum Event {
 
 pub type Events = Channel<InvokeResponseBody>;
 
+pub(crate) fn send_meta(ch: &Events, m: Meta) -> bool {
+    send_json(ch, &Event::Meta(m))
+}
+
 fn send_json(ch: &Events, e: &Event) -> bool {
     match serde_json::to_string(e) {
         Ok(s) => ch.send(InvokeResponseBody::Json(s)).is_ok(),
@@ -55,6 +59,9 @@ pub(crate) enum Input {
 
 /// The pipeline, shared by the dispatcher and the query commands.
 pub type SharedPipeline = Arc<Mutex<Pipeline>>;
+
+/// Where recording bytes go (a writer thread), while recording.
+pub type RecSink = Arc<Mutex<Option<std::sync::mpsc::Sender<Vec<u8>>>>>;
 
 pub(crate) enum Writer {
     Tcp(tokio::net::tcp::OwnedWriteHalf),
@@ -83,6 +90,7 @@ pub struct Conn {
     seq: u16,
     tasks: Vec<JoinHandle<()>>,
     pub pipe: SharedPipeline,
+    pub rec: RecSink,
     pub description: String,
 }
 
@@ -98,8 +106,9 @@ impl Conn {
         p.set_calibration(cal);
         let pipe: SharedPipeline = Arc::new(Mutex::new(p));
         let pending: Pending = Arc::default();
-        tasks.push(tokio::spawn(dispatch(in_rx, pipe.clone(), pending.clone(), events)));
-        Ok(Conn { writer, pending, seq: 0, tasks, pipe, description })
+        let rec: RecSink = Arc::default();
+        tasks.push(tokio::spawn(dispatch(in_rx, pipe.clone(), pending.clone(), rec.clone(), events)));
+        Ok(Conn { writer, pending, seq: 0, tasks, pipe, rec, description })
     }
 
     /// One command, its response. The protocol has one command in flight at
@@ -132,7 +141,17 @@ impl Drop for Conn {
     }
 }
 
-async fn dispatch(mut rx: mpsc::Receiver<Input>, pipe: SharedPipeline, pending: Pending, events: Events) {
+async fn dispatch(mut rx: mpsc::Receiver<Input>, pipe: SharedPipeline, pending: Pending, rec: RecSink, events: Events) {
+    // recording bytes to the writer thread (whole blocks; all of it on `flush`)
+    let forward = |p: &mut Pipeline, flush: bool| {
+        if let Some(tx) = rec.lock().unwrap().as_ref() {
+            let b = p.take_recording(flush);
+            if !b.is_empty() {
+                let _ = tx.send(b);
+            }
+        }
+    };
+    let mut ticks = 0u32;
     let mut tick = tokio::time::interval(Duration::from_millis(40));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut sent_version = u64::MAX;
@@ -143,6 +162,7 @@ async fn dispatch(mut rx: mpsc::Receiver<Input>, pipe: SharedPipeline, pending: 
                     let responses = {
                         let mut p = pipe.lock().unwrap();
                         p.push(src, &b);
+                        forward(&mut p, false);
                         p.take_responses()
                     };
                     for f in responses {
@@ -163,7 +183,13 @@ async fn dispatch(mut rx: mpsc::Receiver<Input>, pipe: SharedPipeline, pending: 
                 None => break,
             },
             _ = tick.tick() => {
-                let meta = pipe.lock().unwrap().meta();
+                ticks = ticks.wrapping_add(1);
+                let meta = {
+                    let mut p = pipe.lock().unwrap();
+                    // about once a second, everything (slow rates fill blocks slowly)
+                    forward(&mut p, ticks % 25 == 0);
+                    p.meta()
+                };
                 if meta.version != sent_version {
                     sent_version = meta.version;
                     if !send_json(&events, &Event::Meta(meta)) {

@@ -22,9 +22,13 @@ interface NetDev {
 type Target = { kind: 'usb'; id: string } | { kind: 'tcp'; host: string; port?: number };
 
 class NativeLink implements Link {
-  constructor(public description: string) {}
+  constructor(
+    public description: string,
+    public playback = false,
+  ) {}
 
   async request(cmd: number, payload = new Uint8Array(), timeoutMs?: number): Promise<Reply> {
+    if (this.playback) throw new Error('a recording: no device to command');
     const r = await invoke<{ ty: number; status: number; payload: number[] }>('request', {
       cmd,
       payload: Array.from(payload),
@@ -62,15 +66,62 @@ class NativeLink implements Link {
   }
 }
 
-async function open(target: Target, ev: LinkEvents): Promise<Link> {
+function channel(ev: LinkEvents) {
   const events = new Channel<Event>();
   events.onmessage = (m) => {
     if (m.event === 'meta') ev.onMeta(m);
     else ev.onClosed(m.reason);
   };
-  const description = await invoke<string>('connect', { target, events });
+  return events;
+}
+
+async function open(target: Target, ev: LinkEvents): Promise<Link> {
+  const description = await invoke<string>('connect', { target, events: channel(ev) });
   return new NativeLink(description);
 }
+
+// ---- files -------------------------------------------------------------------
+
+export interface RecFile {
+  path: string;
+  name: string;
+  bytes: number;
+  modified: number;
+}
+
+export const listRecordings = () => invoke<RecFile[]>('list_recordings');
+export const recordingsDir = () => invoke<string>('recordings_dir');
+export const startRecording = (header: unknown) => invoke<string>('start_recording', { header: JSON.stringify(header) });
+export const stopRecording = () =>
+  invoke<{ path: string; samples: number; bytes: number; seconds: number } | null>('stop_recording');
+export const countSamples = (t0: number, t1: number) => invoke<number>('count_samples', { t0, t1 });
+
+/** Opens a recording for playback: a Link to it, and the header it was written with. */
+export async function openRecording(path: string, ev: LinkEvents): Promise<{ link: Link; header: Record<string, unknown> }> {
+  const header = await invoke<string>('open_recording', { path, events: channel(ev) });
+  const name = path.split(/[\\/]/).pop() ?? path;
+  let h: Record<string, unknown> = {};
+  try {
+    h = JSON.parse(header);
+  } catch {
+    /* an unreadable header: play it anyway */
+  }
+  return { link: new NativeLink(`Recording ${name}`, true), header: h };
+}
+
+export async function pickRecording(): Promise<string | null> {
+  const { open: dialog } = await import('@tauri-apps/plugin-dialog');
+  const p = await dialog({ multiple: false, directory: false, filters: [{ name: 'Nebulosa recording', extensions: ['nbrec'] }] });
+  return typeof p === 'string' ? p : null;
+}
+
+export async function pickSave(defaultPath: string, name: string, ext: string): Promise<string | null> {
+  const { save } = await import('@tauri-apps/plugin-dialog');
+  return save({ defaultPath, filters: [{ name, extensions: [ext] }] });
+}
+
+export const exportCsv = (t0: number, t1: number, path: string) => invoke<number>('export_csv', { t0, t1, path });
+export const saveBytes = (path: string, bytes: Uint8Array) => invoke<void>('save_bytes', { path, bytes: Array.from(bytes) });
 
 export function tcpCandidate(host: string, port?: number): Candidate {
   return {
