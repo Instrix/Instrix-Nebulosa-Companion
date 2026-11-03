@@ -165,6 +165,23 @@ async fn set_trigger(state: State<'_, AppState>, cfg: nbp_core::trigger::Trigger
     Ok(())
 }
 
+/// Analysis over [t0, t1): the samples are copied out under the lock, analysed outside it.
+#[tauri::command]
+async fn analyze(
+    state: State<'_, AppState>,
+    t0: f64,
+    t1: f64,
+    req: nbp_core::analysis::Request,
+) -> Result<nbp_core::analysis::Result, String> {
+    let p = pipe(&state).ok_or("no data")?;
+    tokio::task::spawn_blocking(move || {
+        let x = p.lock().unwrap().extract(t0, t1);
+        nbp_core::analysis::run(&x, &req)
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
 /// Trigger events with seq ≥ since, at most max.
 #[tauri::command]
 async fn query_events(state: State<'_, AppState>, since: u64, max: usize) -> Result<Vec<nbp_core::trigger::Event>, String> {
@@ -207,7 +224,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_usb, discover, connect, disconnect, request, set_buffer, set_calibration, set_trigger, query_lod, query_stats,
             query_value, recordings_dir, list_recordings, start_recording, stop_recording, open_recording, export_csv,
-            count_samples, save_bytes, query_events, clear_events
+            count_samples, save_bytes, query_events, clear_events, analyze
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

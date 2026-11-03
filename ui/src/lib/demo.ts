@@ -10,7 +10,7 @@
 // sample (for screenshots); `&log=i,p`, `&trace=mean,range,sigma` set the view.
 
 import type { Link, LinkEvents } from './device';
-import { core, type Calibration, type Meta, type RawSpanStats, type Reply, type TrigEvent, type TriggerCfg } from './nbp';
+import { core, type AnalysisRequest, type AnalysisResult, type Calibration, type Meta, type RawSpanStats, type Reply, type TrigEvent, type TriggerCfg } from './nbp';
 
 const RATE = 2_000_000;
 const TICK_MS = 40;
@@ -138,6 +138,10 @@ export class DemoLink implements Link {
 
   async clearEvents() {
     this.pipeline.clear_events();
+  }
+
+  async analyze(t0: number, t1: number, req: AnalysisRequest) {
+    return this.pipeline.analyze(t0, t1, req) as AnalysisResult;
   }
   async lod(t0: number, t1: number, bins: number) {
     return this.pipeline.lod(t0, t1, bins);

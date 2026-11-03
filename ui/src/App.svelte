@@ -28,6 +28,7 @@
   import { DemoLink, demoRequested, demoSelection } from './lib/demo';
   import { KIND_LABEL, TriggerState, type KindType, type TrigMode } from './lib/trigger.svelte';
   import EventList from './lib/EventList.svelte';
+  import Analysis from './lib/Analysis.svelte';
   import { drag, stored, store as save } from './lib/drag';
 
   /** full-rate buffer sizes, MB (4 bytes per sample) */
@@ -58,6 +59,8 @@
 
   // ---- data and view ------------------------------------------------------
   const store = new SampleStore();
+  /** the buffer holds samples (reactive; the store itself isn't) */
+  let hasData = $state(false);
   const view = new View();
   const trig = new TriggerState();
   function loadBufferMB(): number {
@@ -264,7 +267,7 @@
   }
 
   // ---- trigger ------------------------------------------------------------
-  let activeLink: Link | null = null;
+  let activeLink = $state.raw<Link | null>(null);
   function setLink(l: Link | null) {
     activeLink = l;
   }
@@ -327,6 +330,25 @@
   }
 
   let bottomTab = $state<'markers' | 'events'>('markers');
+
+  // ---- analysis ---------------------------------------------------------------
+  let analysis = $state<{ span: [number, number]; label: string } | null>(null);
+
+  function openAnalysis() {
+    const m = view.activeMarker;
+    if (m && m.t1 != null) analysis = { span: [m.t0, m.t1], label: `${markerName(m)}: ${fmtTime(m.t1 - m.t0)}` };
+    else {
+      const sp = view.span(store);
+      analysis = { span: sp, label: `the screen: ${fmtTime(sp[1] - sp[0])}` };
+    }
+  }
+
+  function showSpan(t0: number, t1: number) {
+    view.hold(store);
+    const m = view.addDual(t0, t1);
+    analysis = null;
+    zoomToMarker(m.id);
+  }
 
   // ---- sidebar widths --------------------------------------------------------
   const LEFT_W = 280, RIGHT_W = 280;
@@ -566,6 +588,7 @@
   }
 
   function reset() {
+    hasData = false;
     store.attach(null);
     setLink(null);
     dev = null;
@@ -585,6 +608,7 @@
 
   function onMeta(m: Meta) {
     store.update(m);
+    if (hasData !== m.has_data) hasData = m.has_data;
     recording = m.recording;
     if (fitPending && !store.empty) {
       fitPending = false;
@@ -725,6 +749,10 @@
 </script>
 
 <svelte:window onkeydown={onKey} />
+
+{#if analysis}
+  <Analysis link={activeLink} span={analysis.span} spanLabel={analysis.label} onclose={() => (analysis = null)} onshow={showSpan} />
+{/if}
 
 <div class="app" style="grid-template-columns: {leftW}px 1fr {rightW}px">
   <!-- column splitters: on the grid, so the sidebars' scrolling doesn't move or clip them -->
@@ -1134,8 +1162,8 @@
       </div>
       {#if rateHz}<span class="mono muted">{fmtRate(rateHz)} · N={1 << log2n}</span>{/if}
       <div class="tdiv">
-        <button class="ghost small" onclick={addSingleMarker} disabled={store.empty} title="Single marker (M, or double-click a plot)">+ Marker</button>
-        <button class="ghost small" onclick={addDualMarker} disabled={store.empty} title="Dual marker (D, or drag across a plot)">+ Dual</button>
+        <button class="ghost small" onclick={addSingleMarker} disabled={!hasData} title="Single marker (M, or double-click a plot)">+ Marker</button>
+        <button class="ghost small" onclick={addDualMarker} disabled={!hasData} title="Dual marker (D, or drag across a plot)">+ Dual</button>
         {#if view.markers.length}
           <button class="ghost small" onclick={() => view.clearMarkers()} title="Remove all markers">Clear</button>
         {/if}
@@ -1147,9 +1175,10 @@
           </button>
         {/if}
         {#if isNative}
-          <button class="ghost small" onclick={exportCsv} disabled={store.empty} title="Every sample of the active dual marker's span (or the screen) as CSV">CSV</button>
+          <button class="ghost small" onclick={exportCsv} disabled={!hasData} title="Every sample of the active dual marker's span (or the screen) as CSV">CSV</button>
         {/if}
-        <button class="ghost small" onclick={exportPng} disabled={store.empty} title="The plots as a PNG image">PNG</button>
+        <button class="ghost small" onclick={exportPng} disabled={!hasData} title="The plots as a PNG image">PNG</button>
+        <button class="ghost small" onclick={openAnalysis} disabled={!hasData} title="Histogram, CDF, spectrum, worst window over the active dual marker (or the screen)">Analyze</button>
       </div>
       <span class="legend muted" title="Each pixel column covers many samples">
         {#if trace.mean}<span class="key"><i class="line"></i>mean</span>{/if}

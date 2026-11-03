@@ -450,6 +450,18 @@ impl SampleBuffer {
         }
     }
 
+    /// The raw samples in [t0, t1), copied out (for analysis away from the buffer's lock).
+    pub fn extract(&self, t0: f64, t1: f64) -> crate::analysis::Extract {
+        let mut runs = Vec::new();
+        for k in 0..self.segs.len() {
+            let Some((a, b)) = self.span_in(k, t0, t1) else { continue };
+            let s = self.segs[k];
+            let v: Vec<u32> = (a..b).map(|idx| self.raw[(idx % self.cap) as usize]).collect();
+            runs.push((Self::time_of(&s, a), s.step as f64 * TS_PERIOD_S, v));
+        }
+        crate::analysis::Extract { runs, cal: self.cal.clone() }
+    }
+
     /// Samples in [t0, t1).
     pub fn count(&self, t0: f64, t1: f64) -> u64 {
         (0..self.segs.len()).filter_map(|k| self.span_in(k, t0, t1)).map(|(a, b)| b - a).sum()

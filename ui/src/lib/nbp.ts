@@ -194,3 +194,27 @@ export class NbpError extends Error {
 export function hex(v: number, digits = 8): string {
   return '0x' + (v >>> 0).toString(16).toUpperCase().padStart(digits, '0');
 }
+
+/** analysis.rs Request */
+export type AnalysisRequest =
+  | { kind: 'histogram'; source: Signal; bins: number; log: boolean }
+  | { kind: 'psd'; source: Signal; nfft: number }
+  | { kind: 'maxwindow'; source: Signal; width: number };
+
+/** analysis.rs Result */
+export type AnalysisResult =
+  | {
+      kind: 'histogram';
+      edges: number[];
+      counts: number[];
+      n: number;
+      excluded: number;
+      mean: number;
+      std: number;
+      min: number;
+      max: number;
+      percentiles: [number, number][];
+    }
+  | { kind: 'psd'; freq: number[]; psd: number[]; segments: number; resolution: number; rms: number }
+  | { kind: 'maxwindow'; t: number; width: number; mean: number; span_mean: number }
+  | { kind: 'empty'; reason: string };

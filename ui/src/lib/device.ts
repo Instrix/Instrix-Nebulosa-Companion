@@ -9,6 +9,8 @@ import {
   core,
   type Decim,
   type Info,
+  type AnalysisRequest,
+  type AnalysisResult,
   type Calibration,
   type Meta,
   type RawSpanStats,
@@ -41,6 +43,8 @@ export interface Link {
   /** trigger events with seq ≥ since, oldest first */
   events(since: number, max: number): Promise<TrigEvent[]>;
   clearEvents(): Promise<void>;
+  /** analysis over [t0, t1) */
+  analyze(t0: number, t1: number, req: AnalysisRequest): Promise<AnalysisResult>;
   close(): Promise<void>;
 }
 

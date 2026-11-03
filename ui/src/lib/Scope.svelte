@@ -184,7 +184,8 @@
   /** tick labels: one prefix for a linear axis; per tick on a log axis */
   function siValues(unit: string, log: boolean) {
     return (_u: uPlot, v: number[]) => {
-      if (log) return v.map((x) => fmtSI(x, unit, 1));
+      // uPlot thins crowded log ticks by passing null
+      if (log) return v.map((x) => (x == null ? '' : fmtSI(x, unit, 1)));
       const mag = Math.max(...v.map(Math.abs));
       const p = prefixFor(mag);
       const step = v.length > 1 ? Math.abs(v[1] - v[0]) / p[0] : 1;

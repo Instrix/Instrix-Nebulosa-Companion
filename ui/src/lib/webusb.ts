@@ -14,6 +14,8 @@ import {
   USB_SUBCLASS,
   USB_VID,
   core,
+  type AnalysisRequest,
+  type AnalysisResult,
   type Calibration,
   type Meta,
   type RawSpanStats,
@@ -180,6 +182,10 @@ class WebUsbLink implements Link {
 
   async clearEvents() {
     this.pipeline.clear_events();
+  }
+
+  async analyze(t0: number, t1: number, req: AnalysisRequest) {
+    return this.pipeline.analyze(t0, t1, req) as AnalysisResult;
   }
 
   async close() {

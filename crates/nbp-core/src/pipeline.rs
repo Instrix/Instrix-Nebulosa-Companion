@@ -258,6 +258,11 @@ impl Pipeline {
         self.buf.for_each(t0, t1, f);
     }
 
+    /// The span's raw samples, copied out: analyse with `analysis::run` without holding the pipeline.
+    pub fn extract(&self, t0: f64, t1: f64) -> crate::analysis::Extract {
+        self.buf.extract(t0, t1)
+    }
+
     pub fn count_samples(&self, t0: f64, t1: f64) -> u64 {
         self.buf.count(t0, t1)
     }

@@ -44,3 +44,27 @@ export function parseSI(s: string): number {
   if (!m) return NaN;
   return parseFloat(m[1]) * (m[2] ? PARSE[m[2]] : 1);
 }
+
+/** Evenly spaced ticks: n divisions of [min, max]. */
+export function evenSplits(n: number) {
+  return (_u: unknown, _i: number, min: number, max: number) => Array.from({ length: n + 1 }, (_, k) => min + (k * (max - min)) / n);
+}
+
+/**
+ * Log axis ticks: every decade, plus 2 and 5 within it when there are few
+ * decades; evenly spaced within a single decade. (uPlot's own log splitter
+ * can loop forever when its increment comes out as a non-power of ten.)
+ */
+export function logSplits(_u: unknown, _i: number, min: number, max: number): number[] {
+  if (!(min > 0) || !(max > min)) return [];
+  const lo = Math.floor(Math.log10(min));
+  const hi = Math.ceil(Math.log10(max));
+  const mults = hi - lo <= 3 ? [1, 2, 5] : [1];
+  const out: number[] = [];
+  for (let e = lo; e <= hi && out.length < 64; e++)
+    for (const k of mults) {
+      const v = k * 10 ** e;
+      if (v >= min && v <= max) out.push(v);
+    }
+  return out.length >= 2 ? out : evenSplits(4)(_u, _i, min, max);
+}

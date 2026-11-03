@@ -5,6 +5,7 @@
 //! transports (native USB / TCP, WebUSB through the `wasm` feature) feed it
 //! bytes and send the bytes it encodes.
 //!
+//! - [`analysis`]: histogram / CDF, PSD, worst window over a span
 //! - [`buffer`]: every sample, with a summary pyramid for fast span queries
 //! - [`frame`]: message header, encoding, a resyncing byte-stream parser
 //! - [`msg`]: command codes and payload structs
@@ -14,6 +15,7 @@
 //! - [`recording`]: the .nbrec file format
 //! - [`pipeline`]: all of the above for one connection
 
+pub mod analysis;
 pub mod buffer;
 pub mod frame;
 pub mod msg;

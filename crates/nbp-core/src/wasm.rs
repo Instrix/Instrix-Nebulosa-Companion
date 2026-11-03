@@ -60,6 +60,12 @@ impl Pipeline {
         self.0.clear_events();
     }
 
+    /// analysis::run over [t0, t1): req is an analysis::Request
+    pub fn analyze(&self, t0: f64, t1: f64, req: JsValue) -> Result<JsValue, JsValue> {
+        let r: crate::analysis::Request = serde_wasm_bindgen::from_value(req)?;
+        Ok(to_js(&crate::analysis::run(&self.0.extract(t0, t1), &r)))
+    }
+
     pub fn set_buffer_samples(&mut self, n: usize) {
         self.0.set_buffer_samples(n);
     }
