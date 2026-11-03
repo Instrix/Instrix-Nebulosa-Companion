@@ -5,10 +5,10 @@
   // axis freezes too, so the box stays put while data keeps coming in; the
   // right tag counts what arrived since.
   import { onMount } from 'svelte';
-  import type { PointStore } from './store';
-  import { fmtTime, type View } from './view.svelte';
+  import type { Lod, SampleStore } from './store';
+  import { fmtTime, markerColor, type View } from './view.svelte';
 
-  let { store, view }: { store: PointStore; view: View } = $props();
+  let { store, view }: { store: SampleStore; view: View } = $props();
 
   const DATA_FRAME_MS = 120; // new data alone redraws at this pace; interaction redraws at once
 
@@ -43,28 +43,59 @@
     return [store.tEnd - len, store.tEnd];
   }
 
+  let cached: { l: Lod; axis: [number, number] } | null = null;
+  let lodVersion = -1;
+  let lodAxis = '';
+  let inflight = false;
+  let dirty = true;
+
   function draw(now: number) {
     raf = requestAnimationFrame(draw);
-    const sel = view.selection;
-    const viewKey = [view.live, view.end, view.divIndex, sel?.join(), canvas.clientWidth, canvas.clientHeight].join('|');
-    const dataChanged = store.version + '' !== lastKey.split('#')[1];
-    const viewChanged = viewKey !== lastKey.split('#')[0];
-    if (!viewChanged && !(dataChanged && now - lastData > DATA_FRAME_MS)) return;
-    if (dataChanged) lastData = now;
-    lastKey = viewKey + '#' + store.version;
-
     const dpr = devicePixelRatio;
     const W = Math.round(canvas.clientWidth * dpr);
     const H = Math.round(canvas.clientHeight * dpr);
+    const bins = Math.max(50, Math.round(W / dpr));
+
+    // fetch: when the data or the axis changed, at most every DATA_FRAME_MS
+    const ax = axisSpan();
+    const axKey = `${ax[0]},${ax[1]},${bins}`;
+    if (!inflight && (store.version !== lodVersion || axKey !== lodAxis) && now - lastData > DATA_FRAME_MS) {
+      inflight = true;
+      lastData = now;
+      const v = store.version;
+      store
+        .lod(ax[0], ax[1], bins)
+        .then((l) => {
+          cached = { l, axis: ax };
+          lodVersion = v;
+          lodAxis = axKey;
+          dirty = true;
+        })
+        .catch((e) => console.warn('overview lod', e))
+        .finally(() => (inflight = false));
+    }
+
+    // paint: on new data, or at once when the view / markers change
+    const viewKey = [
+      view.live, view.end, view.divIndex, view.active,
+      view.markers.map((m) => `${m.t0}:${m.t1}`).join(),
+      W, H, store.empty,
+    ].join('|');
+    if (viewKey !== lastKey) dirty = true;
+    if (!dirty) return;
+    dirty = false;
+    lastKey = viewKey;
+
     if (canvas.width !== W || canvas.height !== H) {
       canvas.width = W;
       canvas.height = H;
     }
     const ctx = canvas.getContext('2d')!;
     ctx.clearRect(0, 0, W, H);
-    if (store.empty) return;
+    if (store.empty || !cached) return;
 
-    axis = axisSpan();
+    const L = cached.l;
+    axis = cached.axis;
     const [t0, t1] = axis;
     const label = fmtTime(-(t1 - Math.max(t0, store.tStart)));
     if (label !== historyLabel) historyLabel = label;
@@ -72,8 +103,6 @@
     const nw = !view.live && ahead > 0.05 ? `+${fmtTime(ahead, 2)} ▸` : '';
     if (nw !== newer) newer = nw;
     const x = (t: number) => ((t - t0) / (t1 - t0)) * W;
-    const bins = Math.max(50, Math.round(W / dpr));
-    const L = store.lod(t0, t1, bins);
     const T = L.t;
     const { min: IMIN, max: IMAX, avg: IAVG } = L.ch.i;
     const VAVG = L.ch.v.avg;
@@ -121,12 +150,20 @@
     line(VAVG, yv, V + 'aa');
     line(IAVG, yi, I);
 
-    // selection
-    if (sel) {
-      const col = cssVar('--sel');
-      ctx.fillStyle = col + '55';
-      ctx.fillRect(x(sel[0]), 0, Math.max(2 * dpr, x(sel[1]) - x(sel[0])), H);
+    // markers
+    for (const m of view.markers) {
+      const col = markerColor(m);
+      ctx.globalAlpha = m.id === view.active ? 0.6 : 0.35;
+      ctx.fillStyle = col;
+      const a0 = x(m.t0);
+      const w = m.t1 == null ? 2 * dpr : Math.max(2 * dpr, x(m.t1) - a0);
+      ctx.fillRect(a0, 0, w, H);
+      ctx.globalAlpha = 1;
     }
+
+    // gaps: missing samples
+    ctx.fillStyle = cssVar('--danger');
+    for (const g of L.gaps) ctx.fillRect(x(g) - dpr, H - 6 * dpr, 2 * dpr, 6 * dpr);
 
     // window box; dim what's outside it
     const [w0, w1] = view.span(store);

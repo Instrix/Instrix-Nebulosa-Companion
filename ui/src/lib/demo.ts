@@ -1,74 +1,142 @@
-// Synthetic data for UI work without hardware: open the UI with `?demo`.
-// A 3.3 V rail feeding a load that idles at ~200 µA and wakes every 500 ms
-// for a 40 ms burst of ~25 mA, with noise. `?demo&sel=a,b` also selects
-// [a, b] s before the newest point (for screenshots).
+// Synthetic device for UI work without hardware: open the UI with `?demo`.
+//
+// It builds real NBP DATA messages (format-5 FPGA words: block headers,
+// timestamps, samples) at 2 MS/s and feeds them to the same WASM pipeline a
+// WebUSB device would, so everything after the transport is the real thing.
+// The load: a 3.3 V rail, idle at ~200 µA, waking every 500 ms for a 40 ms
+// burst of ~25 mA with a ripple, plus noise; now and then a 15 ms gap.
+//
+// `?demo&sel=a,b` also puts a dual marker at [a, b] s before the newest
+// sample (for screenshots); `&log=i,p`, `&trace=mean,range,sigma` set the view.
 
-import type { Meta, Points } from './nbp';
+import type { Link, LinkEvents } from './device';
+import { core, type Calibration, type Meta, type RawSpanStats, type Reply } from './nbp';
 
-const POINTS_PER_S = 4000;
+const RATE = 2_000_000;
 const TICK_MS = 40;
-const SAMPLES_PER_POINT = 500; // 2 MS/s
-
-export function startDemo(onPoints: (p: Points) => void, onMeta: (m: Meta) => void): () => void {
-  let t = 0;
-  let charge = 0;
-  let energy = 0;
-  let id = 0;
-  const per = (POINTS_PER_S * TICK_MS) / 1000;
-  const tick = () => {
-    const len = per;
-    const f = new Float64Array(len * 16);
-    const col = (k: number) => f.subarray(k * len, (k + 1) * len);
-    const [T, N, R, D] = [col(0), col(1), col(2), col(3)];
-    const ch = (o: number) => ({ min: col(o), max: col(o + 1), avg: col(o + 2), m2: col(o + 3) });
-    const I = ch(4), V = ch(8), P = ch(12);
-    for (let k = 0; k < len; k++) {
-      const phase = t % 0.5;
-      const burst = phase < 0.04;
-      const base = burst ? 25e-3 + 3e-3 * Math.sin(phase * 900) : 200e-6 + 20e-6 * Math.sin(t * 7);
-      const noise = burst ? 2e-3 : 30e-6;
-      const i = base + (Math.random() - 0.5) * noise * 0.3;
-      const v = 3.3 - i * 0.8 + (Math.random() - 0.5) * 2e-3;
-      T[k] = t;
-      N[k] = SAMPLES_PER_POINT;
-      R[k] = burst ? 2 : 4;
-      D[k] = 0;
-      const set = (c: typeof I, mean: number, spread: number) => {
-        c.avg[k] = mean;
-        c.min[k] = mean - spread * (0.5 + Math.random() * 0.5);
-        c.max[k] = mean + spread * (0.5 + Math.random() * 0.5);
-        c.m2[k] = ((spread / 3) ** 2) * SAMPLES_PER_POINT;
-      };
-      set(I, i, noise);
-      set(V, v, 1e-3);
-      set(P, i * v, noise * v);
-      charge += i / POINTS_PER_S;
-      energy += (i * v) / POINTS_PER_S;
-      t += 1 / POINTS_PER_S;
-    }
-    onPoints({ len, t: T, n: N, range: R, dirty: D, i: I, v: V, p: P });
-    onMeta({
-      stats: {
-        blocks: id, lost_blocks: 0, stall_flags: 0, gap_flags: 0, test_blocks: 0, bad_blocks: 0,
-        bytes: Math.round(t * 8e6), resyncs: 0,
-        stream: { samples: Math.round(t * 2e6), dirty: 0, blocks: 0, empty: 0, late: 0, ovf_blocks: 0, range_changes: 0, seq_errors: 0, malformed: 0, unframed: 0, gap_periods: 0 },
-      },
-      accum: { charge, energy, seconds: t },
-      log2n: 0,
-      stream_id: 1,
-    });
-    id++;
-  };
-  const timer = setInterval(tick, TICK_MS);
-  return () => clearInterval(timer);
-}
+const WORDS_PER_DATA = 507;
+const RANGE_FS = [2, 0.2, 20e-3, 2e-3, 200e-6, 20e-6];
 
 export const demoRequested = typeof location !== 'undefined' && new URLSearchParams(location.search).has('demo');
 
-/** `sel=a,b`: seconds before the newest point */
+/** `sel=a,b`: seconds before the newest sample */
 export function demoSelection(): [number, number] | null {
   const s = new URLSearchParams(location.search).get('sel');
   if (!s) return null;
   const [a, b] = s.split(',').map(Number);
   return isFinite(a) && isFinite(b) ? [a, b] : null;
+}
+
+/** the smallest range whose full scale holds `a` with some margin */
+function rangeFor(a: number) {
+  for (let r = RANGE_FS.length - 1; r >= 0; r--) if (a < RANGE_FS[r] * 0.9) return r;
+  return 0;
+}
+
+class Generator {
+  private ts = 0; // 500 ns periods (= samples at 2 MS/s)
+  private blockSeq = 0; // FPGA block sequence
+  private dataSeq = 0; // NBP DATA sequence
+  private words: number[] = [];
+  private inBlock = 0;
+  private range = -1;
+  private first = true;
+
+  /** `n` samples' worth of DATA messages */
+  next(n: number): Uint8Array[] {
+    for (let k = 0; k < n; k++) {
+      const t = this.ts / RATE;
+      // now and then a gap: 15 ms of lost samples
+      if (this.ts % (RATE * 2.7) < 1 && this.ts > 0) {
+        this.ts += RATE * 0.015;
+        this.range = -1; // a new block after the gap
+      }
+      const phase = t % 0.5;
+      const burst = phase < 0.04;
+      const base = burst ? 25e-3 + 3e-3 * Math.sin(phase * 900) : 200e-6 + 20e-6 * Math.sin(t * 7);
+      const i = Math.max(0, base * (1 + (Math.random() - 0.5) * (burst ? 0.08 : 0.15)));
+      const v = 3.3 - i * 0.8 + (Math.random() - 0.5) * 2e-3;
+      const r = rangeFor(i);
+      if (r !== this.range || this.inBlock >= 256) this.header(r);
+      const ic = Math.min(16383, Math.round((i / RANGE_FS[r]) * 16384));
+      const vc = Math.min(16383, Math.round(v / 1e-3));
+      this.words.push(((1 << 31) | (ic << 14) | vc) >>> 0);
+      this.inBlock++;
+      this.ts++;
+    }
+    const out: Uint8Array[] = [];
+    while (this.words.length >= WORDS_PER_DATA) out.push(this.data(this.words.splice(0, WORDS_PER_DATA)));
+    return out;
+  }
+
+  private header(range: number) {
+    this.range = range;
+    this.inBlock = 0;
+    const seq = this.blockSeq++ & 0xffff;
+    this.words.push(((2 << 29) | (seq << 11) | (range << 2) | 2) >>> 0);
+    this.words.push(((2 << 29) | (1 << 27) | (Math.floor(this.ts / 2 ** 24) & 0xffffff)) >>> 0);
+    this.words.push(((2 << 29) | (2 << 27) | (this.ts & 0xffffff)) >>> 0);
+  }
+
+  private data(words: number[]): Uint8Array {
+    const b = new Uint8Array(2048);
+    const d = new DataView(b.buffer);
+    const seq = this.dataSeq++;
+    b[0] = 0x4e; // 'N'
+    b[1] = 0x42; // 'B'
+    b[2] = 0x80; // DATA
+    d.setUint16(4, seq & 0xffff, true);
+    d.setUint16(6, 2040, true);
+    d.setUint32(8, seq, true);
+    d.setUint32(12, 0, true);
+    d.setUint16(16, words.length, true);
+    d.setUint16(18, this.first ? 1 : 0, true); // FIRST
+    this.first = false;
+    words.forEach((w, k) => d.setUint32(20 + k * 4, w, false)); // FPGA words are big-endian
+    return b;
+  }
+}
+
+/** A Link to the synthetic device; commands are accepted and ignored. */
+export class DemoLink implements Link {
+  readonly description = 'Demo device (synthetic, 2 MS/s)';
+  private pipeline = new core.Pipeline();
+  private gen = new Generator();
+  private timers: ReturnType<typeof setInterval>[] = [];
+
+  constructor(ev: LinkEvents) {
+    let sent = -1;
+    this.timers.push(
+      setInterval(() => {
+        for (const m of this.gen.next((RATE * TICK_MS) / 1000)) this.pipeline.push(0, m);
+        const meta = this.pipeline.meta() as Meta;
+        if (meta.version !== sent) {
+          sent = meta.version;
+          ev.onMeta(meta);
+        }
+      }, TICK_MS),
+    );
+  }
+
+  async request(cmd: number): Promise<Reply> {
+    return { ty: cmd | 0x40, status: 0, payload: new Uint8Array() };
+  }
+  async setBuffer(samples: number) {
+    this.pipeline.set_buffer_samples(samples);
+  }
+  async setCalibration(c: Calibration) {
+    this.pipeline.set_calibration(c);
+  }
+  async lod(t0: number, t1: number, bins: number) {
+    return this.pipeline.lod(t0, t1, bins);
+  }
+  async stats(t0: number, t1: number) {
+    return this.pipeline.stats(t0, t1) as RawSpanStats | null;
+  }
+  async valueAt(t: number) {
+    return this.pipeline.value_at(t) as [number, number, number] | null;
+  }
+  async close() {
+    for (const t of this.timers) clearInterval(t);
+  }
 }

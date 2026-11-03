@@ -14,8 +14,9 @@ import {
   USB_SUBCLASS,
   USB_VID,
   core,
-  decodePoints,
   type Calibration,
+  type Meta,
+  type RawSpanStats,
   type Reply,
 } from './nbp';
 
@@ -25,7 +26,7 @@ const FILTERS: USBDeviceFilter[] = [
 ];
 const IN_TRANSFER = 16 * 1024;
 const IN_QUEUE = 8;
-const BATCH_MS = 40;
+const META_MS = 40;
 
 export const webUsbAvailable = typeof navigator !== 'undefined' && 'usb' in navigator;
 
@@ -68,13 +69,14 @@ class WebUsbLink implements Link {
     if (!out || ins.length === 0) throw new Error('NBP interface without bulk endpoints');
     this.outEp = out.endpointNumber;
     ins.forEach((e, src) => void this.readLoop(e.endpointNumber, src));
+    let sent = -1;
     this.timer = setInterval(() => {
-      const b = this.pipeline.take_batch();
-      if (b) {
-        this.ev.onPoints(decodePoints(b));
-        this.ev.onMeta(this.pipeline.meta());
+      const m = this.pipeline.meta() as Meta;
+      if (m.version !== sent) {
+        sent = m.version;
+        this.ev.onMeta(m);
       }
-    }, BATCH_MS);
+    }, META_MS);
     navigator.usb.addEventListener('disconnect', this.onDisconnect);
   }
 
@@ -146,8 +148,20 @@ class WebUsbLink implements Link {
     }
   }
 
-  async setBucket(n: number) {
-    this.pipeline.set_bucket(n);
+  async setBuffer(samples: number) {
+    this.pipeline.set_buffer_samples(samples);
+  }
+
+  async lod(t0: number, t1: number, bins: number) {
+    return this.pipeline.lod(t0, t1, bins);
+  }
+
+  async stats(t0: number, t1: number) {
+    return this.pipeline.stats(t0, t1) as RawSpanStats | null;
+  }
+
+  async valueAt(t: number) {
+    return this.pipeline.value_at(t) as [number, number, number] | null;
   }
 
   async setCalibration(c: Calibration) {

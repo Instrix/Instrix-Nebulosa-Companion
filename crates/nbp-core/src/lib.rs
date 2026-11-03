@@ -5,17 +5,17 @@
 //! transports (native USB / TCP, WebUSB through the `wasm` feature) feed it
 //! bytes and send the bytes it encodes.
 //!
+//! - [`buffer`]: every sample, with a summary pyramid for fast span queries
 //! - [`frame`]: message header, encoding, a resyncing byte-stream parser
 //! - [`msg`]: command codes and payload structs
 //! - [`stream`]: the FPGA sample stream, format 5
 //! - [`units`]: codes to A / V (calibration)
-//! - [`reduce`]: min / max / mean / M2 reduction of samples for display
 //! - [`pipeline`]: all of the above for one connection
 
+pub mod buffer;
 pub mod frame;
 pub mod msg;
 pub mod pipeline;
-pub mod reduce;
 pub mod stream;
 pub mod units;
 
@@ -25,7 +25,6 @@ pub mod wasm;
 pub use frame::{encode, Frame, FrameParser};
 pub use pipeline::{Accum, DataStats, Meta, Pipeline};
 pub use units::Calibration;
-pub use reduce::Batch;
 
 pub(crate) fn le16(b: &[u8], o: usize) -> u16 {
     u16::from_le_bytes([b[o], b[o + 1]])

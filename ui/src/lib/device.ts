@@ -11,12 +11,11 @@ import {
   type Info,
   type Calibration,
   type Meta,
-  type Points,
+  type RawSpanStats,
   type Reply,
 } from './nbp';
 
 export interface LinkEvents {
-  onPoints(p: Points): void;
   onMeta(m: Meta): void;
   onClosed(reason: string): void;
 }
@@ -25,8 +24,13 @@ export interface LinkEvents {
 export interface Link {
   readonly description: string;
   request(cmd: number, payload?: Uint8Array, timeoutMs?: number): Promise<Reply>;
-  /** samples per display point */
-  setBucket(n: number): Promise<void>;
+  /** samples the full-rate buffer holds (resizing drops its contents) */
+  setBuffer(samples: number): Promise<void>;
+  /** [t0, t1] in `bins` columns: buffer.rs lod's flat layout */
+  lod(t0: number, t1: number, bins: number): Promise<Float64Array>;
+  stats(t0: number, t1: number): Promise<RawSpanStats | null>;
+  /** [A, V, range] of the sample at or before t */
+  valueAt(t: number): Promise<[number, number, number] | null>;
   /** codes to units, for samples from now on */
   setCalibration(c: Calibration): Promise<void>;
   close(): Promise<void>;

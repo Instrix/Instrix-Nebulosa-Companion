@@ -87,44 +87,27 @@ export interface DataStats {
   stream: StreamCounters;
 }
 
-/** One channel's point columns (SI units: A, V, W). m2: sum of squared deviations. */
-export interface ChanCols {
-  min: Float64Array;
-  max: Float64Array;
-  avg: Float64Array;
-  m2: Float64Array;
-}
-
-/** Display points (Batch::to_f64 in nbp-core); n = 0 marks a gap point (values NaN). */
-export interface Points {
-  len: number;
-  t: Float64Array;
-  n: Float64Array;
-  range: Float64Array;
-  dirty: Float64Array;
-  i: ChanCols;
-  v: ChanCols;
-  p: ChanCols;
-}
-
 export const SIGNALS = ['i', 'v', 'p'] as const;
 export type Signal = (typeof SIGNALS)[number];
 
-const BATCH_LAYOUT = 1;
-const BATCH_COLS = 16;
+/** buffer.rs Moments: one channel over a span (m2: sum of squared deviations) */
+export interface RawMoments {
+  n: number;
+  mean: number;
+  m2: number;
+  min: number;
+  max: number;
+}
 
-export function decodePoints(f: Float64Array): Points {
-  if (f[0] !== BATCH_LAYOUT || f[2] !== BATCH_COLS) throw new Error(`point layout ${f[0]}/${f[2]} not supported`);
-  const len = f[1];
-  let o = 3;
-  const col = () => {
-    const c = f.subarray(o, o + len);
-    o += len;
-    return c;
-  };
-  const chan = (): ChanCols => ({ min: col(), max: col(), avg: col(), m2: col() });
-  const t = col(), n = col(), range = col(), dirty = col();
-  return { len, t, n, range, dirty, i: chan(), v: chan(), p: chan() };
+/** buffer.rs SpanStats */
+export interface RawSpanStats {
+  m: Record<Signal, RawMoments>;
+  t0: number | null;
+  t1: number | null;
+  /** C */
+  charge: number;
+  /** J */
+  energy: number;
 }
 
 export interface Accum {
@@ -139,8 +122,18 @@ export interface Accum {
 export interface Meta {
   stats: DataStats;
   accum: Accum;
+  /** every sample since the stream started */
+  run: Record<Signal, RawMoments>;
   log2n: number;
   stream_id: number;
+  /** what the sample buffer holds */
+  has_data: boolean;
+  t_start: number;
+  t_end: number;
+  version: number;
+  buffer_samples: number;
+  /** s per sample at the current decimation */
+  sample_period: number;
 }
 
 /** units.rs Calibration */

@@ -1,14 +1,15 @@
 //! Everything one connection needs on the receive side: a frame parser per
 //! source (each USB IN endpoint is its own byte stream; TCP is one), DATA
-//! block checks, the format-5 decoder, conversion to physical units,
-//! charge / energy integration and the display reducer.
+//! block checks, the format-5 decoder, the full-rate sample buffer, the
+//! since-start statistics and the charge / energy integrals.
 //!
-//! Transports push bytes in and take out responses, point batches and
-//! [`Meta`] (counters, accumulators).
+//! Transports push bytes in and take out responses and [`Meta`] (counters,
+//! accumulators, what the buffer holds); the UI queries the buffer
+//! ([`Pipeline::lod`], [`Pipeline::stats`], [`Pipeline::value_at`]).
 
 use crate::frame::{Frame, FrameParser};
 use crate::msg::{self, BlockHdr};
-use crate::reduce::{Batch, Phys, Reducer};
+use crate::buffer::{Moments3, SampleBuffer, SpanStats};
 use crate::stream::{StreamCounters, StreamDecoder, Word, TS_PERIOD_S};
 use crate::units::Calibration;
 use serde::Serialize;
@@ -42,28 +43,41 @@ pub struct Accum {
     pub seconds: f64,
 }
 
-/// Everything but the points; small, sent with every batch.
+/// Everything but the samples; small, sent to the UI a few dozen times a second.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Meta {
     pub stats: DataStats,
     pub accum: Accum,
+    /// every sample since the stream started
+    pub run: Moments3,
     /// decimation of the latest FPGA block header: N = 2^log2n
     pub log2n: u8,
     /// bumped at every stream start (FIRST block)
     pub stream_id: u32,
+    /// the buffer: whether it holds samples, their time span (s), its version
+    pub has_data: bool,
+    pub t_start: f64,
+    pub t_end: f64,
+    pub version: u64,
+    pub buffer_samples: u64,
+    /// s per sample at the current decimation
+    pub sample_period: f64,
 }
+
+/// Samples the buffer holds by default (4 bytes each): 64 MB.
+pub const DEFAULT_BUFFER_SAMPLES: usize = 16 << 20;
 
 pub struct Pipeline {
     parsers: [FrameParser; MAX_SOURCES],
     decoder: StreamDecoder,
-    reducer: Reducer,
+    buf: SampleBuffer,
+    run: Moments3,
     responses: Vec<Frame>,
     expect_seq: Option<u32>,
     stats: DataStats,
     cal: Calibration,
     accum: Accum,
     stream_id: u32,
-    fresh: bool,
 }
 
 impl Default for Pipeline {
@@ -77,24 +91,46 @@ impl Pipeline {
         Self {
             parsers: Default::default(),
             decoder: StreamDecoder::new(),
-            reducer: Reducer::default(),
+            buf: SampleBuffer::new(DEFAULT_BUFFER_SAMPLES, Calibration::default()),
+            run: Moments3::default(),
             responses: Vec::new(),
             expect_seq: None,
             stats: DataStats::default(),
             cal: Calibration::default(),
             accum: Accum::default(),
             stream_id: 0,
-            fresh: false,
         }
     }
 
-    pub fn set_bucket(&mut self, n: u32) {
-        self.reducer.set_bucket(n);
+    /// Resizes the sample buffer (drops what it holds).
+    pub fn set_buffer_samples(&mut self, n: usize) {
+        if n as u64 != self.buf.capacity() {
+            self.buf = SampleBuffer::new(n, self.cal.clone());
+        }
     }
 
-    /// Applies to samples from now on.
+    /// Rescales the buffer's samples too; the since-start statistics and the
+    /// accumulators apply it from now on.
     pub fn set_calibration(&mut self, cal: Calibration) {
+        self.buf.set_calibration(cal.clone());
         self.cal = cal;
+    }
+
+    pub fn segments(&self) -> usize {
+        self.buf.segments()
+    }
+
+    pub fn lod(&self, t0: f64, t1: f64, bins: usize) -> Vec<f64> {
+        self.buf.lod(t0, t1, bins)
+    }
+
+    pub fn stats(&self, t0: f64, t1: f64) -> SpanStats {
+        self.buf.stats(t0, t1)
+    }
+
+    /// (A, V, range) of the sample at or just before t
+    pub fn value_at(&self, t: f64) -> Option<(f64, f64, u8)> {
+        self.buf.value_at(t)
     }
 
     pub fn calibration(&self) -> &Calibration {
@@ -124,12 +160,12 @@ impl Pipeline {
         if h.flags & msg::BLK_FIRST != 0 {
             let resyncs = self.stats.resyncs;
             self.decoder = StreamDecoder::new();
-            self.reducer.reset();
+            self.buf.clear();
+            self.run = Moments3::default();
             self.stats = DataStats { resyncs, ..Default::default() };
             self.expect_seq = None;
             self.accum = Accum::default();
             self.stream_id = self.stream_id.wrapping_add(1);
-            self.fresh = true;
         }
         self.stats.blocks += 1;
         if let Some(e) = self.expect_seq {
@@ -161,9 +197,13 @@ impl Pipeline {
                 self.accum.charge += i * dt;
                 self.accum.energy += i * v * dt;
                 self.accum.seconds += dt;
-                self.reducer.push(&Phys { ts: s.ts, step: s.step, i, v, range: s.range, dirty: s.dirty });
+                self.run.i.add(i);
+                self.run.v.add(v);
+                self.run.p.add(i * v);
+                self.buf.push(s.ts, s.step, s.current, s.voltage, s.range, s.dirty);
             }
         }
+        self.buf.touch();
         self.stats.stream = self.decoder.c;
     }
 
@@ -171,22 +211,24 @@ impl Pipeline {
         std::mem::take(&mut self.responses)
     }
 
-    /// New points, or `None` when there are none and nothing changed. The
-    /// first batch after a FIRST block comes even if empty, so a UI can clear.
-    pub fn take_batch(&mut self) -> Option<Batch> {
-        let points = self.reducer.take();
-        if points.is_empty() && !self.fresh {
-            return None;
-        }
-        self.fresh = false;
-        Some(points)
-    }
-
     pub fn meta(&self) -> Meta {
-        Meta { stats: self.stats, accum: self.accum, log2n: self.decoder.log2n, stream_id: self.stream_id }
+        let range = self.buf.time_range();
+        Meta {
+            stats: self.stats,
+            accum: self.accum,
+            run: self.run,
+            log2n: self.decoder.log2n,
+            stream_id: self.stream_id,
+            has_data: range.is_some(),
+            t_start: range.map_or(0.0, |r| r.0),
+            t_end: range.map_or(0.0, |r| r.1),
+            version: self.buf.version,
+            buffer_samples: self.buf.capacity(),
+            sample_period: (1u64 << self.decoder.log2n) as f64 * TS_PERIOD_S,
+        }
     }
 
-    pub fn stats(&self) -> DataStats {
+    pub fn data_stats(&self) -> DataStats {
         self.stats
     }
 }
@@ -217,7 +259,7 @@ mod tests {
     #[test]
     fn data_and_responses() {
         let mut pl = Pipeline::new();
-        pl.set_bucket(1);
+        pl.set_buffer_samples(1 << 16);
         let w = block_words(0, 2, 0, 100, &[(1, 2, false), (3, 4, false)]);
         let mut bytes = data_msg(0, msg::BLK_FIRST, &w);
         bytes.extend(encode(msg::rsp(msg::cmd::PING), 5, b"x"));
@@ -227,19 +269,24 @@ mod tests {
         let r = pl.take_responses();
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].seq, 5);
-        let b = pl.take_batch().unwrap();
-        assert_eq!(b.len(), 2);
-        // code 1 in range 2 (20 mA full scale), 2 mV
-        assert!((b.i.avg[0] - 20e-3 / 16384.0).abs() < 1e-15);
-        assert!((b.v.avg[0] - 2e-3).abs() < 1e-15);
+        // code 1 in range 2 (20 mA full scale), 2 mV, at timestamp 100
+        let (i, v, r) = pl.value_at(100.0 * 500e-9).unwrap();
+        assert!((i - 20e-3 / 16384.0).abs() < 1e-15);
+        assert!((v - 2e-3).abs() < 1e-15);
+        assert_eq!(r, 2);
+        let s = pl.stats(0.0, 1.0);
+        assert_eq!(s.m.n(), 2);
+        assert!((s.m.i.mean - 2.0 * 20e-3 / 16384.0).abs() < 1e-15);
         let m = pl.meta();
         assert_eq!(m.stats.blocks, 1);
         assert_eq!(m.stats.stream.samples, 2);
         assert_eq!(m.stream_id, 1);
+        assert!(m.has_data);
+        assert_eq!(m.run.n(), 2);
         // charge: (1 + 3) codes x 20 mA / 16384 x 500 ns
         assert!((m.accum.charge - 4.0 * 20e-3 / 16384.0 * 500e-9).abs() < 1e-20);
         // a lost DATA block is counted
         pl.push(0, &data_msg(2, 0, &[]));
-        assert_eq!(pl.stats().lost_blocks, 1);
+        assert_eq!(pl.data_stats().lost_blocks, 1);
     }
 }

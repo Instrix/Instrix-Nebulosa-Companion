@@ -1,6 +1,7 @@
 //! A connection to one device: a writer for commands, reader tasks that feed
-//! raw bytes to one dispatcher task, which runs the [`Pipeline`], hands
-//! responses to the waiting request and sends point batches to the UI.
+//! raw bytes to one dispatcher task, which runs the [`Pipeline`] (shared with
+//! the query commands), hands responses to the waiting request and sends
+//! [`Meta`] to the UI. The UI reads samples by querying the pipeline.
 
 pub mod tcp;
 pub mod usb;
@@ -22,8 +23,7 @@ pub enum Target {
     Tcp { host: String, port: Option<u16> },
 }
 
-/// Pushed to the UI on the connection's channel as JSON. Points go as raw
-/// bytes (an ArrayBuffer in JS): `Batch::to_f64`, little-endian f64.
+/// Pushed to the UI on the connection's channel, as JSON.
 #[derive(Clone, Serialize)]
 #[serde(tag = "event", rename_all = "lowercase")]
 pub enum Event {
@@ -53,10 +53,8 @@ pub(crate) enum Input {
     Closed(String),
 }
 
-enum Ctl {
-    Bucket(u32),
-    Calibration(Calibration),
-}
+/// The pipeline, shared by the dispatcher and the query commands.
+pub type SharedPipeline = Arc<Mutex<Pipeline>>;
 
 pub(crate) enum Writer {
     Tcp(tokio::net::tcp::OwnedWriteHalf),
@@ -83,22 +81,25 @@ pub struct Conn {
     writer: Writer,
     pending: Pending,
     seq: u16,
-    ctl: mpsc::UnboundedSender<Ctl>,
     tasks: Vec<JoinHandle<()>>,
+    pub pipe: SharedPipeline,
     pub description: String,
 }
 
 impl Conn {
-    pub async fn open(target: Target, events: Events) -> Result<Conn, String> {
+    pub async fn open(target: Target, events: Events, buffer_samples: usize, cal: Calibration) -> Result<Conn, String> {
         let (in_tx, in_rx) = mpsc::channel::<Input>(256);
         let (writer, mut tasks, description) = match target {
             Target::Tcp { host, port } => tcp::open(&host, port.unwrap_or(msg::TCP_PORT), in_tx).await?,
             Target::Usb { id } => usb::open(&id, in_tx).await?,
         };
+        let mut p = Pipeline::new();
+        p.set_buffer_samples(buffer_samples);
+        p.set_calibration(cal);
+        let pipe: SharedPipeline = Arc::new(Mutex::new(p));
         let pending: Pending = Arc::default();
-        let (ctl_tx, ctl_rx) = mpsc::unbounded_channel();
-        tasks.push(tokio::spawn(dispatch(in_rx, ctl_rx, pending.clone(), events)));
-        Ok(Conn { writer, pending, seq: 0, ctl: ctl_tx, tasks, description })
+        tasks.push(tokio::spawn(dispatch(in_rx, pipe.clone(), pending.clone(), events)));
+        Ok(Conn { writer, pending, seq: 0, tasks, pipe, description })
     }
 
     /// One command, its response. The protocol has one command in flight at
@@ -121,14 +122,6 @@ impl Conn {
             }
         }
     }
-
-    pub fn set_bucket(&self, n: u32) {
-        let _ = self.ctl.send(Ctl::Bucket(n));
-    }
-
-    pub fn set_calibration(&self, c: Calibration) {
-        let _ = self.ctl.send(Ctl::Calibration(c));
-    }
 }
 
 impl Drop for Conn {
@@ -139,21 +132,20 @@ impl Drop for Conn {
     }
 }
 
-async fn dispatch(
-    mut rx: mpsc::Receiver<Input>,
-    mut ctl: mpsc::UnboundedReceiver<Ctl>,
-    pending: Pending,
-    events: Events,
-) {
-    let mut p = Pipeline::new();
+async fn dispatch(mut rx: mpsc::Receiver<Input>, pipe: SharedPipeline, pending: Pending, events: Events) {
     let mut tick = tokio::time::interval(Duration::from_millis(40));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut sent_version = u64::MAX;
     loop {
         tokio::select! {
             m = rx.recv() => match m {
                 Some(Input::Bytes(src, b)) => {
-                    p.push(src, &b);
-                    for f in p.take_responses() {
+                    let responses = {
+                        let mut p = pipe.lock().unwrap();
+                        p.push(src, &b);
+                        p.take_responses()
+                    };
+                    for f in responses {
                         let mut slot = pending.lock().unwrap();
                         match slot.take() {
                             Some((seq, tx)) if seq == f.seq => { let _ = tx.send(f); }
@@ -170,16 +162,11 @@ async fn dispatch(
                 }
                 None => break,
             },
-            Some(c) = ctl.recv() => match c {
-                Ctl::Bucket(n) => p.set_bucket(n),
-                Ctl::Calibration(c) => p.set_calibration(c),
-            },
             _ = tick.tick() => {
-                if let Some(b) = p.take_batch() {
-                    let bytes: Vec<u8> = b.to_f64().iter().flat_map(|x| x.to_le_bytes()).collect();
-                    if events.send(InvokeResponseBody::Raw(bytes)).is_err()
-                        || !send_json(&events, &Event::Meta(p.meta()))
-                    {
+                let meta = pipe.lock().unwrap().meta();
+                if meta.version != sent_version {
+                    sent_version = meta.version;
+                    if !send_json(&events, &Event::Meta(meta)) {
                         break;
                     }
                 }

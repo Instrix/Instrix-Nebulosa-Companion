@@ -3,9 +3,9 @@
 
 import { Channel, invoke } from '@tauri-apps/api/core';
 import type { Candidate, Link, LinkEvents } from './device';
-import { decodePoints, hex, type Calibration, type Info, type Meta, type Reply } from './nbp';
+import { hex, type Calibration, type Info, type Meta, type RawSpanStats, type Reply } from './nbp';
 
-type Event = ArrayBuffer | ({ event: 'meta' } & Meta) | { event: 'closed'; reason: string };
+type Event = ({ event: 'meta' } & Meta) | { event: 'closed'; reason: string };
 
 interface UsbDev {
   id: string;
@@ -33,8 +33,20 @@ class NativeLink implements Link {
     return { ty: r.ty, status: r.status, payload: new Uint8Array(r.payload) };
   }
 
-  setBucket(n: number) {
-    return invoke<void>('set_bucket', { n });
+  setBuffer(samples: number) {
+    return invoke<void>('set_buffer', { samples });
+  }
+
+  async lod(t0: number, t1: number, bins: number) {
+    return new Float64Array(await invoke<ArrayBuffer>('query_lod', { t0, t1, bins }));
+  }
+
+  stats(t0: number, t1: number) {
+    return invoke<RawSpanStats | null>('query_stats', { t0, t1 });
+  }
+
+  valueAt(t: number) {
+    return invoke<[number, number, number] | null>('query_value', { t });
   }
 
   setCalibration(cal: Calibration) {
@@ -49,8 +61,7 @@ class NativeLink implements Link {
 async function open(target: Target, ev: LinkEvents): Promise<Link> {
   const events = new Channel<Event>();
   events.onmessage = (m) => {
-    if (m instanceof ArrayBuffer) ev.onPoints(decodePoints(new Float64Array(m)));
-    else if (m.event === 'meta') ev.onMeta(m);
+    if (m.event === 'meta') ev.onMeta(m);
     else ev.onClosed(m.reason);
   };
   const description = await invoke<string>('connect', { target, events });

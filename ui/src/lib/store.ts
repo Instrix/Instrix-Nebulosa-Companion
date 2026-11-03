@@ -1,17 +1,16 @@
-// Point history for the plots, the overview and the meter.
-//
-// Batches (typed columns, already in A / V / W) are kept as chunks of about
-// 40 ms and trimmed by age. Each chunk keeps its own per-channel summary, so
-// work over long spans (the overview, statistics over minutes) goes chunk by
-// chunk wherever a whole chunk falls inside one column / the span.
-//
-// Statistics are exact over the raw samples: every point carries its count,
-// mean and M2 (sum of squared deviations), merged with Chan et al.'s
-// parallel variance.
+// The UI's handle on the sample buffer, which lives in the Rust core (native
+// backend or WASM): every sample at full rate plus a summary pyramid. The UI
+// asks for what it draws, when it draws it:
+//   lod(t0, t1, columns)  about one row per pixel column, or the samples
+//                         themselves when zoomed in that far
+//   stats(t0, t1)         exact statistics and integrals over a span
+//   valueAt(t)            one sample
+// Meta (a few dozen times a second) says what the buffer holds.
 
-import { SIGNALS, type ChanCols, type Points, type Signal } from './nbp';
+import type { Link } from './device';
+import { SIGNALS, type Meta, type RawMoments, type RawSpanStats, type Signal } from './nbp';
 
-/** count, mean, M2, min, max of one channel */
+/** count / mean / M2 / min / max of one channel, with the derived values */
 export class Moments {
   n = 0;
   mean = 0;
@@ -19,21 +18,13 @@ export class Moments {
   min = Infinity;
   max = -Infinity;
 
-  add(n: number, mean: number, m2: number, min: number, max: number) {
-    if (n <= 0) return;
-    const tot = this.n + n;
-    const d = mean - this.mean;
-    this.mean += (d * n) / tot;
-    this.m2 += m2 + (d * d * this.n * n) / tot;
-    this.n = tot;
-    if (min < this.min) this.min = min;
-    if (max > this.max) this.max = max;
+  static from(r: RawMoments | undefined): Moments {
+    const m = new Moments();
+    if (r && r.n) Object.assign(m, { n: r.n, mean: r.mean, m2: r.m2, min: r.min, max: r.max });
+    return m;
   }
 
-  merge(o: Moments) {
-    this.add(o.n, o.mean, o.m2, o.min, o.max);
-  }
-
+  /** sample standard deviation */
   get std() {
     return this.n > 1 ? Math.sqrt(this.m2 / (this.n - 1)) : 0;
   }
@@ -46,202 +37,122 @@ export class Moments {
 }
 
 export type SpanStats = Record<Signal, Moments> & {
-  /** first and last point's time, s */
+  /** first and last sample's time, s */
   t0: number;
   t1: number;
+  /** C, J */
+  charge: number;
+  energy: number;
 };
 
-export function emptyStats(): SpanStats {
-  return { i: new Moments(), v: new Moments(), p: new Moments(), t0: NaN, t1: NaN };
+export function spanStats(r: RawSpanStats | null | undefined): SpanStats {
+  return {
+    i: Moments.from(r?.m.i),
+    v: Moments.from(r?.m.v),
+    p: Moments.from(r?.m.p),
+    t0: r?.t0 ?? NaN,
+    t1: r?.t1 ?? NaN,
+    charge: r?.charge ?? 0,
+    energy: r?.energy ?? 0,
+  };
 }
 
-function widen(s: SpanStats, t0: number, t1: number) {
-  if (!(t0 >= s.t0)) s.t0 = t0;
-  if (!(t1 <= s.t1)) s.t1 = t1;
-}
+type Col = (number | null)[];
 
-function addPoint(s: SpanStats, b: Points, k: number) {
-  const n = b.n[k];
-  for (const sig of SIGNALS) {
-    const c: ChanCols = b[sig];
-    s[sig].add(n, c.avg[k], c.m2[k], c.min[k], c.max[k]);
-  }
-}
-
-/** Every point of `b` into `s` (the since-start statistics). */
-export function addPoints(s: SpanStats, b: Points) {
-  for (let k = 0; k < b.len; k++) {
-    if (!b.n[k]) continue;
-    addPoint(s, b, k);
-    widen(s, b.t[k], b.t[k]);
-  }
-}
-
-class Chunk {
-  readonly sum: Record<Signal, Moments> = { i: new Moments(), v: new Moments(), p: new Moments() };
-  readonly gaps: boolean;
-
-  constructor(readonly b: Points) {
-    let gaps = false;
-    for (let k = 0; k < b.len; k++) {
-      const n = b.n[k];
-      if (!n) {
-        gaps = true;
-        continue;
-      }
-      for (const sig of SIGNALS) {
-        const c = b[sig];
-        this.sum[sig].add(n, c.avg[k], c.m2[k], c.min[k], c.max[k]);
-      }
-    }
-    this.gaps = gaps;
-  }
-
-  get t0() {
-    return this.b.t[0];
-  }
-  get t1() {
-    return this.b.t[this.b.len - 1];
-  }
-}
-
-/** Per pixel column: time, then each channel's min, max, mean; null = gap. */
+/** Per row: time, then each channel's min, max, mean, mean ∓ σ; null = gap. */
 export interface Lod {
   t: number[];
-  ch: Record<Signal, { min: (number | null)[]; max: (number | null)[]; avg: (number | null)[] }>;
+  /** samples per row */
+  n: number[];
+  /** each row is one sample (zoomed in past one sample per column) */
+  raw: boolean;
+  ch: Record<Signal, { min: Col; max: Col; avg: Col; sdLo: Col; sdHi: Col }>;
+  /** where samples are missing (stream gaps), s */
+  gaps: number[];
 }
 
-export class PointStore {
-  private chunks: Chunk[] = [];
-  /** time of the oldest / newest point, s */
+/** One sample's values per channel, or null (none there). */
+export type PointValue = Record<Signal, number> | null;
+
+const LOD_LAYOUT = 2;
+const LOD_COLS = 14;
+
+export function emptyLod(): Lod {
+  const mk = () => ({ min: [] as Col, max: [] as Col, avg: [] as Col, sdLo: [] as Col, sdHi: [] as Col });
+  return { t: [], n: [], raw: false, ch: { i: mk(), v: mk(), p: mk() }, gaps: [] };
+}
+
+export function decodeLod(f: Float64Array): Lod {
+  const out = emptyLod();
+  if (f[0] !== LOD_LAYOUT || f[2] !== LOD_COLS) throw new Error(`lod layout ${f[0]}/${f[2]} not supported`);
+  const rows = f[1];
+  out.raw = f[3] === 1;
+  const col = (k: number) => f.subarray(4 + k * rows, 4 + (k + 1) * rows);
+  const t = col(0);
+  const n = col(1);
+  out.t = Array.from(t);
+  out.n = Array.from(n);
+  const nul = (x: number) => (Number.isFinite(x) ? x : null);
+  SIGNALS.forEach((s, ci) => {
+    const [mn, mx, avg, sd] = [col(2 + ci * 4), col(3 + ci * 4), col(4 + ci * 4), col(5 + ci * 4)];
+    const c = out.ch[s];
+    for (let k = 0; k < rows; k++) {
+      c.min.push(nul(mn[k]));
+      c.max.push(nul(mx[k]));
+      c.avg.push(nul(avg[k]));
+      c.sdLo.push(nul(avg[k] - sd[k]));
+      c.sdHi.push(nul(avg[k] + sd[k]));
+    }
+  });
+  for (let k = 0; k < rows; k++) if (n[k] === 0) out.gaps.push(t[k]);
+  return out;
+}
+
+export class SampleStore {
+  private link: Link | null = null;
+  /** time of the oldest / newest sample held, s */
   tStart = 0;
   tEnd = 0;
-  /** bumped on every change, for redraw scheduling */
+  /** changes whenever the buffer does, for redraw scheduling */
   version = 0;
+  empty = true;
+  /** s per sample */
+  samplePeriod = 1 / 2e6;
+  bufferSamples = 0;
+
+  attach(link: Link | null) {
+    this.link = link;
+    this.clear();
+  }
 
   clear() {
-    this.chunks = [];
     this.tStart = this.tEnd = 0;
+    this.empty = true;
     this.version++;
   }
 
-  get empty() {
-    return this.chunks.length === 0;
+  update(m: Meta) {
+    this.empty = !m.has_data;
+    this.tStart = m.t_start;
+    this.tEnd = m.t_end;
+    this.samplePeriod = m.sample_period;
+    this.bufferSamples = m.buffer_samples;
+    this.version = m.version * 2 + 1; // distinct from clear()'s bumps
   }
 
-  /** Adds points, drops chunks older than `keepS`. */
-  append(b: Points, keepS: number) {
-    if (!b.len) return;
-    const c = new Chunk(b);
-    this.chunks.push(c);
-    this.tEnd = c.t1;
-    const cut = this.tEnd - keepS;
-    while (this.chunks.length > 1 && this.chunks[0].t1 < cut) this.chunks.shift();
-    this.tStart = this.chunks[0].t0;
-    this.version++;
+  async lod(t0: number, t1: number, bins: number): Promise<Lod> {
+    if (!this.link || this.empty || !(t1 > t0)) return emptyLod();
+    return decodeLod(await this.link.lod(t0, t1, Math.max(1, Math.round(bins))));
   }
 
-  stats(t0: number, t1: number): SpanStats {
-    const s = emptyStats();
-    for (const c of this.chunks) {
-      if (c.t1 < t0 || c.t0 > t1) continue;
-      if (c.t0 >= t0 && c.t1 <= t1) {
-        if (c.sum.i.n) {
-          for (const sig of SIGNALS) s[sig].merge(c.sum[sig]);
-          widen(s, c.t0, c.t1);
-        }
-        continue;
-      }
-      const b = c.b;
-      for (let k = 0; k < b.len; k++) {
-        const t = b.t[k];
-        if (!b.n[k] || t < t0 || t > t1) continue;
-        addPoint(s, b, k);
-        widen(s, t, t);
-      }
-    }
-    return s;
+  async stats(t0: number, t1: number): Promise<SpanStats> {
+    if (!this.link || this.empty) return spanStats(null);
+    return spanStats(await this.link.stats(Math.min(t0, t1), Math.max(t0, t1)));
   }
 
-  /** [t0, t1] in `bins` columns: per column the extremes and the count-weighted means. */
-  lod(t0: number, t1: number, bins: number): Lod {
-    const mk = () => ({ min: [] as (number | null)[], max: [] as (number | null)[], avg: [] as (number | null)[] });
-    const out: Lod = { t: [], ch: { i: mk(), v: mk(), p: mk() } };
-    if (!(t1 > t0)) return out;
-    const scale = bins / (t1 - t0);
-    let bin = -1;
-    let bt = 0;
-    let n = 0;
-    const lo = { i: Infinity, v: Infinity, p: Infinity };
-    const hi = { i: -Infinity, v: -Infinity, p: -Infinity };
-    const sum = { i: 0, v: 0, p: 0 };
-    const flush = () => {
-      if (n > 0) {
-        out.t.push(bt);
-        for (const s of SIGNALS) {
-          out.ch[s].min.push(lo[s]);
-          out.ch[s].max.push(hi[s]);
-          out.ch[s].avg.push(sum[s] / n);
-          lo[s] = Infinity;
-          hi[s] = -Infinity;
-          sum[s] = 0;
-        }
-      }
-      n = 0;
-    };
-    const gap = (t: number) => {
-      flush();
-      out.t.push(t);
-      for (const s of SIGNALS) {
-        out.ch[s].min.push(null);
-        out.ch[s].max.push(null);
-        out.ch[s].avg.push(null);
-      }
-      bin = -1;
-    };
-    const column = (tk: number) => {
-      const b = Math.floor((tk - t0) * scale);
-      if (b !== bin) {
-        flush();
-        bin = b;
-        bt = tk;
-      }
-    };
-    for (const c of this.chunks) {
-      if (c.t1 < t0 || c.t0 > t1) continue;
-      // a whole chunk inside one column: its summary will do
-      if (!c.gaps && c.t0 >= t0 && c.t1 <= t1 && Math.floor((c.t0 - t0) * scale) === Math.floor((c.t1 - t0) * scale)) {
-        column(c.t0);
-        const nk = c.sum.i.n;
-        n += nk;
-        for (const s of SIGNALS) {
-          const m = c.sum[s];
-          if (m.min < lo[s]) lo[s] = m.min;
-          if (m.max > hi[s]) hi[s] = m.max;
-          sum[s] += m.mean * nk;
-        }
-        continue;
-      }
-      const b = c.b;
-      for (let k = 0; k < b.len; k++) {
-        const tk = b.t[k];
-        if (tk < t0 || tk > t1) continue;
-        const nk = b.n[k];
-        if (!nk) {
-          gap(tk);
-          continue;
-        }
-        column(tk);
-        n += nk;
-        for (const s of SIGNALS) {
-          const cc = b[s];
-          if (cc.min[k] < lo[s]) lo[s] = cc.min[k];
-          if (cc.max[k] > hi[s]) hi[s] = cc.max[k];
-          sum[s] += cc.avg[k] * nk;
-        }
-      }
-    }
-    flush();
-    return out;
+  async valueAt(t: number): Promise<PointValue> {
+    if (!this.link || this.empty) return null;
+    const r = await this.link.valueAt(t);
+    return r ? { i: r[0], v: r[1], p: r[0] * r[1] } : null;
   }
 }

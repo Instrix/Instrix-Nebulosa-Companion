@@ -29,10 +29,23 @@ impl Pipeline {
         to_js(&self.0.take_responses())
     }
 
-    /// New points in the flat layout of `Batch::to_f64` (a Float64Array),
-    /// or undefined
-    pub fn take_batch(&mut self) -> Option<Vec<f64>> {
-        self.0.take_batch().map(|b| b.to_f64())
+    /// [t0, t1] in `bins` columns, flat (`SampleBuffer::lod`): a Float64Array
+    pub fn lod(&self, t0: f64, t1: f64, bins: usize) -> Vec<f64> {
+        self.0.lod(t0, t1, bins)
+    }
+
+    /// SpanStats over [t0, t1)
+    pub fn stats(&self, t0: f64, t1: f64) -> JsValue {
+        to_js(&self.0.stats(t0, t1))
+    }
+
+    /// [A, V, range] of the sample at or before t, or null
+    pub fn value_at(&self, t: f64) -> JsValue {
+        to_js(&self.0.value_at(t))
+    }
+
+    pub fn set_buffer_samples(&mut self, n: usize) {
+        self.0.set_buffer_samples(n);
     }
 
     /// Meta: counters, accumulators
@@ -45,10 +58,6 @@ impl Pipeline {
         let c: crate::Calibration = serde_wasm_bindgen::from_value(cal)?;
         self.0.set_calibration(c);
         Ok(())
-    }
-
-    pub fn set_bucket(&mut self, n: u32) {
-        self.0.set_bucket(n);
     }
 }
 

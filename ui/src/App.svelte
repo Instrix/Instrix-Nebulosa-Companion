@@ -1,10 +1,10 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import Scope, { SIGNAL_INFO, type AxisCfg, type TraceMode } from './lib/Scope.svelte';
+  import Scope, { SIGNAL_INFO, type AxisCfg, type TraceCfg } from './lib/Scope.svelte';
   import Overview from './lib/Overview.svelte';
-  import Meter, { type AccumView, type Scope as MeterScope, type Summary } from './lib/Meter.svelte';
-  import { View, TIME_DIVS, fmtTime } from './lib/view.svelte';
-  import { PointStore, addPoints, emptyStats, type SpanStats } from './lib/store';
+  import Meter, { type AccumView, type MarkerRow, type Scope as MeterScope, type Summary } from './lib/Meter.svelte';
+  import { View, TIME_DIVS, fmtTime, markerColor, markerName } from './lib/view.svelte';
+  import { Moments, SampleStore, type SpanStats } from './lib/store';
   import { Device, isNative, type Candidate, type Link } from './lib/device';
   import {
     CAP,
@@ -18,16 +18,16 @@
     type DataStats,
     type Info,
     type Meta,
-    type Points,
     type Signal,
   } from './lib/nbp';
   import { fmtSI, parseSI } from './lib/si';
   import * as native from './lib/native';
   import * as web from './lib/webusb';
-  import { demoRequested, demoSelection, startDemo } from './lib/demo';
+  import { DemoLink, demoRequested, demoSelection } from './lib/demo';
 
-  const TARGET_POINTS_PER_S = 4000;
-  const HISTORY_CHOICES = [60, 120, 300, 600];
+  /** full-rate buffer sizes, MB (4 bytes per sample) */
+  const BUFFER_CHOICES = [64, 128, 256, 512, 1024, 2048];
+  const BUFFER_KEY = 'nebulosa.bufferMB';
   const CURRENT_RANGES = 6;
 
   // ---- connection ---------------------------------------------------------
@@ -52,23 +52,36 @@
   let rangeMax = $state(5);
 
   // ---- data and view ------------------------------------------------------
-  const store = new PointStore();
+  const store = new SampleStore();
   const view = new View();
-  let historyS = $state(120);
+  function loadBufferMB(): number {
+    try {
+      const v = Number(localStorage.getItem(BUFFER_KEY));
+      if (BUFFER_CHOICES.includes(v)) return v;
+    } catch {
+      /* storage unavailable */
+    }
+    return 256;
+  }
+  let bufferMB = $state(loadBufferMB());
+  const bufferSamples = $derived((bufferMB * 1024 * 1024) / 4);
+  /** what the buffer holds at the current rate, s */
+  const bufferS = $derived(bufferSamples / (rateHz || 2e6));
   let shown = $state<Record<Signal, boolean>>({ i: true, v: true, p: true });
-  let traceMode = $state<TraceMode>('both');
+  let trace = $state<TraceCfg>({ mean: true, range: true, sigma: false });
   const signals = $derived(SIGNALS.filter((s) => shown[s]));
   let axes = $state<Record<Signal, AxisCfg>>({
-    i: { auto: true, min: 0, max: 0.1 },
-    v: { auto: true, min: 0, max: 5 },
-    p: { auto: true, min: 0, max: 0.5 },
+    i: { auto: true, min: 0, max: 0.1, log: false },
+    v: { auto: true, min: 0, max: 5, log: false },
+    p: { auto: true, min: 0, max: 0.5, log: false },
   });
 
   // ---- meter --------------------------------------------------------------
-  let runStats: SpanStats = emptyStats();
+  let runMoments: Meta['run'] | null = null;
   let meterScope = $state<MeterScope>('window');
   let hold = $state(false);
   let summary = $state<Summary | null>(null);
+  let markerRows = $state<MarkerRow[]>([]);
   let accum: Accum | null = null;
   let accumBase: Accum = { charge: 0, energy: 0, seconds: 0 };
   let accumView = $state<AccumView | null>(null);
@@ -108,26 +121,62 @@
     applyCal();
   }
 
-  // ---- statistics ---------------------------------------------------------
-  function summarize(s: SpanStats): Summary | null {
-    if (!s.i.n) return null;
-    const ch = (m: SpanStats['i']) => ({ mean: m.mean, min: m.min, max: m.max, pp: m.pp, std: m.std, rms: m.rms });
-    return { ch: { i: ch(s.i), v: ch(s.v), p: ch(s.p) }, n: s.i.n, duration: s.t1 - s.t0 };
+  async function applyBuffer() {
+    try {
+      localStorage.setItem(BUFFER_KEY, String(bufferMB));
+    } catch {
+      /* storage unavailable */
+    }
+    await dev?.link.setBuffer(bufferSamples);
   }
 
-  function refreshMeter() {
-    if (hold) return;
-    if (meterScope === 'run') summary = summarize(runStats);
-    else if (meterScope === 'selection' && view.selection) summary = summarize(store.stats(...view.selection));
-    else if (store.empty) summary = null;
-    else summary = summarize(store.stats(...view.span(store)));
-    accumView = accum
-      ? {
-          charge: accum.charge - accumBase.charge,
-          energy: accum.energy - accumBase.energy,
-          seconds: accum.seconds - accumBase.seconds,
-        }
-      : null;
+  // ---- statistics ---------------------------------------------------------
+  function summarize(s: SpanStats, duration = s.t1 - s.t0): Summary | null {
+    if (!s.i.n) return null;
+    const ch = (m: SpanStats['i']) => ({ mean: m.mean, min: m.min, max: m.max, pp: m.pp, std: m.std, rms: m.rms });
+    return { ch: { i: ch(s.i), v: ch(s.v), p: ch(s.p) }, n: s.i.n, duration };
+  }
+
+  let meterBusy = false;
+
+  async function refreshMeter() {
+    if (hold || meterBusy) return;
+    meterBusy = true;
+    try {
+      if (meterScope === 'run') {
+        const r = runMoments;
+        summary = r && r.i.n ? summarize({ i: Moments.from(r.i), v: Moments.from(r.v), p: Moments.from(r.p), t0: 0, t1: 0, charge: 0, energy: 0 }, accum?.seconds ?? NaN) : null;
+      } else if (meterScope === 'selection' && view.selection) summary = summarize(await store.stats(...view.selection));
+      else if (store.empty) summary = null;
+      else summary = summarize(await store.stats(...view.span(store)));
+      markerRows = await Promise.all(
+        view.markers.map(async (m): Promise<MarkerRow> => {
+          const base = { id: m.id, name: markerName(m), color: markerColor(m) };
+          if (m.t1 == null) {
+            const v = await store.valueAt(m.t0);
+            return { ...base, dt: null, ch: Object.fromEntries(SIGNALS.map((s) => [s, v ? { mean: v[s], integral: NaN } : null])) as MarkerRow['ch'] };
+          }
+          const st = await store.stats(m.t0, m.t1);
+          const integral: Record<Signal, number> = { i: st.charge, v: NaN, p: st.energy };
+          return {
+            ...base,
+            dt: m.t1 - m.t0,
+            ch: Object.fromEntries(SIGNALS.map((s) => [s, st[s].n ? { mean: st[s].mean, integral: integral[s] } : null])) as MarkerRow['ch'],
+          };
+        }),
+      );
+      accumView = accum
+        ? {
+            charge: accum.charge - accumBase.charge,
+            energy: accum.energy - accumBase.energy,
+            seconds: accum.seconds - accumBase.seconds,
+          }
+        : null;
+    } catch (e) {
+      console.warn('meter', e);
+    } finally {
+      meterBusy = false;
+    }
   }
 
   function clearAccum() {
@@ -149,8 +198,8 @@
 
   function clearData() {
     store.clear();
-    runStats = emptyStats();
-    view.selection = null;
+    runMoments = null;
+    view.clearMarkers();
     view.live = true;
     summary = null;
   }
@@ -167,11 +216,29 @@
     if (e.key === ' ') {
       e.preventDefault();
       toggleLive();
-    } else if (e.key === 'Escape') view.selection = null;
+    } else if (e.key === 'Escape') view.active = null;
+    else if (e.key === 'Delete' || e.key === 'Backspace') view.remove(view.active);
+    else if (e.key === 'm') addSingleMarker();
+    else if (e.key === 'd') addDualMarker();
     else if (e.key === '+' || e.key === '=') view.zoom(store, -1);
     else if (e.key === '-') view.zoom(store, 1);
     else if (e.key === 'ArrowLeft') view.pan(store, -0.1);
     else if (e.key === 'ArrowRight') view.pan(store, 0.1);
+  }
+
+  function addSingleMarker() {
+    if (store.empty) return;
+    view.hold(store);
+    const [a, b] = view.span(store);
+    view.addSingle((a + b) / 2);
+  }
+
+  function addDualMarker() {
+    if (store.empty) return;
+    view.hold(store);
+    const [a, b] = view.span(store);
+    const w = b - a;
+    view.addDual(a + w * 0.4, a + w * 0.6);
   }
 
   // ---- connection ---------------------------------------------------------
@@ -197,7 +264,6 @@
     try {
       await disconnect();
       const link: Link = await c.connect({
-        onPoints,
         onMeta,
         onClosed: (reason) => {
           error = `Disconnected: ${reason}`;
@@ -206,7 +272,9 @@
       });
       const d = new Device(link);
       dev = d;
+      await link.setBuffer(bufferSamples);
       await link.setCalibration($state.snapshot(cal));
+      store.attach(link);
       info = await d.info();
       clearData();
       await applyDecimation();
@@ -219,6 +287,7 @@
   }
 
   function reset() {
+    store.attach(null);
     dev = null;
     info = null;
     streaming = false;
@@ -232,12 +301,9 @@
     if (d) await d.link.close().catch(() => undefined);
   }
 
-  function onPoints(p: Points) {
-    addPoints(runStats, p);
-    store.append(p, historyS);
-  }
-
   function onMeta(m: Meta) {
+    store.update(m);
+    runMoments = m.run;
     stats = m.stats;
     if (m.stream_id !== streamId) {
       streamId = m.stream_id;
@@ -267,7 +333,7 @@
       const r = await dev.setDecimation(log2n, decimMode);
       rateHz = r.rate_hz;
     } else rateHz = info.base_rate_hz;
-    await dev.link.setBucket(Math.max(1, Math.round(rateHz / TARGET_POINTS_PER_S)));
+
   }
 
   async function start() {
@@ -327,12 +393,25 @@
       streaming = true;
       rateHz = 2e6;
       log2n = 0;
-      stopDemo = startDemo(onPoints, onMeta);
+      const demo = new DemoLink({ onMeta, onClosed: () => undefined });
+      demo.setBuffer(bufferSamples);
+      demo.setCalibration($state.snapshot(cal));
+      store.attach(demo);
+      stopDemo = () => demo.close();
+      // screenshot helpers: &log=i,p  &trace=mean,range,sigma
+      const q = new URLSearchParams(location.search);
+      for (const sg of (q.get('log') ?? '').split(',')) if (sg in axes) axes[sg as Signal].log = true;
+      const div = Number(q.get('div'));
+      if (div && TIME_DIVS.includes(div)) view.divIndex = TIME_DIVS.indexOf(div);
+      const tr = q.get('trace');
+      if (tr) trace = { mean: tr.includes('mean'), range: tr.includes('range'), sigma: tr.includes('sigma') };
       const sel = demoSelection();
       if (sel)
         setTimeout(() => {
           view.hold(store);
-          view.selection = [store.tEnd - sel[0], store.tEnd - sel[1]];
+          view.addDual(store.tEnd - sel[0], store.tEnd - sel[1]);
+          view.addSingle(store.tEnd - (sel[0] + sel[1]) / 2 - 1);
+          view.addDual(store.tEnd - sel[0] + 3, store.tEnd - sel[1] + 3.2);
         }, 3000);
     }
     return () => {
@@ -467,11 +546,11 @@
         {/each}
       </div>
       <div class="axis">
-        <span title="Each pixel column covers many samples: the line is their mean, the band their min–max range">Trace</span>
+        <span title="Each pixel column covers many samples: the line is their mean, the bands their min–max range and ±1 standard deviation">Trace</span>
         <div class="seg">
-          <button class:on={traceMode === 'both'} onclick={() => (traceMode = 'both')} title="Mean line and min–max band">Both</button>
-          <button class:on={traceMode === 'mean'} onclick={() => (traceMode = 'mean')} title="Mean line only">Mean</button>
-          <button class:on={traceMode === 'range'} onclick={() => (traceMode = 'range')} title="Min–max band only">Min–max</button>
+          <button class:on={trace.mean} onclick={() => (trace.mean = !trace.mean)} title="Mean line">Mean</button>
+          <button class:on={trace.range} onclick={() => (trace.range = !trace.range)} title="Min–max band">Min–max</button>
+          <button class:on={trace.sigma} onclick={() => (trace.sigma = !trace.sigma)} title="Mean ± 1 standard deviation">±σ</button>
         </div>
       </div>
       {#each signals as s (s)}
@@ -480,6 +559,7 @@
         <div class="axis">
           <span style="color: var({SIGNAL_INFO[s].color})">{SIGNAL_INFO[s].name} axis</span>
           <div class="seg">
+            <button class:on={a.log} onclick={() => (a.log = !a.log)} title="Logarithmic scale">Log</button>
             <button class:on={a.auto} onclick={() => (a.auto = true)}>Auto</button>
             <button class:on={!a.auto} onclick={() => (a.auto = false)}>Fixed</button>
           </div>
@@ -492,10 +572,11 @@
         {/if}
       {/each}
       <label>
-        History kept
-        <select bind:value={historyS}>
-          {#each HISTORY_CHOICES as h (h)}<option value={h}>{fmtTime(h)} min</option>{/each}
+        Sample buffer (RAM)
+        <select bind:value={bufferMB} onchange={applyBuffer}>
+          {#each BUFFER_CHOICES as mb (mb)}<option value={mb}>{mb >= 1024 ? `${mb / 1024} GB` : `${mb} MB`}</option>{/each}
         </select>
+        <small class="muted">every sample: {fmtTime(bufferS)} at {fmtRate(rateHz || 2e6)}</small>
       </label>
     </section>
 
@@ -548,24 +629,33 @@
         <button
           class="ghost small"
           onclick={() => view.zoom(store, 1)}
-          disabled={view.divIndex === TIME_DIVS.length - 1 || TIME_DIVS[view.divIndex + 1] * 10 > historyS}
+          disabled={view.divIndex === TIME_DIVS.length - 1 || TIME_DIVS[view.divIndex + 1] * 10 > Math.max(bufferS, 1)}
           title="Slower (-, wheel)">+</button
         >
       </div>
       {#if rateHz}<span class="mono muted">{fmtRate(rateHz)} · N={1 << log2n}</span>{/if}
-      {#if view.selection}
-        <span class="mono sel">
-          sel Δt {fmtTime(view.selection[1] - view.selection[0])}
-          <button class="ghost small" onclick={() => (view.selection = null)} title="Clear (Esc, double-click)">✕</button>
-        </span>
-      {/if}
-      <span class="hint muted">drag: select · wheel: time/div · shift+wheel: pan · space: live/hold</span>
+      <div class="tdiv">
+        <button class="ghost small" onclick={addSingleMarker} disabled={store.empty} title="Single marker (M, or double-click a plot)">+ Marker</button>
+        <button class="ghost small" onclick={addDualMarker} disabled={store.empty} title="Dual marker (D, or drag across a plot)">+ Dual</button>
+        {#if view.markers.length}
+          <button class="ghost small" onclick={() => view.clearMarkers()} title="Remove all markers">Clear</button>
+        {/if}
+      </div>
+      <span class="legend muted" title="Each pixel column covers many samples">
+        {#if trace.mean}<span class="key"><i class="line"></i>mean</span>{/if}
+        {#if trace.range}<span class="key"><i class="band"></i>min–max</span>{/if}
+        {#if trace.sigma}<span class="key"><i class="sd"></i>±σ</span>{/if}
+        <span class="key"><i class="gap"></i>gap</span>
+      </span>
+      <span class="hint muted" title="Drag across a plot: dual marker. Double-click: single marker. M / D: add a marker. Del: delete the active one. Esc: deselect."
+        >wheel: time/div · shift+wheel: pan · space: live/hold · ⓘ</span
+      >
     </div>
     <div class="overview-wrap">
       <Overview {store} {view} />
     </div>
     <div class="scope-wrap">
-      <Scope {store} {view} {signals} {axes} mode={traceMode} />
+      <Scope {store} {view} {signals} {axes} {trace} />
     </div>
     <footer>
       {#if stats}
@@ -594,6 +684,10 @@
       bind:hold
       hasSelection={!!view.selection}
       onclear={clearAccum}
+      markers={markerRows}
+      active={view.active}
+      onpick={(id) => (view.active = id)}
+      ondelete={(id) => view.remove(id)}
     />
   </div>
 </div>
@@ -795,15 +889,41 @@
     font-family: ui-monospace, monospace;
     font-variant-numeric: tabular-nums;
   }
-  .sel {
-    color: var(--sel);
+  .legend {
+    margin-left: auto;
+    display: flex;
+    gap: 10px;
+    font-size: 11px;
+  }
+  .key {
     display: inline-flex;
     align-items: center;
     gap: 4px;
   }
+  .key i {
+    display: inline-block;
+    width: 14px;
+  }
+  .key .line {
+    height: 2px;
+    background: var(--muted);
+  }
+  .key .band {
+    height: 9px;
+    background: color-mix(in srgb, var(--muted) 35%, transparent);
+  }
+  .key .sd {
+    height: 5px;
+    background: color-mix(in srgb, var(--muted) 60%, transparent);
+  }
+  .key .gap {
+    width: 0;
+    height: 10px;
+    border-left: 2px dashed var(--danger);
+  }
   .hint {
-    margin-left: auto;
     font-size: 11px;
+    cursor: help;
   }
   .overview-wrap {
     padding: 8px 12px 0;
