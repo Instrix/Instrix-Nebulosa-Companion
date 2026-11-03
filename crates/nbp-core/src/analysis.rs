@@ -9,9 +9,10 @@ use crate::trigger::Source;
 use crate::units::Calibration;
 use serde::{Deserialize, Serialize};
 
-/// Contiguous runs of raw samples: (time of the first, s per sample, packed samples).
+/// Contiguous runs of raw samples: (time of the first, s per sample, packed
+/// samples, the math channel's values when there is one).
 pub struct Extract {
-    pub runs: Vec<(f64, f64, Vec<u32>)>,
+    pub runs: Vec<(f64, f64, Vec<u32>, Option<Vec<f32>>)>,
     pub cal: Calibration,
 }
 
@@ -31,13 +32,20 @@ impl Extract {
         match src {
             Source::I => i,
             Source::V => self.cal.voltage(vc),
-            Source::P => i * self.cal.voltage(vc),
+            Source::P | Source::M => i * self.cal.voltage(vc),
         }
     }
 
-    /// Every run as (t0, dt, values).
-    fn values(&self, src: Source) -> impl Iterator<Item = (f64, f64, impl Iterator<Item = f64> + '_)> + '_ {
-        self.runs.iter().map(move |(t0, dt, s)| (*t0, *dt, s.iter().map(move |&w| self.value(w, src))))
+    /// Every run as (t0, dt, values); the math channel's non-finite values are left out.
+    fn values(&self, src: Source) -> impl Iterator<Item = (f64, f64, Box<dyn Iterator<Item = f64> + '_>)> + '_ {
+        self.runs.iter().map(move |(t0, dt, s, m)| {
+            let it: Box<dyn Iterator<Item = f64> + '_> = match (src, m) {
+                (Source::M, Some(m)) => Box::new(m.iter().map(|&x| x as f64).filter(|x| x.is_finite())),
+                (Source::M, None) => Box::new(std::iter::empty()),
+                _ => Box::new(s.iter().map(move |&w| self.value(w, src))),
+            };
+            (*t0, *dt, it)
+        })
     }
 }
 
@@ -218,7 +226,7 @@ fn psd(x: &Extract, src: Source, nfft: usize) -> Result {
     let wpow: f64 = window.iter().map(|w| w * w).sum();
     let hop = nfft / 2;
     // how many segments fit; above MAX_SEGMENTS, skip some evenly
-    let fits: usize = x.runs.iter().map(|r| if r.2.len() >= nfft { (r.2.len() - nfft) / hop + 1 } else { 0 }).sum();
+    let fits: usize = x.runs.iter().map(|r| if r.2.len() >= nfft { (r.2.len() - nfft) / hop + 1 } else { 0 }).sum::<usize>().max(1);
     if fits == 0 {
         return Result::Empty { reason: format!("needs at least {nfft} contiguous samples") };
     }
@@ -303,7 +311,7 @@ fn max_window(x: &Extract, src: Source, width: f64) -> Result {
 /// For tests: an extract from plain values (current codes, range 0).
 #[cfg(test)]
 fn extract_of(codes: &[u16], dt: f64) -> Extract {
-    let runs = vec![(0.0, dt, codes.iter().map(|&c| crate::buffer::pack(c, 0, 0, false)).collect())];
+    let runs = vec![(0.0, dt, codes.iter().map(|&c| crate::buffer::pack(c, 0, 0, false)).collect(), None)];
     Extract { runs, cal: Calibration::default() }
 }
 

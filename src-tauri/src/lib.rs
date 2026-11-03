@@ -20,6 +20,8 @@ struct AppState {
     buffer_samples: std::sync::Mutex<Option<usize>>,
     cal: std::sync::Mutex<Calibration>,
     trigger: std::sync::Mutex<nbp_core::trigger::TriggerCfg>,
+    /// the math expression, applied at connect / open too
+    math: std::sync::Mutex<Option<String>>,
     recording: std::sync::Mutex<Option<files::ActiveRecording>>,
 }
 
@@ -47,6 +49,7 @@ async fn connect(state: State<'_, AppState>, target: Target, events: Events) -> 
     let cal = state.cal.lock().unwrap().clone();
     let c = Conn::open(target, events, samples, cal).await?;
     c.pipe.lock().unwrap().set_trigger(state.trigger.lock().unwrap().clone());
+    let _ = c.pipe.lock().unwrap().set_math(state.math.lock().unwrap().as_deref());
     let d = c.description.clone();
     *state.pipe.lock().unwrap() = Some(c.pipe.clone());
     *slot = Some(c);
@@ -102,7 +105,9 @@ async fn stop_recording(state: State<'_, AppState>) -> Result<Option<files::Reco
 async fn open_recording(state: State<'_, AppState>, path: String, events: Events) -> Result<String, String> {
     let _ = stop_recording(state.clone()).await;
     state.conn.lock().await.take();
-    let (p, header) = tokio::task::spawn_blocking(move || files::open(&path, &events)).await.map_err(|e| e.to_string())??;
+    let math = state.math.lock().unwrap().clone();
+    let (mut p, header) = tokio::task::spawn_blocking(move || files::open(&path, &events)).await.map_err(|e| e.to_string())??;
+    let _ = p.set_math(math.as_deref());
     *state.pipe.lock().unwrap() = Some(std::sync::Arc::new(std::sync::Mutex::new(p)));
     Ok(header)
 }
@@ -165,6 +170,20 @@ async fn set_trigger(state: State<'_, AppState>, cfg: nbp_core::trigger::Trigger
     Ok(())
 }
 
+/// The math channel: an expression (see nbp-core math.rs) or none. Errors say what doesn't parse.
+#[tauri::command]
+async fn set_math(state: State<'_, AppState>, expr: Option<String>) -> Result<(), String> {
+    if let Some(e) = &expr {
+        nbp_core::math::MathProgram::compile(e)?;
+    }
+    *state.math.lock().unwrap() = expr.clone();
+    if let Some(p) = pipe(&state) {
+        // computing the buffer again can take a moment: off the async threads
+        tokio::task::spawn_blocking(move || p.lock().unwrap().set_math(expr.as_deref())).await.map_err(|e| e.to_string())??;
+    }
+    Ok(())
+}
+
 /// Analysis over [t0, t1): the samples are copied out under the lock, analysed outside it.
 #[tauri::command]
 async fn analyze(
@@ -212,7 +231,7 @@ async fn query_stats(state: State<'_, AppState>, t0: f64, t1: f64) -> Result<Opt
 }
 
 #[tauri::command]
-async fn query_value(state: State<'_, AppState>, t: f64) -> Result<Option<(f64, f64, u8)>, String> {
+async fn query_value(state: State<'_, AppState>, t: f64) -> Result<Option<(f64, f64, u8, f64)>, String> {
     Ok(pipe(&state).and_then(|p| p.lock().unwrap().value_at(t)))
 }
 
@@ -224,7 +243,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_usb, discover, connect, disconnect, request, set_buffer, set_calibration, set_trigger, query_lod, query_stats,
             query_value, recordings_dir, list_recordings, start_recording, stop_recording, open_recording, export_csv,
-            count_samples, save_bytes, query_events, clear_events, analyze
+            count_samples, save_bytes, query_events, clear_events, analyze, set_math
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

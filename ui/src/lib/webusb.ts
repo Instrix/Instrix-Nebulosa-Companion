@@ -165,7 +165,11 @@ class WebUsbLink implements Link {
   }
 
   async valueAt(t: number) {
-    return this.pipeline.value_at(t) as [number, number, number] | null;
+    return this.pipeline.value_at(t) as [number, number, number, number] | null;
+  }
+
+  async setMath(expr: string | null) {
+    return this.pipeline.set_math(expr ?? undefined) ?? null;
   }
 
   async setCalibration(c: Calibration) {

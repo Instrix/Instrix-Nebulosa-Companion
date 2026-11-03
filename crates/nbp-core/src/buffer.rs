@@ -82,20 +82,25 @@ impl Moments {
     }
 }
 
-/// Current, voltage, power.
+/// Current, voltage, power, and the math channel (empty without one; its
+/// non-finite values, like V/I at I = 0, are left out).
 #[derive(Debug, Clone, Copy, Default, Serialize)]
 pub struct Moments3 {
     pub i: Moments,
     pub v: Moments,
     pub p: Moments,
+    pub m: Moments,
 }
 
 impl Moments3 {
     #[inline]
-    fn add(&mut self, i: f64, v: f64) {
+    pub(crate) fn add(&mut self, i: f64, v: f64, m: f64) {
         self.i.add(i);
         self.v.add(v);
         self.p.add(i * v);
+        if m.is_finite() {
+            self.m.add(m);
+        }
     }
 
     #[inline]
@@ -103,6 +108,7 @@ impl Moments3 {
         self.i.merge(&o.i);
         self.v.merge(&o.v);
         self.p.merge(&o.p);
+        self.m.merge(&o.m);
     }
 
     pub fn n(&self) -> u64 {
@@ -113,23 +119,25 @@ impl Moments3 {
 /// Raw sums for building a level-0 entry fast (no division per sample).
 #[derive(Default, Clone, Copy)]
 struct Sums {
-    n: u32,
-    s: [f64; 3],
-    q: [f64; 3],
-    lo: [f64; 3],
-    hi: [f64; 3],
+    /// per channel: the math channel's count can be lower (non-finite values)
+    n: [u32; 4],
+    s: [f64; 4],
+    q: [f64; 4],
+    lo: [f64; 4],
+    hi: [f64; 4],
 }
 
 impl Sums {
     fn reset(&mut self) {
-        *self = Sums { lo: [f64::INFINITY; 3], hi: [f64::NEG_INFINITY; 3], ..Default::default() };
+        *self = Sums { lo: [f64::INFINITY; 4], hi: [f64::NEG_INFINITY; 4], ..Default::default() };
     }
 
     #[inline]
-    fn add(&mut self, i: f64, v: f64) {
-        let x = [i, v, i * v];
-        self.n += 1;
-        for k in 0..3 {
+    fn add(&mut self, i: f64, v: f64, m: f64) {
+        let x = [i, v, i * v, m];
+        let k_end = if m.is_finite() { 4 } else { 3 };
+        for k in 0..k_end {
+            self.n[k] += 1;
             self.s[k] += x[k];
             self.q[k] += x[k] * x[k];
             self.lo[k] = self.lo[k].min(x[k]);
@@ -138,12 +146,15 @@ impl Sums {
     }
 
     fn moments(&self) -> Moments3 {
-        let n = self.n as f64;
         let m = |k: usize| {
+            if self.n[k] == 0 {
+                return Moments::default();
+            }
+            let n = self.n[k] as f64;
             let mean = self.s[k] / n;
-            Moments { n: self.n as u64, mean, m2: (self.q[k] - self.s[k] * mean).max(0.0), min: self.lo[k], max: self.hi[k] }
+            Moments { n: self.n[k] as u64, mean, m2: (self.q[k] - self.s[k] * mean).max(0.0), min: self.lo[k], max: self.hi[k] }
         };
-        Moments3 { i: m(0), v: m(1), p: m(2) }
+        Moments3 { i: m(0), v: m(1), p: m(2), m: m(3) }
     }
 }
 
@@ -178,8 +189,8 @@ pub struct SpanStats {
 }
 
 /// Version of [`SampleBuffer::lod`]'s flat layout.
-pub const LOD_LAYOUT: f64 = 2.0;
-pub const LOD_COLS: usize = 14;
+pub const LOD_LAYOUT: f64 = 3.0;
+pub const LOD_COLS: usize = 18;
 
 pub struct SampleBuffer {
     cap: u64,
@@ -190,6 +201,9 @@ pub struct SampleBuffer {
     levels: Vec<Level>,
     sums: Sums,
     cal: Calibration,
+    /// the math channel: its program, and its value for every sample (f32)
+    math: Option<crate::math::MathProgram>,
+    mraw: Vec<f32>,
     /// bumped on every change
     pub version: u64,
 }
@@ -204,7 +218,18 @@ impl SampleBuffer {
             .collect();
         let mut s = Sums::default();
         s.reset();
-        Self { cap, raw: vec![0; cap as usize], head: 0, segs: VecDeque::new(), levels, sums: s, cal, version: 0 }
+        Self {
+            cap,
+            raw: vec![0; cap as usize],
+            head: 0,
+            segs: VecDeque::new(),
+            levels,
+            sums: s,
+            cal,
+            math: None,
+            mraw: Vec::new(),
+            version: 0,
+        }
     }
 
     /// Contiguous runs of samples held (gaps and decimation changes split them).
@@ -245,6 +270,39 @@ impl SampleBuffer {
         (self.cal.current(i, r), self.cal.voltage(v))
     }
 
+    /// The math channel's value of sample `idx` (NaN without one).
+    #[inline]
+    fn mval(&self, idx: u64) -> f64 {
+        if self.mraw.is_empty() {
+            f64::NAN
+        } else {
+            self.mraw[(idx % self.cap) as usize] as f64
+        }
+    }
+
+    /// A math channel (or none); everything held is computed again.
+    pub fn set_math(&mut self, expr: Option<&str>) -> Result<(), String> {
+        match expr {
+            None => {
+                self.math = None;
+                self.mraw = Vec::new();
+            }
+            Some(e) => {
+                let prog = crate::math::MathProgram::compile(e)?;
+                self.math = Some(prog);
+                if self.mraw.len() != self.cap as usize {
+                    self.mraw = vec![f32::NAN; self.cap as usize];
+                }
+            }
+        }
+        self.rebuild();
+        Ok(())
+    }
+
+    pub fn has_math(&self) -> bool {
+        self.math.is_some()
+    }
+
     pub fn set_calibration(&mut self, cal: Calibration) {
         if cal == self.cal {
             return;
@@ -253,24 +311,45 @@ impl SampleBuffer {
         self.rebuild();
     }
 
-    /// Summaries again from the raw samples (after a calibration change).
+    /// Summaries (and the math channel) again from the raw samples, in order
+    /// (after a calibration or math change).
     fn rebuild(&mut self) {
-        let (from, to) = (self.oldest(), self.head);
         for l in &mut self.levels {
             l.pending = Moments3::default();
         }
         self.sums.reset();
-        for idx in from..to {
-            let (i, v) = self.phys(self.raw[(idx % self.cap) as usize]);
-            self.summarize(idx, i, v);
+        if let Some(m) = &mut self.math {
+            m.reset_all();
+        }
+        for k in 0..self.segs.len() {
+            let (a, b) = self.seg_bounds(k);
+            let s = self.segs[k];
+            if let Some(m) = &mut self.math {
+                m.reset(); // a gap before each segment
+            }
+            for idx in a..b {
+                let (i, v) = self.phys(self.raw[(idx % self.cap) as usize]);
+                let mv = self.eval_math(i, v, &s, idx);
+                self.summarize(idx, i, v, mv);
+            }
         }
         self.version += 1;
     }
 
+    /// The math channel for one sample, kept in its ring.
+    #[inline]
+    fn eval_math(&mut self, i: f64, v: f64, s: &Segment, idx: u64) -> f64 {
+        let Some(m) = &mut self.math else { return f64::NAN };
+        let dt = s.step as f64 * TS_PERIOD_S;
+        let x = m.eval(i, v, Self::time_of(s, idx), dt);
+        self.mraw[(idx % self.cap) as usize] = x as f32;
+        x
+    }
+
     /// Sample `idx` (already in the ring) into the summaries.
     #[inline]
-    fn summarize(&mut self, idx: u64, i: f64, v: f64) {
-        self.sums.add(i, v);
+    fn summarize(&mut self, idx: u64, i: f64, v: f64, m: f64) {
+        self.sums.add(i, v, m);
         let next = idx + 1;
         if next & ((1 << LEVEL_SHIFTS[0]) - 1) != 0 {
             return;
@@ -292,22 +371,29 @@ impl SampleBuffer {
     }
 
     /// One sample at FPGA time `ts` (500 ns periods), `step` periods apart.
-    pub fn push(&mut self, ts: u64, step: u32, i_code: u16, v_code: u16, range: u8, dirty: bool) {
+    /// Returns the math channel's value for it (NaN without one).
+    pub fn push(&mut self, ts: u64, step: u32, i_code: u16, v_code: u16, range: u8, dirty: bool) -> f64 {
         let idx = self.head;
         let contiguous = self.segs.back().is_some_and(|s| s.step == step && s.ts0 + (idx - s.start) * s.step as u64 == ts);
         if !contiguous {
             self.segs.push_back(Segment { start: idx, ts0: ts, step });
+            if let Some(m) = &mut self.math {
+                m.reset();
+            }
         }
         let w = pack(i_code, v_code, range, dirty);
         self.raw[(idx % self.cap) as usize] = w;
         self.head += 1;
         let (i, v) = self.phys(w);
-        self.summarize(idx, i, v);
+        let seg = *self.segs.back().unwrap();
+        let mv = self.eval_math(i, v, &seg, idx);
+        self.summarize(idx, i, v, mv);
         // drop segments that ended before the oldest sample
         let oldest = self.oldest();
         while self.segs.len() > 1 && self.segs[1].start <= oldest {
             self.segs.pop_front();
         }
+        mv
     }
 
     /// Call after a batch of pushes.
@@ -366,7 +452,7 @@ impl SampleBuffer {
         if level < 0 {
             for idx in a..b {
                 let (i, v) = self.phys(self.raw[(idx % self.cap) as usize]);
-                acc.add(i, v);
+                acc.add(i, v, self.mval(idx));
             }
             return;
         }
@@ -414,7 +500,7 @@ impl SampleBuffer {
     }
 
     /// The sample at or just before time t: (current A, voltage V, range).
-    pub fn value_at(&self, t: f64) -> Option<(f64, f64, u8)> {
+    pub fn value_at(&self, t: f64) -> Option<(f64, f64, u8, f64)> {
         for k in (0..self.segs.len()).rev() {
             let (lo, hi) = self.seg_bounds(k);
             if lo >= hi {
@@ -432,20 +518,20 @@ impl SampleBuffer {
             }
             let w = self.raw[(idx % self.cap) as usize];
             let (i, v) = self.phys(w);
-            return Some((i, v, unpack(w).2));
+            return Some((i, v, unpack(w).2, self.mval(idx)));
         }
         None
     }
 
     /// Every sample in [t0, t1): f(time s, current A, voltage V, range).
-    pub fn for_each(&self, t0: f64, t1: f64, mut f: impl FnMut(f64, f64, f64, u8)) {
+    pub fn for_each(&self, t0: f64, t1: f64, mut f: impl FnMut(f64, f64, f64, u8, f64)) {
         for k in 0..self.segs.len() {
             let Some((a, b)) = self.span_in(k, t0, t1) else { continue };
             let s = self.segs[k];
             for idx in a..b {
                 let w = self.raw[(idx % self.cap) as usize];
                 let (i, v) = self.phys(w);
-                f(Self::time_of(&s, idx), i, v, unpack(w).2);
+                f(Self::time_of(&s, idx), i, v, unpack(w).2, self.mval(idx));
             }
         }
     }
@@ -457,7 +543,8 @@ impl SampleBuffer {
             let Some((a, b)) = self.span_in(k, t0, t1) else { continue };
             let s = self.segs[k];
             let v: Vec<u32> = (a..b).map(|idx| self.raw[(idx % self.cap) as usize]).collect();
-            runs.push((Self::time_of(&s, a), s.step as f64 * TS_PERIOD_S, v));
+            let m: Option<Vec<f32>> = (!self.mraw.is_empty()).then(|| (a..b).map(|idx| self.mraw[(idx % self.cap) as usize]).collect());
+            runs.push((Self::time_of(&s, a), s.step as f64 * TS_PERIOD_S, v, m));
         }
         crate::analysis::Extract { runs, cal: self.cal.clone() }
     }
@@ -468,7 +555,7 @@ impl SampleBuffer {
     }
 
     /// [t0, t1] in `bins` columns, flat: `[layout, rows, cols, raw, then each
-    /// column]`; columns t, n, then i, v, p each min, max, mean, σ. A row with
+    /// column]`; columns t, n, then i, v, p, m (math) each min, max, mean, σ. A row with
     /// n = 0 is a gap (values NaN). raw = 1: every row is one sample (the
     /// span holds fewer samples than about two per column).
     pub fn lod(&self, t0: f64, t1: f64, bins: usize) -> Vec<f64> {
@@ -504,7 +591,8 @@ impl SampleBuffer {
                     let w = self.raw[(idx % self.cap) as usize];
                     let (i, v) = self.phys(w);
                     let p = i * v;
-                    rows.push([Self::time_of(&s, idx), 1.0, i, i, i, 0.0, v, v, v, 0.0, p, p, p, 0.0]);
+                    let m = self.mval(idx);
+                    rows.push([Self::time_of(&s, idx), 1.0, i, i, i, 0.0, v, v, v, 0.0, p, p, p, 0.0, m, m, m, 0.0]);
                 }
             } else {
                 let ta = Self::time_of(&s, a);
@@ -520,9 +608,11 @@ impl SampleBuffer {
                     }
                     let c = |q: &Moments| [q.min, q.max, q.mean, q.std()];
                     let (ci, cv, cp) = (c(&m.i), c(&m.v), c(&m.p));
+                    let cm = if m.m.n > 0 { c(&m.m) } else { [f64::NAN; 4] };
                     rows.push([
                         Self::time_of(&s, x), m.n() as f64,
                         ci[0], ci[1], ci[2], ci[3], cv[0], cv[1], cv[2], cv[3], cp[0], cp[1], cp[2], cp[3],
+                        cm[0], cm[1], cm[2], cm[3],
                     ]);
                 }
             }
@@ -556,7 +646,7 @@ mod tests {
             let v = 3300 + (k % 17) as u16;
             b.push(1000 + k, 1, i, v, 2, false);
             if k >= 1234 && k < 250_000 {
-                direct.add(c.current(i, 2), c.voltage(v));
+                direct.add(c.current(i, 2), c.voltage(v), f64::NAN);
             }
         }
         let t = |k: u64| (1000 + k) as f64 * TS_PERIOD_S;
@@ -597,8 +687,35 @@ mod tests {
         assert_eq!(l[1], 10.0);
         // value in the gap: none; inside: the sample
         assert!(b.value_at(5000.0 * TS_PERIOD_S).is_none());
-        let (i, _, _) = b.value_at(10_005.0 * TS_PERIOD_S).unwrap();
+        let (i, _, _, _) = b.value_at(10_005.0 * TS_PERIOD_S).unwrap();
         assert!((i - 200.0 * 2.0 / 16384.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn math_channel_any_time() {
+        let mut b = SampleBuffer::new(1 << 16, cal());
+        for k in 0..10_000u64 {
+            b.push(k, 1, 8192, 3300, 0, false); // 1 A, 3.3 V
+        }
+        let t1 = 10_000.0 * TS_PERIOD_S;
+        assert_eq!(b.stats(0.0, t1).m.m.n, 0); // none yet
+        // set afterwards: computed over what's held
+        b.set_math(Some("P*1000")).unwrap();
+        let s = b.stats(0.0, t1);
+        assert_eq!(s.m.m.n, 10_000);
+        assert!((s.m.m.mean - 3300.0).abs() < 1e-9);
+        // and for new samples, with state: integ(I) grows by 1 A × 500 ns per sample
+        b.set_math(Some("integ(I)")).unwrap();
+        let m = b.push(10_000, 1, 8192, 3300, 0, false);
+        assert!((m - 10_001.0 * 500e-9).abs() < 1e-12);
+        let (_, _, _, mv) = b.value_at(5000.0 * TS_PERIOD_S).unwrap();
+        assert!((mv - 5001.0 * 500e-9).abs() < 1e-9);
+        // lod carries it
+        let l = b.lod(0.0, t1, 10);
+        let rows = l[1] as usize;
+        let m_mean = &l[4 + 16 * rows..4 + 17 * rows];
+        assert!(m_mean.iter().all(|x| x.is_finite()));
+        assert!(b.set_math(Some("I +")).is_err());
     }
 
     #[test]

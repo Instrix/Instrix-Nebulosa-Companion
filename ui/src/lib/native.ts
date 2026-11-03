@@ -50,7 +50,16 @@ class NativeLink implements Link {
   }
 
   valueAt(t: number) {
-    return invoke<[number, number, number] | null>('query_value', { t });
+    return invoke<[number, number, number, number] | null>('query_value', { t });
+  }
+
+  async setMath(expr: string | null) {
+    try {
+      await invoke<void>('set_math', { expr });
+      return null;
+    } catch (e) {
+      return String(e);
+    }
   }
 
   setCalibration(cal: Calibration) {

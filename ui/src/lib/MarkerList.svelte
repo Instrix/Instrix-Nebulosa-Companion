@@ -8,6 +8,7 @@
 
   let {
     rows,
+    math = false,
     active,
     origin,
     onpick,
@@ -16,6 +17,8 @@
     onclear,
   }: {
     rows: (MarkerRow & { t0: number })[];
+    /** a math channel column */
+    math?: boolean;
     active: number | null;
     /** time zero for the t column (trigger, or the newest sample) */
     origin: number;
@@ -25,7 +28,7 @@
     onclear: () => void;
   } = $props();
 
-  const I = SIGNAL_INFO.i, V = SIGNAL_INFO.v, P = SIGNAL_INFO.p;
+  const I = SIGNAL_INFO.i, V = SIGNAL_INFO.v, P = SIGNAL_INFO.p, M = SIGNAL_INFO.m;
   const f = (x: number | undefined, unit: string) => (x == null || !isFinite(x) ? '–' : fmtSI(x, unit, 4));
 </script>
 
@@ -41,6 +44,7 @@
         <th style="color: var({V.color})">V avg</th>
         <th style="color: var({P.color})">P avg</th>
         <th style="color: var({P.color})">∫P</th>
+        {#if math}<th style="color: var({M.color})">{M.name} avg</th>{/if}
         <th class="act">
           {#if rows.length}<button class="ghost small" onclick={onclear} title="Remove all markers">Clear</button>{/if}
         </th>
@@ -57,6 +61,7 @@
           <td>{f(m.ch.v?.mean, V.unit)}</td>
           <td>{f(m.ch.p?.mean, P.unit)}</td>
           <td>{m.dt == null ? '' : f(m.ch.p?.integral, 'J')}</td>
+          {#if math}<td>{f(m.ch.m?.mean, M.unit)}</td>{/if}
           <td class="act">
             <button class="ghost small" title="Fit the screen to this marker" onclick={(e) => { e.stopPropagation(); onzoom(m.id); }}>⤢</button>
             <button class="ghost small" title="Delete" onclick={(e) => { e.stopPropagation(); ondelete(m.id); }}>✕</button>
@@ -64,7 +69,7 @@
         </tr>
       {:else}
         <tr class="empty">
-          <td colspan="9">No markers. Drag across a plot for a dual marker, double-click for a single one (or D / M).</td>
+          <td colspan={math ? 10 : 9}>No markers. Drag across a plot for a dual marker, double-click for a single one (or D / M).</td>
         </tr>
       {/each}
     </tbody>

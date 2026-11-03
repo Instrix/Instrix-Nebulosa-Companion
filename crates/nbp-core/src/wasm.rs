@@ -39,7 +39,7 @@ impl Pipeline {
         to_js(&self.0.stats(t0, t1))
     }
 
-    /// [A, V, range] of the sample at or before t, or null
+    /// [A, V, range, math] of the sample at or before t, or null
     pub fn value_at(&self, t: f64) -> JsValue {
         to_js(&self.0.value_at(t))
     }
@@ -64,6 +64,11 @@ impl Pipeline {
     pub fn analyze(&self, t0: f64, t1: f64, req: JsValue) -> Result<JsValue, JsValue> {
         let r: crate::analysis::Request = serde_wasm_bindgen::from_value(req)?;
         Ok(to_js(&crate::analysis::run(&self.0.extract(t0, t1), &r)))
+    }
+
+    /// a math expression (math.rs), or null for none; an error message if it doesn't compile
+    pub fn set_math(&mut self, expr: Option<String>) -> Option<String> {
+        self.0.set_math(expr.as_deref()).err()
     }
 
     pub fn set_buffer_samples(&mut self, n: usize) {

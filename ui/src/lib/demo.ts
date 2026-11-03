@@ -150,7 +150,11 @@ export class DemoLink implements Link {
     return this.pipeline.stats(t0, t1) as RawSpanStats | null;
   }
   async valueAt(t: number) {
-    return this.pipeline.value_at(t) as [number, number, number] | null;
+    return this.pipeline.value_at(t) as [number, number, number, number] | null;
+  }
+
+  async setMath(expr: string | null) {
+    return this.pipeline.set_math(expr ?? undefined) ?? null;
   }
   async close() {
     for (const t of this.timers) clearInterval(t);

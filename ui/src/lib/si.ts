@@ -21,9 +21,18 @@ export function prefixFor(a: number): [number, string] {
   return PREFIXES[PREFIXES.length - 1];
 }
 
+/** a unit that carries its own prefix (mA, mW, µA, kΩ): no other prefix goes on it */
+const PREFIXED = /^[pnuµmkMG][A-Za-zΩ°]/;
+
 /** `digits` significant digits, with the prefix chosen from the value itself. */
 export function fmtSI(v: number, unit: string, digits = 4): string {
   if (!isFinite(v)) return '–';
+  if (PREFIXED.test(unit)) {
+    const a = Math.abs(v);
+    const int = a >= 100 ? 3 : a >= 10 ? 2 : 1;
+    const txt = a === 0 ? '0' : a >= 1e4 ? v.toFixed(0) : a < 0.01 ? v.toPrecision(3) : v.toFixed(Math.max(0, digits - int));
+    return `${txt} ${unit}`;
+  }
   const [f, p] = prefixFor(v);
   const x = v / f;
   const int = Math.abs(x) >= 100 ? 3 : Math.abs(x) >= 10 ? 2 : 1;

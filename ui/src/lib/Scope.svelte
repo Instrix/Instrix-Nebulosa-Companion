@@ -16,10 +16,24 @@
     sigma: boolean;
   }
 
-  export const SIGNAL_INFO: Record<Signal, { name: string; sym: string; unit: string; color: string; integral?: string }> = {
+  /** the math channel's name, unit and expression (set in the Math panel) */
+  export const mathInfo = $state({ name: 'Math', unit: '', expr: '', on: false });
+
+  type Info = { name: string; sym: string; unit: string; color: string; integral?: string };
+  export const SIGNAL_INFO: Record<Signal, Info> = {
     i: { name: 'Current', sym: 'I', unit: 'A', color: '--trace-i', integral: 'C' },
     v: { name: 'Voltage', sym: 'V', unit: 'V', color: '--trace-v' },
     p: { name: 'Power', sym: 'P', unit: 'W', color: '--trace-p', integral: 'J' },
+    m: {
+      get name() {
+        return mathInfo.name || 'Math';
+      },
+      sym: 'M',
+      get unit() {
+        return mathInfo.unit;
+      },
+      color: '--trace-m',
+    },
   };
 </script>
 
@@ -68,11 +82,11 @@
   function loadWeights(): Record<Signal, number> {
     try {
       const w = JSON.parse(localStorage.getItem(WEIGHTS_KEY) ?? 'null');
-      if (w && w.i > 0 && w.v > 0 && w.p > 0) return w;
+      if (w && w.i > 0 && w.v > 0 && w.p > 0) return { m: 1, ...w };
     } catch {
       /* storage unavailable */
     }
-    return { i: 1, v: 1, p: 1 };
+    return { i: 1, v: 1, p: 1, m: 1 };
   }
   let weights = $state<Record<Signal, number>>(loadWeights());
   let rowEls: Record<string, HTMLDivElement> = $state({});
@@ -97,7 +111,7 @@
   }
 
   function equalize() {
-    weights = { i: 1, v: 1, p: 1 };
+    weights = { i: 1, v: 1, p: 1, m: 1 };
     save(WEIGHTS_KEY, weights);
   }
 
@@ -605,7 +619,7 @@
         const xr = Math.min(left + width, x1!);
         dual = store.stats(m.t0, m.t1).then((s) => {
           if (!s.i.n) return null;
-          const integral: Record<Signal, number> = { i: s.charge, v: NaN, p: s.energy };
+          const integral: Record<Signal, number> = { i: s.charge, v: NaN, p: s.energy, m: NaN };
           const vals = Object.fromEntries(signals.map((sig) => [sig, { mean: s[sig].mean, integral: integral[sig] }]));
           return { m, x: xr, vals: vals as Record<Signal, { mean: number; integral: number }> };
         });

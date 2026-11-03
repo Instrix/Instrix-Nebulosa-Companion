@@ -35,8 +35,10 @@ export interface Link {
   /** [t0, t1] in `bins` columns: buffer.rs lod's flat layout */
   lod(t0: number, t1: number, bins: number): Promise<Float64Array>;
   stats(t0: number, t1: number): Promise<RawSpanStats | null>;
-  /** [A, V, range] of the sample at or before t */
-  valueAt(t: number): Promise<[number, number, number] | null>;
+  /** [A, V, range, math] of the sample at or before t */
+  valueAt(t: number): Promise<[number, number, number, number] | null>;
+  /** the math channel's expression, or null for none; resolves to an error message, or null */
+  setMath(expr: string | null): Promise<string | null>;
   /** codes to units, for samples from now on */
   setCalibration(c: Calibration): Promise<void>;
   setTrigger(c: TriggerCfg): Promise<void>;

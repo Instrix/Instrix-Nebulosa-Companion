@@ -135,13 +135,19 @@ pub fn open(path: &str, events: &Events) -> Result<(Pipeline, String), String> {
 pub fn export_csv(pipe: &SharedPipeline, t0: f64, t1: f64, path: &str) -> Result<u64, String> {
     let f = std::fs::File::create(path).map_err(|e| format!("{path}: {e}"))?;
     let mut w = std::io::BufWriter::with_capacity(4 << 20, f);
-    writeln!(w, "time_s,current_A,voltage_V,power_W,range").map_err(|e| e.to_string())?;
+    let p = pipe.lock().unwrap();
+    let math = p.has_math();
+    writeln!(w, "time_s,current_A,voltage_V,power_W,range{}", if math { ",math" } else { "" }).map_err(|e| e.to_string())?;
     let mut rows = 0u64;
     let mut err = None;
-    let p = pipe.lock().unwrap();
-    p.for_each_sample(t0, t1, |t, i, v, r| {
+    p.for_each_sample(t0, t1, |t, i, v, r, m| {
         if err.is_none() {
-            if let Err(e) = writeln!(w, "{t:.9},{i:.6e},{v:.6e},{:.6e},{r}", i * v) {
+            let res = if math {
+                writeln!(w, "{t:.9},{i:.6e},{v:.6e},{:.6e},{r},{m:.6e}", i * v)
+            } else {
+                writeln!(w, "{t:.9},{i:.6e},{v:.6e},{:.6e},{r}", i * v)
+            };
+            if let Err(e) = res {
                 err = Some(e.to_string());
             }
             rows += 1;

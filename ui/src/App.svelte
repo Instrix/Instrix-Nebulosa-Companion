@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
-  import Scope, { SIGNAL_INFO, type AxisCfg, type TraceCfg } from './lib/Scope.svelte';
+  import Scope, { SIGNAL_INFO, mathInfo, type AxisCfg, type TraceCfg } from './lib/Scope.svelte';
   import Overview from './lib/Overview.svelte';
   import MarkerList from './lib/MarkerList.svelte';
   import Meter, { type AccumView, type MarkerRow, type Scope as MeterScope, type Summary } from './lib/Meter.svelte';
@@ -76,13 +76,16 @@
   const bufferSamples = $derived((bufferMB * 1024 * 1024) / 4);
   /** what the buffer holds at the current rate, s */
   const bufferS = $derived(bufferSamples / (rateHz || 2e6));
-  let shown = $state<Record<Signal, boolean>>({ i: true, v: true, p: true });
+  let shown = $state<Record<Signal, boolean>>({ i: true, v: true, p: true, m: true });
+  /** the signals there are: the math channel only once it is set */
+  const available = $derived(SIGNALS.filter((s) => s !== 'm' || mathInfo.on));
   let trace = $state<TraceCfg>({ mean: true, range: true, sigma: false });
-  const signals = $derived(SIGNALS.filter((s) => shown[s]));
+  const signals = $derived(available.filter((s) => shown[s]));
   let axes = $state<Record<Signal, AxisCfg>>({
     i: { auto: true, min: 0, max: 0.1, log: false },
     v: { auto: true, min: 0, max: 5, log: false },
     p: { auto: true, min: 0, max: 0.5, log: false },
+    m: { auto: true, min: 0, max: 1, log: false },
   });
 
   // ---- meter --------------------------------------------------------------
@@ -152,6 +155,7 @@
       });
       dev = new Device(link);
       playback = header;
+      await linkMath(link);
       store.attach(link);
       setLink(link);
       trig.mode = 'roll';
@@ -504,11 +508,72 @@
     await dev?.link.setBuffer(bufferSamples);
   }
 
+  // ---- math channel ---------------------------------------------------------
+  const MATH_KEY = 'nebulosa.math';
+  const MATH_EXAMPLES = [
+    { label: 'Power in mW', expr: 'P*1000', name: 'Power', unit: 'mW' },
+    { label: 'Load resistance', expr: 'V/I', name: 'Load', unit: 'Ω' },
+    { label: 'Charge since start (mAh)', expr: 'integ(I)/3.6', name: 'Charge', unit: 'mAh' },
+    { label: 'Energy since start (mWh)', expr: 'integ(P)/3.6', name: 'Energy', unit: 'mWh' },
+    { label: 'Current, 1 ms average', expr: 'avg(I, 1ms)', name: 'I avg 1 ms', unit: 'A' },
+    { label: 'dI/dt', expr: 'ddt(I)', name: 'dI/dt', unit: 'A/s' },
+    { label: 'Current in µA, log', expr: 'log10(I/1u)', name: 'log I', unit: 'dec µA' },
+  ];
+  let mathDraft = $state({ name: 'Power', unit: 'mW', expr: 'P*1000' });
+  let mathError = $state('');
+  try {
+    const m = JSON.parse(localStorage.getItem(MATH_KEY) ?? 'null');
+    if (m && typeof m.expr === 'string') {
+      mathDraft = { name: m.name ?? '', unit: m.unit ?? '', expr: m.expr };
+      if (m.on) Object.assign(mathInfo, { name: m.name ?? '', unit: m.unit ?? '', expr: m.expr, on: true });
+    }
+  } catch {
+    /* storage unavailable */
+  }
+
+  function saveMath() {
+    save(MATH_KEY, { ...$state.snapshot(mathDraft), on: mathInfo.on });
+  }
+
+  function pickMathExample(expr: string) {
+    const ex = MATH_EXAMPLES.find((x) => x.expr === expr);
+    if (ex) mathDraft = { name: ex.name, unit: ex.unit, expr: ex.expr };
+  }
+
+  async function applyMath() {
+    mathError = '';
+    const err = activeLink ? await activeLink.setMath(mathDraft.expr) : null;
+    if (err) {
+      mathError = err;
+      return;
+    }
+    Object.assign(mathInfo, { ...$state.snapshot(mathDraft), on: true });
+    shown.m = true;
+    saveMath();
+  }
+
+  async function mathOff() {
+    await activeLink?.setMath(null);
+    mathInfo.on = false;
+    mathError = '';
+    saveMath();
+  }
+
+  /** a new link gets the math channel too */
+  async function linkMath(l: Link) {
+    if (!mathInfo.on) return;
+    const err = await l.setMath(mathInfo.expr);
+    if (err) {
+      mathError = err;
+      mathInfo.on = false;
+    }
+  }
+
   // ---- statistics ---------------------------------------------------------
   function summarize(s: SpanStats, duration = s.t1 - s.t0): Summary | null {
     if (!s.i.n) return null;
     const ch = (m: SpanStats['i']) => ({ mean: m.mean, min: m.min, max: m.max, pp: m.pp, std: m.std, rms: m.rms });
-    return { ch: { i: ch(s.i), v: ch(s.v), p: ch(s.p) }, n: s.i.n, duration };
+    return { ch: { i: ch(s.i), v: ch(s.v), p: ch(s.p), m: ch(s.m) }, n: s.i.n, duration };
   }
 
   let meterBusy = false;
@@ -519,7 +584,7 @@
     try {
       if (meterScope === 'run') {
         const r = runMoments;
-        summary = r && r.i.n ? summarize({ i: Moments.from(r.i), v: Moments.from(r.v), p: Moments.from(r.p), t0: 0, t1: 0, charge: 0, energy: 0 }, accum?.seconds ?? NaN) : null;
+        summary = r && r.i.n ? summarize({ i: Moments.from(r.i), v: Moments.from(r.v), p: Moments.from(r.p), m: Moments.from(r.m), t0: 0, t1: 0, charge: 0, energy: 0 }, accum?.seconds ?? NaN) : null;
       } else if (meterScope === 'selection' && view.selection) summary = summarize(await store.stats(...view.selection));
       else if (store.empty) summary = null;
       else summary = summarize(await store.stats(...view.span(store)));
@@ -531,7 +596,7 @@
             return { ...base, dt: null, ch: Object.fromEntries(SIGNALS.map((s) => [s, v ? { mean: v[s], integral: NaN } : null])) as MarkerRow['ch'] };
           }
           const st = await store.stats(m.t0, m.t1);
-          const integral: Record<Signal, number> = { i: st.charge, v: NaN, p: st.energy };
+          const integral: Record<Signal, number> = { i: st.charge, v: NaN, p: st.energy, m: NaN };
           return {
             ...base,
             dt: m.t1 - m.t0,
@@ -663,6 +728,7 @@
       await link.setBuffer(bufferSamples);
       await link.setCalibration($state.snapshot(cal));
       await link.setTrigger(trig.cfg());
+      await linkMath(link);
       store.attach(link);
       setLink(link);
       info = await d.info();
@@ -800,6 +866,7 @@
       demo.setBuffer(bufferSamples);
       demo.setCalibration($state.snapshot(cal));
       demo.setTrigger(trig.cfg());
+      linkMath(demo);
       store.attach(demo);
       setLink(demo);
       stopDemo = () => demo.close();
@@ -817,6 +884,11 @@
         if (pos) trig.position = Number(pos);
       }
       if (q.get('tab') === 'events') bottomTab = 'events';
+      const mx = q.get('math');
+      if (mx) {
+        mathDraft = { name: q.get('mname') ?? 'Math', unit: q.get('munit') ?? '', expr: mx };
+        setTimeout(applyMath, 0);
+      }
       const div = Number(q.get('div'));
       if (div && TIME_DIVS.includes(div)) view.divIndex = TIME_DIVS.indexOf(div);
       const tr = q.get('trace');
@@ -840,7 +912,7 @@
 <svelte:window onkeydown={onKey} />
 
 {#if analysis}
-  <Analysis link={activeLink} span={analysis.span} spanLabel={analysis.label} onclose={() => (analysis = null)} onshow={showSpan} />
+  <Analysis signals={available} link={activeLink} span={analysis.span} spanLabel={analysis.label} onclose={() => (analysis = null)} onshow={showSpan} />
 {/if}
 
 <div class="app" style="grid-template-columns: {leftW}px 1fr {rightW}px">
@@ -1034,7 +1106,7 @@
         <div class="axis">
           <span>Source</span>
           <div class="seg">
-            {#each SIGNALS as sg (sg)}
+            {#each available as sg (sg)}
               <button class:on={trig.source === sg} onclick={() => (trig.source = sg)} style="color: {trig.source === sg ? '' : `var(${SIGNAL_INFO[sg].color})`}">{SIGNAL_INFO[sg].sym}</button>
             {/each}
           </div>
@@ -1146,7 +1218,7 @@
     <section>
       <h2>Signals</h2>
       <div class="chips">
-        {#each SIGNALS as s (s)}
+        {#each available as s (s)}
           <label class="chip" style="--c: var({SIGNAL_INFO[s].color})">
             <input type="checkbox" bind:checked={shown[s]} />
             {SIGNAL_INFO[s].name}
@@ -1186,6 +1258,35 @@
         </select>
         <small class="muted">every sample: {fmtTime(bufferS)} at {fmtRate(rateHz || 2e6)}</small>
       </label>
+    </section>
+
+    <section>
+      <details open={mathInfo.on}>
+        <summary><h2>Math channel</h2></summary>
+        <div class="cal">
+          <label>
+            Example
+            <select onchange={(e) => pickMathExample((e.currentTarget as HTMLSelectElement).value)}>
+              <option value="">Choose…</option>
+              {#each MATH_EXAMPLES as ex (ex.expr)}<option value={ex.expr}>{ex.label}</option>{/each}
+            </select>
+          </label>
+          <label title="I (A), V (V), P (W), t (s); + - * / ^; abs sqrt exp ln log10 min max; avg(x, 1ms) integ(x) ddt(x); numbers with SI prefixes (10m, 1u)">
+            Expression
+            <input class="mono" bind:value={mathDraft.expr} placeholder="P*1000" onkeydown={(e) => e.key === 'Enter' && applyMath()} />
+          </label>
+          <div class="row">
+            <label>Name <input bind:value={mathDraft.name} placeholder="Math" /></label>
+            <label>Unit <input bind:value={mathDraft.unit} placeholder="mW" /></label>
+          </div>
+          <div class="row">
+            <button class="primary" onclick={applyMath}>{mathInfo.on ? 'Update' : 'Apply'}</button>
+            {#if mathInfo.on}<button class="ghost" onclick={mathOff}>Off</button>{/if}
+          </div>
+          {#if mathError}<p class="error small">{mathError}</p>{/if}
+          <p class="muted small">Computed on every sample, as the 4th signal: plots, stats, markers, triggers, analysis and CSV.</p>
+        </div>
+      </details>
     </section>
 
     <section>
@@ -1312,6 +1413,7 @@
         />
       {:else}
       <MarkerList
+        math={mathInfo.on}
         rows={markerRows}
         active={view.active}
         origin={trig.mode !== 'roll' && trig.shown != null ? trig.shown : store.tEnd}

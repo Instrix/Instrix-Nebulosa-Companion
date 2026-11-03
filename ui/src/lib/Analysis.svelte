@@ -7,7 +7,6 @@
   import 'uplot/dist/uPlot.min.css';
   import type { Link } from './device';
   import type { AnalysisRequest, AnalysisResult, Signal } from './nbp';
-  import { SIGNALS } from './nbp';
   import { SIGNAL_INFO } from './Scope.svelte';
   import { fmtSI, logSplits, parseSI, prefixFor } from './si';
   import { fmtTime } from './view.svelte';
@@ -15,12 +14,15 @@
   type Tab = 'histogram' | 'cdf' | 'psd' | 'maxwindow';
 
   let {
+    signals,
     link,
     span,
     spanLabel,
     onclose,
     onshow,
   }: {
+    /** the signals there are (the math channel once set) */
+    signals: Signal[];
     link: Link | null;
     span: [number, number];
     spanLabel: string;
@@ -199,7 +201,7 @@
 
     <div class="controls">
       <div class="seg">
-        {#each SIGNALS as sg (sg)}
+        {#each signals as sg (sg)}
           <button class:on={source === sg} onclick={() => (source = sg)}>{SIGNAL_INFO[sg].name}</button>
         {/each}
       </div>

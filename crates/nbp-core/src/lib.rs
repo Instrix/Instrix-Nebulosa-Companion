@@ -8,6 +8,7 @@
 //! - [`analysis`]: histogram / CDF, PSD, worst window over a span
 //! - [`buffer`]: every sample, with a summary pyramid for fast span queries
 //! - [`frame`]: message header, encoding, a resyncing byte-stream parser
+//! - [`math`]: the math channel's expressions
 //! - [`msg`]: command codes and payload structs
 //! - [`stream`]: the FPGA sample stream, format 5
 //! - [`units`]: codes to A / V (calibration)
@@ -18,6 +19,7 @@
 pub mod analysis;
 pub mod buffer;
 pub mod frame;
+pub mod math;
 pub mod msg;
 pub mod pipeline;
 pub mod recording;

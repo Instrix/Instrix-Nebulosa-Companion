@@ -50,6 +50,7 @@ export function spanStats(r: RawSpanStats | null | undefined): SpanStats {
     i: Moments.from(r?.m.i),
     v: Moments.from(r?.m.v),
     p: Moments.from(r?.m.p),
+    m: Moments.from(r?.m.m),
     t0: r?.t0 ?? NaN,
     t1: r?.t1 ?? NaN,
     charge: r?.charge ?? 0,
@@ -74,12 +75,12 @@ export interface Lod {
 /** One sample's values per channel, or null (none there). */
 export type PointValue = Record<Signal, number> | null;
 
-const LOD_LAYOUT = 2;
-const LOD_COLS = 14;
+const LOD_LAYOUT = 3;
+const LOD_COLS = 18;
 
 export function emptyLod(): Lod {
   const mk = () => ({ min: [] as Col, max: [] as Col, avg: [] as Col, sdLo: [] as Col, sdHi: [] as Col });
-  return { t: [], n: [], raw: false, ch: { i: mk(), v: mk(), p: mk() }, gaps: [] };
+  return { t: [], n: [], raw: false, ch: { i: mk(), v: mk(), p: mk(), m: mk() }, gaps: [] };
 }
 
 export function decodeLod(f: Float64Array): Lod {
@@ -153,6 +154,6 @@ export class SampleStore {
   async valueAt(t: number): Promise<PointValue> {
     if (!this.link || this.empty) return null;
     const r = await this.link.valueAt(t);
-    return r ? { i: r[0], v: r[1], p: r[0] * r[1] } : null;
+    return r ? { i: r[0], v: r[1], p: r[0] * r[1], m: r[3] ?? NaN } : null;
   }
 }

@@ -87,7 +87,8 @@ export interface DataStats {
   stream: StreamCounters;
 }
 
-export const SIGNALS = ['i', 'v', 'p'] as const;
+/** current, voltage, power, and the math channel (when there is one) */
+export const SIGNALS = ['i', 'v', 'p', 'm'] as const;
 export type Signal = (typeof SIGNALS)[number];
 
 /** buffer.rs Moments: one channel over a span (m2: sum of squared deviations) */
@@ -148,7 +149,7 @@ export type TriggerKind =
 /** trigger.rs TriggerCfg */
 export interface TriggerCfg {
   enabled: boolean;
-  source: 'i' | 'v' | 'p';
+  source: 'i' | 'v' | 'p' | 'm';
   kind: TriggerKind;
   hysteresis: number;
   holdoff: number;

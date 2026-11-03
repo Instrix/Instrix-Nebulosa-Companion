@@ -150,6 +150,14 @@ impl Pipeline {
         self.buf.segments()
     }
 
+    /// A math channel (an expression, see math.rs) or none; the buffer is
+    /// computed again; since-start statistics of it start now.
+    pub fn set_math(&mut self, expr: Option<&str>) -> Result<(), String> {
+        self.buf.set_math(expr)?;
+        self.run.m = Default::default();
+        Ok(())
+    }
+
     pub fn lod(&self, t0: f64, t1: f64, bins: usize) -> Vec<f64> {
         self.buf.lod(t0, t1, bins)
     }
@@ -158,8 +166,8 @@ impl Pipeline {
         self.buf.stats(t0, t1)
     }
 
-    /// (A, V, range) of the sample at or just before t
-    pub fn value_at(&self, t: f64) -> Option<(f64, f64, u8)> {
+    /// (A, V, range, math) of the sample at or just before t
+    pub fn value_at(&self, t: f64) -> Option<(f64, f64, u8, f64)> {
         self.buf.value_at(t)
     }
 
@@ -191,15 +199,13 @@ impl Pipeline {
         self.accum.charge += i * dt;
         self.accum.energy += i * v * dt;
         self.accum.seconds += dt;
-        self.run.i.add(i);
-        self.run.v.add(v);
-        self.run.p.add(i * v);
-        self.buf.push(ts, step, ic, vc, range, dirty);
+        let m = self.buf.push(ts, step, ic, vc, range, dirty);
+        self.run.add(i, v, m);
         if self.trig.enabled() {
             if self.next_ts != Some(ts) {
                 self.trig.gap();
             }
-            self.trig.feed(ts as f64 * TS_PERIOD_S, self.trig.value(i, v), dt);
+            self.trig.feed(ts as f64 * TS_PERIOD_S, self.trig.value(i, v, m), dt);
         }
         if let Some(r) = &mut self.rec {
             r.sample(ts, step, pack(ic, vc, range, dirty));
@@ -254,13 +260,17 @@ impl Pipeline {
     }
 
     /// Every sample in [t0, t1): f(time s, A, V, range)
-    pub fn for_each_sample(&self, t0: f64, t1: f64, f: impl FnMut(f64, f64, f64, u8)) {
+    pub fn for_each_sample(&self, t0: f64, t1: f64, f: impl FnMut(f64, f64, f64, u8, f64)) {
         self.buf.for_each(t0, t1, f);
     }
 
     /// The span's raw samples, copied out: analyse with `analysis::run` without holding the pipeline.
     pub fn extract(&self, t0: f64, t1: f64) -> crate::analysis::Extract {
         self.buf.extract(t0, t1)
+    }
+
+    pub fn has_math(&self) -> bool {
+        self.buf.has_math()
     }
 
     pub fn count_samples(&self, t0: f64, t1: f64) -> u64 {
@@ -380,7 +390,7 @@ mod tests {
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].seq, 5);
         // code 1 in range 2 (20 mA full scale), 2 mV, at timestamp 100
-        let (i, v, r) = pl.value_at(100.0 * 500e-9).unwrap();
+        let (i, v, r, _) = pl.value_at(100.0 * 500e-9).unwrap();
         assert!((i - 20e-3 / 16384.0).abs() < 1e-15);
         assert!((v - 2e-3).abs() < 1e-15);
         assert_eq!(r, 2);

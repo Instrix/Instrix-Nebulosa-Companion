@@ -32,6 +32,8 @@ pub enum Source {
     I,
     V,
     P,
+    /// the math channel
+    M,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -286,11 +288,12 @@ impl Trigger {
     }
 
     #[inline]
-    pub fn value(&self, i: f64, v: f64) -> f64 {
+    pub fn value(&self, i: f64, v: f64, m: f64) -> f64 {
         match self.cfg.source {
             Source::I => i,
             Source::V => v,
             Source::P => i * v,
+            Source::M => m,
         }
     }
 
