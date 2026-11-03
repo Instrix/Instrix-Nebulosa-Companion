@@ -51,6 +51,20 @@ with a known sleep / wake current).
 - [ ] Unplug USB while streaming: "Disconnected", no crash; plug back,
       connect again.
 
+### Board panel
+- [ ] 12 V jack, USB-C and supply voltages match a multimeter (±0.1 V).
+- [ ] USB-C only, PD charger: "ask the USB-C charger for 12 V" gets a 12 V
+      contract; then **Turn on** powers the analog front end; the banner over
+      the plots goes away.
+- [ ] Unplug the 12 V source: the front end shows off, the banner comes back.
+- [ ] Clock: **Sync** sets the board's clock (its screen shows the PC's time).
+- [ ] Run self-test (stream stopped): all pass; SD skipped without a card.
+- [ ] Power input Auto / jack / USB-C switches without a reset.
+
+### Reconnect
+- [ ] Unplug USB for 5 s while streaming and logging: "Reconnecting…", then
+      the stream and the log go on (a new log file).
+
 ### Scope
 - [ ] Zoom from 60 s/div to 1 µs/div with the wheel: smooth; at µs a dot per sample.
 - [ ] A known DC current reads right in the meter (mean), in each range.

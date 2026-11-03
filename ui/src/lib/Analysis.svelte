@@ -59,6 +59,20 @@
     return { kind: 'maxwindow', source, width: w };
   }
 
+  // runs by itself: on open, and when the tab, signal or a setting changes
+  // (a moment after the last change); the window width on Enter or Run
+  let pending: ReturnType<typeof setTimeout> | undefined;
+  let again = false;
+  $effect(() => {
+    void [tab, source, bins, logBins, nfft];
+    clearTimeout(pending);
+    pending = setTimeout(() => {
+      if (busy) again = true;
+      else runIt();
+    }, 250);
+  });
+  onDestroy(() => clearTimeout(pending));
+
   async function runIt() {
     if (!link) return;
     const req = request();
@@ -76,6 +90,10 @@
       error = String(e);
     } finally {
       busy = false;
+      if (again) {
+        again = false;
+        runIt();
+      }
     }
   }
 
@@ -222,9 +240,9 @@
           </select>
         </label>
       {:else}
-        <label class="inline">Window <input bind:value={widthText} placeholder="1 ms" /></label>
+        <label class="inline">Window <input bind:value={widthText} placeholder="1 ms" onkeydown={(e) => e.key === 'Enter' && runIt()} /></label>
       {/if}
-      <button class="primary" onclick={runIt} disabled={busy || !link}>{busy ? 'Working…' : 'Run'}</button>
+      <button class="primary" onclick={runIt} disabled={busy || !link}>{busy ? 'Working…' : 'Run again'}</button>
     </div>
 
     {#if error}<p class="error">{error}</p>{/if}
@@ -240,7 +258,7 @@
       </div>
     {:else}
       <div class="chart" bind:this={chartEl}>
-        {#if !result}<p class="muted hint">Choose and Run. Every raw sample in the span is used.</p>{/if}
+        {#if !result}<p class="muted hint">{busy ? "Working… every raw sample in the span." : "Every raw sample in the span is used."}</p>{/if}
       </div>
     {/if}
 

@@ -105,6 +105,37 @@
     enabled = enabled.includes(key) ? enabled.filter((k) => k !== key) : [...enabled, key];
   }
 
+  // ---- battery life: a capacity over the mean current shown -------------------
+  const BATT_KEY = 'nebulosa.meter.battery';
+  let battMah = $state(loadBatt());
+  function loadBatt(): number {
+    try {
+      const v = Number(localStorage.getItem(BATT_KEY));
+      return v > 0 ? v : 1000;
+    } catch {
+      return 1000;
+    }
+  }
+  $effect(() => {
+    try {
+      if (battMah > 0) localStorage.setItem(BATT_KEY, String(battMah));
+    } catch {
+      /* storage unavailable */
+    }
+  });
+  const meanI = $derived(summary?.ch.i?.mean ?? null);
+  /** s; null with no current, or a negative one */
+  const battLife = $derived(meanI != null && meanI > 0 && battMah > 0 ? (battMah * 3.6) / meanI : null);
+  const SCOPE_WORD = { window: 'the screen', run: 'the run', selection: 'the selection' } as const;
+
+  function fmtLife(s: number) {
+    const h = s / 3600;
+    if (h < 1) return `${(s / 60).toFixed(1)} min`;
+    if (h < 48) return `${h.toFixed(1)} h`;
+    if (h < 24 * 365) return `${(h / 24).toFixed(1)} days`;
+    return `${(h / 24 / 365).toFixed(1)} years`;
+  }
+
   function fmtN(n: number) {
     return n >= 1e9 ? `${(n / 1e9).toFixed(2)} G` : n >= 1e6 ? `${(n / 1e6).toFixed(2)} M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)} k` : String(n);
   }
@@ -177,9 +208,38 @@
       <dd>{accum ? fmtTime(accum.seconds) : '–'}</dd>
     </dl>
   </div>
+
+  <div class="card batt" title="The capacity over the mean current of {SCOPE_WORD[scope]}. Real cells give less: self-discharge, temperature, cut-off voltage.">
+    <div class="head">
+      <span class="name">Battery life</span>
+      <label class="cap"><input type="number" min="1" step="any" bind:value={battMah} /> mAh</label>
+    </div>
+    <div class="life">{battLife != null ? fmtLife(battLife) : '–'}</div>
+    <small class="muted">at {meanI != null ? fmtSI(meanI, 'A', 4) : '–'}, the mean of {SCOPE_WORD[scope]}{scope === 'window' ? ' (Run: the long average)' : ''}</small>
+  </div>
 </div>
 
 <style>
+  .batt .cap {
+    text-transform: none;
+    letter-spacing: 0;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .batt input {
+    width: 72px;
+    padding: 2px 4px;
+    font-size: 12px;
+    text-align: right;
+  }
+  .life {
+    font-size: 20px;
+    font-weight: 600;
+    font-family: ui-monospace, monospace;
+  }
   .meter {
     display: flex;
     flex-direction: column;
@@ -271,7 +331,8 @@
     justify-content: space-between;
     font-size: 12px;
   }
-  .accum {
+  .accum,
+  .batt {
     --c: var(--accent);
   }
   .muted {

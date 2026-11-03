@@ -216,14 +216,17 @@
 
   /** tick labels: one prefix for a linear axis; per tick on a log axis */
   function siValues(unit: string, log: boolean) {
-    return (_u: uPlot, v: number[]) => {
+    return (u: uPlot, v: number[]) => {
       // uPlot thins crowded log ticks by passing null
       if (log) return v.map((x) => (x == null ? '' : fmtSI(x, unit, 1)));
+      // every other division, fewer when the plot is short (labels ≥ 18 px apart)
+      const px = u.bbox.height / devicePixelRatio / Math.max(1, v.length - 1);
+      const stride = [2, 4, 8].find((n) => n * px >= 18) ?? 8;
       const mag = Math.max(...v.map(Math.abs));
       const p = prefixFor(mag);
       const step = v.length > 1 ? Math.abs(v[1] - v[0]) / p[0] : 1;
       const dec = Math.max(0, Math.min(4, -Math.floor(Math.log10(step || 1)) + 1));
-      return v.map((x, k) => (k % 2 ? '' : `${(x / p[0]).toFixed(dec)} ${p[1]}${unit}`));
+      return v.map((x, k) => (k % stride ? '' : `${(x / p[0]).toFixed(dec)} ${p[1]}${unit}`));
     };
   }
 

@@ -113,6 +113,82 @@ class FakeBoard {
   ];
   msg = '';
 
+  // ---- board commands: no barrel jack, a USB-C PD charger at 5 V that offers 12 V
+  streaming = true; // the demo starts streaming
+  apwr = [false, false]; // H, L
+  pdMv = 5000;
+  pwrSel = 0;
+  lcd = 1;
+  rtcOffset = -437; // the board's clock is behind
+  tests = 0;
+  readonly t0 = Date.now();
+
+  boardStatus(): Uint8Array<ArrayBuffer> {
+    const b = new Uint8Array(200);
+    const d = new DataView(b.buffer);
+    const jitter = () => Math.round((Math.random() - 0.5) * 30);
+    const apwrOk = this.pdMv >= 12000;
+    d.setUint32(0, 0x4e440001, true);
+    d.setUint32(4, Date.now() - this.t0 + 3_600_000, true);
+    d.setUint32(8, 400e6, true);
+    d.setUint32(12, 100e6, true);
+    const flags = 0x7 | 1 << 10 | 1 << 11 | 1 << 14 | 1 << 15 | 1 << 19 | 1 << 21 | (this.apwr[0] ? 1 << 6 : 0) | (this.apwr[1] ? 1 << 7 : 0) | (apwrOk ? 1 << 20 : 0);
+    d.setUint32(16, flags, true);
+    d.setUint32(20, Math.round(Date.now() / 1000) + this.rtcOffset, true);
+    d.setUint16(24, 0, true);
+    d.setUint16(26, this.pdMv + jitter(), true);
+    d.setUint16(28, this.pdMv - 80 + jitter(), true);
+    b[34] = this.pwrSel;
+    b[36] = 2;
+    b[37] = this.lcd;
+    d.setUint32(40, 92, true);
+    d.setUint32(44, 300_000, true);
+    d.setUint32(48, 0x4e42000b, true);
+    d.setUint32(52, 0xef4014, true);
+    d.setUint32(56, 1 << 20, true);
+    d.setUint32(80, this.tests, true);
+    [100e6, 412, 32769, this.pdMv - 80, 0xef4014, 0, 2, 0, 0, 0x4e42000b, 0x7c131, this.pdMv].forEach((v, k) => d.setUint32(84 + 4 * k, v, true));
+    b[132] = 4;
+    b[133] = 1;
+    b[134] = 2;
+    const pdos = [[5000, 3000], [9000, 3000], [12000, 3000], [15000, 3000], [20000, 3250]];
+    b[135] = pdos.length;
+    d.setUint16(136, this.pdMv, true);
+    d.setUint16(138, 3000, true);
+    d.setUint16(140, this.pdMv, true);
+    b[142] = pdos.findIndex(([mv]) => mv === this.pdMv) + 1;
+    pdos.forEach(([mv, ma], k) => d.setUint32(144 + 4 * k, ((mv / 50) << 10) | (ma / 10), true));
+    d.setUint32(172, 2, true);
+    return b;
+  }
+
+  boardSet(item: number, v: number): number {
+    switch (item) {
+      case 1:
+      case 2:
+        if (v && this.pdMv < 12000) return 7; // NO_POWER
+        this.apwr[item === 1 ? 0 : 1] = !!v;
+        return 0;
+      case 5:
+        if (v > 2) return 3;
+        this.pwrSel = v;
+        return 0;
+      case 7:
+        this.lcd = v;
+        return 0;
+      case 8:
+        this.rtcOffset = v - Math.round(Date.now() / 1000);
+        return 0;
+      case 9:
+        if (this.streaming) return 5;
+        if (![5000, 9000, 12000, 15000, 20000].includes(v)) return 3;
+        this.pdMv = v;
+        if (v < 12000) this.apwr = [false, false];
+        return 0;
+    }
+    return 0;
+  }
+
   info(result = 0): Uint8Array<ArrayBuffer> {
     const b = new Uint8Array(136);
     const d = new DataView(b.buffer);
@@ -143,6 +219,24 @@ class FakeBoard {
     const len = p.length >= 8 ? d.getUint32(4, true) : 0;
     const activeRange = (a: number, n: number) => a < (this.active + 1) * this.slotSize && a + n > this.active * this.slotSize;
     switch (cmd) {
+      case 0x10:
+        this.streaming = true;
+        return ok();
+      case 0x11:
+        this.streaming = false;
+        return ok();
+      case 0x38:
+        return ok(this.boardStatus());
+      case 0x39: {
+        const st = this.boardSet(p[0], d.getUint32(4, true));
+        return ok(this.boardStatus(), st);
+      }
+      case 0x3a: {
+        if (this.streaming) return ok(this.boardStatus(), 5);
+        // every test passes (SD: no card, skipped)
+        this.tests = 0x555555 & ~(3 << 12) | (3 << 12);
+        return ok(this.boardStatus());
+      }
       case 0x3d: // FLASH_ERASE
         if ((addr | len) & 4095) return ok(undefined, 3);
         if (activeRange(addr, len)) return ok(undefined, 8);
@@ -222,7 +316,7 @@ export class DemoLink implements Link {
   private board = new FakeBoard();
 
   async request(cmd: number, payload = new Uint8Array()): Promise<Reply> {
-    if (cmd >= 0x3b && cmd <= 0x3f) return this.board.request(cmd, payload);
+    if ((cmd >= 0x38 && cmd <= 0x3f) || cmd === 0x10 || cmd === 0x11) return this.board.request(cmd, payload);
     return { ty: cmd | 0x40, status: 0, payload: new Uint8Array() };
   }
   async setBuffer(samples: number) {

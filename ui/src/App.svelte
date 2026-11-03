@@ -38,6 +38,9 @@
   import CalibrationPanel from './lib/panels/CalibrationPanel.svelte';
   import ConnectPanel from './lib/panels/ConnectPanel.svelte';
   import MathPanel from './lib/panels/MathPanel.svelte';
+  import BoardPanel from './lib/panels/BoardPanel.svelte';
+  import Help from './lib/Help.svelte';
+  import * as boardCmd from './lib/board';
   import LoggerView, { type LogView } from './lib/LoggerView.svelte';
   import ExportEditor, { defaultOutput, type OutputCfg } from './lib/ExportEditor.svelte';
   import { drag, stored, store as save } from './lib/drag';
@@ -362,6 +365,26 @@
 
   let bottomTab = $state<'markers' | 'events'>('markers');
   let updating = $state(false);
+  let helpOpen = $state(false);
+
+  // ---- the board (power, analog front end) ------------------------------------
+  let board = $state<boardCmd.BoardStatus | null>(null);
+  $effect(() => {
+    if (!dev) board = null;
+  });
+  /** measuring real signals with the analog front end's supplies off */
+  const frontEndOff = $derived(!!board && source === SRC.AD7387 && !(board.apwr_h && board.apwr_l));
+
+  async function frontEndOn() {
+    if (!dev) return;
+    error = '';
+    try {
+      await boardCmd.set(dev, boardCmd.SET.APWR_H, 1);
+      board = await boardCmd.set(dev, boardCmd.SET.APWR_L, 1);
+    } catch (e) {
+      error = `Analog front end: ${boardCmd.reason(e)}`;
+    }
+  }
   /** the board restarts (an update): connect to it again when it's back */
   let reconnectKey = '';
   async function boardRestarts() {
@@ -673,6 +696,13 @@
   // ---- sidebar widths --------------------------------------------------------
   const LEFT_W = 280, RIGHT_W = 280;
   let leftW = $state(stored('nebulosa.leftW', LEFT_W, (v) => v >= 200 && v <= 600));
+  /** the sidebars shown (hidden: more room for the plots) */
+  let leftOpen = $state(stored('nebulosa.leftOpen', 1, (v) => v === 0 || v === 1) === 1);
+  let rightOpen = $state(stored('nebulosa.rightOpen', innerWidth < 1100 ? 0 : 1, (v) => v === 0 || v === 1) === 1);
+  function toggleSide(side: 'left' | 'right') {
+    if (side === 'left') save('nebulosa.leftOpen', (leftOpen = !leftOpen) ? 1 : 0);
+    else save('nebulosa.rightOpen', (rightOpen = !rightOpen) ? 1 : 0);
+  }
   let rightW = $state(stored('nebulosa.rightW', RIGHT_W, (v) => v >= 200 && v <= 600));
 
   function colDrag(side: 'left' | 'right') {
@@ -878,6 +908,11 @@
     else if (e.key === '-') view.zoom(store, 1);
     else if (e.key === 'ArrowLeft') view.pan(store, -0.1);
     else if (e.key === 'ArrowRight') view.pan(store, 0.1);
+    else if (e.key === '?' || e.key === 'F1') {
+      e.preventDefault();
+      helpOpen = true;
+    } else if (e.key === '[') toggleSide('left');
+    else if (e.key === ']') toggleSide('right');
   }
 
   /** fits the screen to a marker: a dual one fills ~80 % of it, a single one is centred */
@@ -1071,17 +1106,54 @@
   }
 
   let lastCandidate = '';
-  async function connect(c: Candidate) {
+  // ---- losing the link: reconnect, and carry on streaming / logging ----------
+  let reconnecting = $state(false);
+
+  async function linkLost(c: Candidate, reason: string, resume: { stream: boolean; log: boolean }) {
+    reconnecting = true;
+    error = '';
+    note = `Connection lost (${reason}). Reconnecting…`;
+    const t0 = Date.now();
+    while (reconnecting && Date.now() - t0 < 120_000) {
+      await new Promise((r) => setTimeout(r, 2000));
+      if (!reconnecting || dev) break;
+      await scan();
+      // a device found again by its key; a host typed by hand isn't scanned
+      const again = candidates.find((x) => x.key === c.key) ?? (c.key.startsWith('tcp:') ? c : null);
+      if (!again) continue;
+      await connect(again, true);
+      if (!dev) continue;
+      reconnecting = false;
+      if (resume.stream) await start();
+      if (resume.log) await startLog();
+      error = '';
+      note = `Reconnected after ${((Date.now() - t0) / 1000).toFixed(0)} s${resume.log ? '; the log goes on in a new file' : ''}.`;
+      return;
+    }
+    if (reconnecting) {
+      error = `Disconnected: ${reason}. Not back after 2 minutes; connect again when it is.`;
+      note = '';
+    }
+    reconnecting = false;
+  }
+
+  async function connect(c: Candidate, retry = false) {
     lastCandidate = c.key;
     busy = true;
-    error = '';
+    if (!retry) {
+      error = '';
+      reconnecting = false;
+    }
     try {
       await disconnect();
       const link: Link = await c.connect({
         onMeta,
         onClosed: (reason) => {
-          error = `Disconnected: ${reason}`;
+          const resume = { stream: streaming && !link.playback, log: !!(logging?.active || exporting) };
+          const live = !link.playback && dev?.link === link;
           reset();
+          if (live) linkLost(c, reason, resume);
+          else error = `Disconnected: ${reason}`;
         },
       });
       const d = new Device(link);
@@ -1097,7 +1169,7 @@
       clearData();
       await applyDecimation();
     } catch (e) {
-      error = String(e);
+      if (!retry) error = String(e);
       await disconnect();
     } finally {
       busy = false;
@@ -1115,6 +1187,28 @@
     streaming = false;
     stats = null;
     throughput = 0;
+  }
+
+  /** a synthetic device (2 MS/s, a periodic load): the whole app without hardware */
+  function startDemo() {
+    reset();
+    streaming = true;
+    rateHz = 2e6;
+    log2n = 0;
+    const demo = new DemoLink({ onMeta, onClosed: () => undefined });
+    dev = new Device(demo);
+    info = {
+      proto_version: 1, fw_version: 0x200, fw_version_str: '0.2.0', fpga_id: 0x4e42000b, base_rate_hz: 2_000_000,
+      link: 3, link_name: 'Demo', link_unit: 2048, block_words: 507, caps: CAP.DECIM | CAP.RANGE | CAP.BOARD,
+      build: 'synthetic', mac: '', ip: '',
+    };
+    demo.setBuffer(bufferSamples);
+    demo.setCalibration($state.snapshot(cal));
+    demo.setTrigger(trig.cfg());
+    linkMath(demo);
+    demo.setLogInterval(logInterval);
+    store.attach(demo);
+    setLink(demo);
   }
 
   async function disconnect() {
@@ -1205,26 +1299,8 @@
     refreshRecordings();
     const t = setInterval(refreshMeter, 250);
     const wd = setInterval(watchdog, 2000);
-    let stopDemo = () => {};
     if (demoRequested) {
-      streaming = true;
-      rateHz = 2e6;
-      log2n = 0;
-      const demo = new DemoLink({ onMeta, onClosed: () => undefined });
-      dev = new Device(demo);
-      info = {
-        proto_version: 1, fw_version: 0x200, fw_version_str: '0.2.0', fpga_id: 0x4e42000b, base_rate_hz: 2_000_000,
-        link: 3, link_name: 'Demo', link_unit: 2048, block_words: 507, caps: CAP.DECIM | CAP.RANGE | CAP.BOARD,
-        build: 'synthetic', mac: '', ip: '',
-      };
-      demo.setBuffer(bufferSamples);
-      demo.setCalibration($state.snapshot(cal));
-      demo.setTrigger(trig.cfg());
-      linkMath(demo);
-      demo.setLogInterval(logInterval);
-      store.attach(demo);
-      setLink(demo);
-      stopDemo = () => demo.close();
+      startDemo();
       // screenshot helpers: &log=i,p  &trace=mean,range,sigma
       const q = new URLSearchParams(location.search);
       for (const sg of (q.get('log') ?? '').split(',')) if (sg in axes) axes[sg as Signal].log = true;
@@ -1262,7 +1338,7 @@
     return () => {
       clearInterval(t);
       clearInterval(wd);
-      stopDemo();
+      dev?.link.close();
     };
   });
 </script>
@@ -1274,12 +1350,17 @@
   <Updater {dev} onclose={() => (updating = false)} onrestart={() => { updating = false; boardRestarts(); }} />
 {/if}
 
+{#if helpOpen}
+  <Help onclose={() => (helpOpen = false)} />
+{/if}
+
 {#if analysis}
   <Analysis signals={available} link={activeLink} span={analysis.span} spanLabel={analysis.label} onclose={() => (analysis = null)} onshow={showSpan} />
 {/if}
 
-<div class="app" style="grid-template-columns: {leftW}px 1fr {rightW}px">
+<div class="app" style="grid-template-columns: {leftOpen ? leftW : 0}px minmax(0, 1fr) {rightOpen ? rightW : 0}px">
   <!-- column splitters: on the grid, so the sidebars' scrolling doesn't move or clip them -->
+  {#if leftOpen}
   <div
     class="vsplit"
     style="left: {leftW - 4}px"
@@ -1292,6 +1373,8 @@
       save('nebulosa.leftW', leftW);
     }}
   ></div>
+  {/if}
+  {#if rightOpen}
   <div
     class="vsplit"
     style="right: {rightW - 4}px"
@@ -1304,8 +1387,10 @@
       save('nebulosa.rightW', rightW);
     }}
   ></div>
+  {/if}
   <header>
     <div class="brand">
+      <button class="ghost side-btn" class:on={leftOpen} onclick={() => toggleSide('left')} title="Show / hide the settings ( [ )" aria-label="Settings panel">◧</button>
       <span class="logo">◉</span>
       <strong>Nebulosa</strong>
       <span class="muted">Companion</span>
@@ -1319,14 +1404,21 @@
         <span class="dot ok"></span>{dev.link.description}
         <button class="ghost" onclick={disconnect}>Disconnect</button>
       {:else}
-        <span class="dot"></span><span class="muted">Not connected</span>
+        {#if reconnecting}
+          <span class="dot warn"></span><span class="warn">Reconnecting…</span>
+          <button class="ghost" onclick={() => (reconnecting = false)}>Cancel</button>
+        {:else}
+          <span class="dot"></span><span class="muted">Not connected</span>
+        {/if}
       {/if}
+      <button class="ghost side-btn" onclick={() => (helpOpen = true)} title="Keys and mouse (?)" aria-label="Help">?</button>
+      <button class="ghost side-btn" class:on={rightOpen} onclick={() => toggleSide('right')} title="Show / hide the meter ( ] )" aria-label="Meter panel">◨</button>
     </div>
   </header>
 
-  <aside>
+  <aside class:hidden={!leftOpen}>
     {#if !dev}
-      <ConnectPanel {candidates} {scanning} {busy} {recFiles} {recDir} onscan={scan} onconnect={connect} onpair={pair} onopen={openRecording} onopenfile={openFile} />
+      <ConnectPanel {candidates} {scanning} {busy} {recFiles} {recDir} onscan={scan} onconnect={connect} onpair={pair} onopen={openRecording} onopenfile={openFile} ondemo={startDemo} />
     {:else if playback}
       <section>
         <h2>Recording <button class="ghost small" onclick={disconnect}>Close</button></h2>
@@ -1364,6 +1456,10 @@
           <button class="ghost small" onclick={() => (updating = true)} title="Firmware and gateware">Software update…</button>
         {/if}
       </section>
+
+      {#if info.caps & CAP.BOARD}
+        <BoardPanel {dev} {streaming} bind:board onstop={stop} onnote={(m) => (note = m)} />
+      {/if}
 
       <section>
         <h2>Acquisition</h2>
@@ -1540,10 +1636,17 @@
         {#if trace.sigma}<span class="key"><i class="sd"></i>±σ</span>{/if}
         <span class="key"><i class="gap"></i>gap</span>
       </span>
-      <span class="hint muted" title="Drag across a plot: dual marker. Double-click: single marker. M / D: add a marker. Del: delete the active one. Esc: deselect."
-        >wheel: time/div · shift+wheel: pan · space: live/hold · ⓘ</span
+      <button class="hint muted linkish" onclick={() => (helpOpen = true)} title="All the keys and mouse gestures (?)"
+        >wheel: time/div · shift+wheel: pan · space: live/hold · right-click: menu · ? keys</button
       >
     </div>
+    {#if frontEndOff}
+      <div class="banner warn">
+        <b>Analog front end off</b>
+        <span>{board?.apwr_ok ? 'Its supplies are off: the ADC reads nothing real.' : 'It needs 12 V: the barrel jack, or a USB-C charger set to 12 V (Board panel).'}</span>
+        {#if board?.apwr_ok}<button class="small primary" onclick={frontEndOn}>Turn on</button>{/if}
+      </div>
+    {/if}
     <div class="overview-wrap">
       <Overview {store} {view} />
     </div>
@@ -1559,7 +1662,7 @@
       onpointerdown={startSplit}
       ondblclick={() => (listH = 190)}
     ></div>
-    <div class="markers-wrap" style="height: {listH}px">
+    <div class="markers-wrap" style="height: min({listH}px, 22vh)">
       <div class="tabs">
         <button class:on={bottomTab === 'markers'} onclick={() => (bottomTab = 'markers')}>Markers <small>{view.markers.length}</small></button>
         <button class:on={bottomTab === 'events'} onclick={() => (bottomTab = 'events')}>Events <small>{trig.count.toLocaleString()}</small></button>
@@ -1608,7 +1711,7 @@
     </footer>
   </main>
 
-  <div class="meter-col">
+  <div class="meter-col" class:hidden={!rightOpen}>
     <Meter
       {summary}
       accum={accumView}
@@ -1650,10 +1753,34 @@
     border-bottom: 1px solid var(--border);
     background: var(--panel);
   }
+  .linkish {
+    background: none;
+    border: 0;
+    padding: 0;
+    font: inherit;
+    cursor: pointer;
+    text-align: left;
+  }
+  .linkish:hover {
+    color: var(--text, inherit);
+    text-decoration: underline;
+  }
+  .hidden {
+    display: none !important;
+  }
+  .side-btn {
+    padding: 2px 8px;
+    font-size: 16px;
+    line-height: 1;
+    color: var(--muted);
+  }
+  .side-btn.on {
+    color: var(--accent);
+  }
   .brand {
     display: flex;
     gap: 8px;
-    align-items: baseline;
+    align-items: center;
   }
   .logo {
     color: var(--accent);
@@ -1673,13 +1800,23 @@
   .dot.ok {
     background: var(--ok);
   }
+  .dot.warn {
+    background: var(--warn);
+  }
+  .status .warn {
+    color: var(--warn);
+  }
   aside {
+    grid-column: 1;
+    grid-row: 2;
     border-right: 1px solid var(--border);
     background: var(--panel);
     overflow-y: auto;
     padding: 8px 16px 16px;
   }
   .meter-col {
+    grid-column: 3;
+    grid-row: 2;
     border-left: 1px solid var(--border);
     background: var(--bg);
     overflow-y: auto;
@@ -1688,6 +1825,8 @@
     flex-direction: column;
   }
   main {
+    grid-column: 2;
+    grid-row: 2;
     display: flex;
     flex-direction: column;
     min-width: 0;
@@ -1833,6 +1972,24 @@
     font-size: 11px;
     cursor: help;
   }
+  .banner {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 0 12px 6px;
+    padding: 6px 10px;
+    border-radius: 6px;
+    font-size: 13px;
+    border: 1px solid var(--warn);
+    background: color-mix(in srgb, var(--warn) 12%, transparent);
+  }
+  .banner b {
+    color: var(--warn);
+    white-space: nowrap;
+  }
+  .banner button {
+    margin-left: auto;
+  }
   .overview-wrap {
     padding: 8px 12px 0;
   }
@@ -1901,7 +2058,9 @@
   }
   footer {
     display: flex;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
+    overflow: hidden;
+    white-space: nowrap;
     gap: 16px;
     padding: 8px 16px;
     border-top: 1px solid var(--border);

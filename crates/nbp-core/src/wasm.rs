@@ -148,6 +148,21 @@ pub fn parse_range(p: &[u8]) -> JsValue {
 }
 
 #[wasm_bindgen]
+pub fn parse_board_status(p: &[u8]) -> JsValue {
+    to_js(&crate::board::BoardStatus::parse(p))
+}
+
+#[wasm_bindgen]
+pub fn enc_board_set(item: u8, value: u32) -> Vec<u8> {
+    crate::board::enc_set(item, value)
+}
+
+#[wasm_bindgen]
+pub fn enc_board_test(mask: u32) -> Vec<u8> {
+    crate::board::enc_test(mask)
+}
+
+#[wasm_bindgen]
 pub fn parse_update_info(p: &[u8]) -> JsValue {
     to_js(&crate::update::UpdateInfo::parse(p))
 }

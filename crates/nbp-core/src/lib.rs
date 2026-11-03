@@ -20,6 +20,7 @@
 //! - [`pipeline`]: all of the above for one connection
 
 pub mod analysis;
+pub mod board;
 pub mod buffer;
 pub mod export;
 pub mod frame;
