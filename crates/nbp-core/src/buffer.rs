@@ -104,7 +104,7 @@ impl Moments3 {
     }
 
     #[inline]
-    fn merge(&mut self, o: &Moments3) {
+    pub(crate) fn merge(&mut self, o: &Moments3) {
         self.i.merge(&o.i);
         self.v.merge(&o.v);
         self.p.merge(&o.p);
@@ -132,16 +132,27 @@ impl Sums {
         *self = Sums { lo: [f64::INFINITY; 4], hi: [f64::NEG_INFINITY; 4], ..Default::default() };
     }
 
-    #[inline]
+    #[inline(always)]
+    fn add1(&mut self, k: usize, x: f64) {
+        self.n[k] += 1;
+        self.s[k] += x;
+        self.q[k] += x * x;
+        // plain compares: the values are finite here (f64::min's NaN handling costs)
+        if x < self.lo[k] {
+            self.lo[k] = x;
+        }
+        if x > self.hi[k] {
+            self.hi[k] = x;
+        }
+    }
+
+    #[inline(always)]
     fn add(&mut self, i: f64, v: f64, m: f64) {
-        let x = [i, v, i * v, m];
-        let k_end = if m.is_finite() { 4 } else { 3 };
-        for k in 0..k_end {
-            self.n[k] += 1;
-            self.s[k] += x[k];
-            self.q[k] += x[k] * x[k];
-            self.lo[k] = self.lo[k].min(x[k]);
-            self.hi[k] = self.hi[k].max(x[k]);
+        self.add1(0, i);
+        self.add1(1, v);
+        self.add1(2, i * v);
+        if m.is_finite() {
+            self.add1(3, m);
         }
     }
 
@@ -173,6 +184,63 @@ struct Level {
     ring: Vec<Moments3>,
     /// entry being built (level 0 from raw sums, above from the level below)
     pending: Moments3,
+}
+
+/// Additive sums for drawing a column: per channel n, Σx, Σx², min, max.
+struct LodAcc {
+    n: [f64; 4],
+    s1: [f64; 4],
+    s2: [f64; 4],
+    lo: [f64; 4],
+    hi: [f64; 4],
+}
+
+impl Default for LodAcc {
+    fn default() -> Self {
+        Self { n: [0.0; 4], s1: [0.0; 4], s2: [0.0; 4], lo: [f64::INFINITY; 4], hi: [f64::NEG_INFINITY; 4] }
+    }
+}
+
+impl LodAcc {
+    #[inline(always)]
+    fn raw(&mut self, k: usize, x: f64) {
+        self.n[k] += 1.0;
+        self.s1[k] += x;
+        self.s2[k] += x * x;
+        if x < self.lo[k] {
+            self.lo[k] = x;
+        }
+        if x > self.hi[k] {
+            self.hi[k] = x;
+        }
+    }
+
+    #[inline(always)]
+    fn entry(&mut self, k: usize, m: &Moments) {
+        if m.n == 0 {
+            return;
+        }
+        let n = m.n as f64;
+        self.n[k] += n;
+        self.s1[k] += n * m.mean;
+        self.s2[k] += m.m2 + n * m.mean * m.mean;
+        if m.min < self.lo[k] {
+            self.lo[k] = m.min;
+        }
+        if m.max > self.hi[k] {
+            self.hi[k] = m.max;
+        }
+    }
+
+    /// [min, max, mean, σ] (NaN without values)
+    fn col(&self, k: usize) -> [f64; 4] {
+        if self.n[k] == 0.0 {
+            return [f64::NAN; 4];
+        }
+        let mean = self.s1[k] / self.n[k];
+        let var = (self.s2[k] / self.n[k] - mean * mean).max(0.0);
+        [self.lo[k], self.hi[k], mean, var.sqrt()]
+    }
 }
 
 /// What a query found over a span.
@@ -250,6 +318,7 @@ impl SampleBuffer {
     }
 
     pub fn clear(&mut self) {
+        self.completed.clear();
         self.head = 0;
         self.segs.clear();
         for l in &mut self.levels {
@@ -346,6 +415,12 @@ impl SampleBuffer {
         self.version += 1;
     }
 
+    /// The level-0 entry still being built: (time it covers, moments).
+    pub fn partial(&self) -> (f64, Moments3) {
+        let m = self.sums.moments();
+        (if m.n() > 0 { self.l0.1 } else { 0.0 }, m)
+    }
+
     /// Level-0 entries (64 samples) completed since the last call: (first
     /// sample's time s, time covered s, moments).
     pub fn take_completed(&mut self) -> Vec<(f64, f64, Moments3)> {
@@ -357,7 +432,8 @@ impl SampleBuffer {
     fn eval_math(&mut self, i: f64, v: f64, s: &Segment, idx: u64) -> f64 {
         let Some(m) = &mut self.math else { return f64::NAN };
         let dt = s.step as f64 * TS_PERIOD_S;
-        let x = m.eval(i, v, Self::time_of(s, idx), dt);
+        let t = if m.uses_t { Self::time_of(s, idx) } else { 0.0 };
+        let x = m.eval(i, v, t, dt);
         self.mraw[(idx % self.cap) as usize] = x as f32;
         x
     }
@@ -373,6 +449,11 @@ impl SampleBuffer {
         // a level-0 entry is complete; carry it up while levels complete too
         let mut carry = self.sums.moments();
         self.sums.reset();
+        // segments that ended before the oldest sample go (here, once per 64 samples)
+        let oldest = self.oldest();
+        while self.segs.len() > 1 && self.segs[1].start <= oldest {
+            self.segs.pop_front();
+        }
         if !self.rebuilding {
             self.completed.push((self.l0.0, self.l0.1, carry));
         }
@@ -392,6 +473,14 @@ impl SampleBuffer {
     /// One sample at FPGA time `ts` (500 ns periods), `step` periods apart.
     /// Returns the math channel's value for it (NaN without one).
     pub fn push(&mut self, ts: u64, step: u32, i_code: u16, v_code: u16, range: u8, dirty: bool) -> f64 {
+        let (i, v) = self.phys(pack(i_code, v_code, range, dirty));
+        self.push_phys(ts, step, i_code, v_code, range, dirty, i, v)
+    }
+
+    /// [`push`](Self::push) with the sample already in A and V (this buffer's calibration).
+    #[allow(clippy::too_many_arguments)]
+    #[inline]
+    pub fn push_phys(&mut self, ts: u64, step: u32, i_code: u16, v_code: u16, range: u8, dirty: bool, i: f64, v: f64) -> f64 {
         let idx = self.head;
         let contiguous = self.segs.back().is_some_and(|s| s.step == step && s.ts0 + (idx - s.start) * s.step as u64 == ts);
         if !contiguous {
@@ -403,7 +492,6 @@ impl SampleBuffer {
         let w = pack(i_code, v_code, range, dirty);
         self.raw[(idx % self.cap) as usize] = w;
         self.head += 1;
-        let (i, v) = self.phys(w);
         let seg = *self.segs.back().unwrap();
         let mv = self.eval_math(i, v, &seg, idx);
         // the level-0 entry this sample is in: where it starts, how long it covers
@@ -413,11 +501,6 @@ impl SampleBuffer {
         }
         self.l0.1 += dt;
         self.summarize(idx, i, v, mv);
-        // drop segments that ended before the oldest sample
-        let oldest = self.oldest();
-        while self.segs.len() > 1 && self.segs[1].start <= oldest {
-            self.segs.pop_front();
-        }
         mv
     }
 
@@ -494,6 +577,44 @@ impl SampleBuffer {
             acc.merge(&l.ring[(e % len) as usize]);
         }
         self.agg(level - 1, b2, b, acc);
+    }
+
+    /// For drawing: additive sums over [a, b) (no divisions per merge), then
+    /// min / max / mean / σ per channel. Statistics use the exact merge.
+    fn reduce_fast(&self, level: isize, a: u64, b: u64, acc: &mut LodAcc) {
+        if a >= b {
+            return;
+        }
+        if level < 0 {
+            for idx in a..b {
+                let (i, v) = self.phys(self.raw[(idx % self.cap) as usize]);
+                acc.raw(0, i);
+                acc.raw(1, v);
+                acc.raw(2, i * v);
+                let m = self.mval(idx);
+                if m.is_finite() {
+                    acc.raw(3, m);
+                }
+            }
+            return;
+        }
+        let l = &self.levels[level as usize];
+        let f = 1u64 << l.shift;
+        let a2 = a.div_ceil(f) * f;
+        let b2 = b / f * f;
+        if a2 >= b2 {
+            return self.reduce_fast(level - 1, a, b, acc);
+        }
+        self.reduce_fast(level - 1, a, a2, acc);
+        let len = l.ring.len() as u64;
+        for e in a2 / f..b2 / f {
+            let m = &l.ring[(e % len) as usize];
+            acc.entry(0, &m.i);
+            acc.entry(1, &m.v);
+            acc.entry(2, &m.p);
+            acc.entry(3, &m.m);
+        }
+        self.reduce_fast(level - 1, b2, b, acc);
     }
 
     fn reduce(&self, a: u64, b: u64) -> Moments3 {
@@ -624,18 +745,29 @@ impl SampleBuffer {
                 let tb = Self::time_of(&s, b - 1);
                 let first = (((ta - t0) / w).floor().max(0.0)) as usize;
                 let last = (((tb - t0) / w).floor() as usize).min(bins - 1);
+                // columns of many samples: edges snapped to the summary grid
+                // (64 / 4096 / 262144 samples), so a column is a few whole
+                // summaries and no raw samples. A column is one pixel: an
+                // edge moving by under half a column is under half a pixel.
+                // Snapping is a function of the index, so neighbours still meet.
+                let per_bin = w / (s.step as f64 * TS_PERIOD_S);
+                let g = LEVEL_SHIFTS.iter().rev().map(|&sh| 1u64 << sh).find(|&g| per_bin >= 2.0 * g as f64).unwrap_or(1);
+                let snap = |i: u64| if g > 1 { (i / g * g).clamp(a, b) } else { i };
                 for bin in first..=last {
                     let bt0 = t0 + bin as f64 * w;
                     let Some((x, y)) = self.span_in(k, bt0, bt0 + w) else { continue };
-                    let m = self.reduce(x, y);
-                    if m.n() == 0 {
+                    let (x, y) = (if x == a { a } else { snap(x) }, if y == b { b } else { snap(y) });
+                    if x >= y {
                         continue;
                     }
-                    let c = |q: &Moments| [q.min, q.max, q.mean, q.std()];
-                    let (ci, cv, cp) = (c(&m.i), c(&m.v), c(&m.p));
-                    let cm = if m.m.n > 0 { c(&m.m) } else { [f64::NAN; 4] };
+                    let mut acc = LodAcc::default();
+                    self.reduce_fast(self.levels.len() as isize - 1, x, y, &mut acc);
+                    if acc.n[0] == 0.0 {
+                        continue;
+                    }
+                    let (ci, cv, cp, cm) = (acc.col(0), acc.col(1), acc.col(2), acc.col(3));
                     rows.push([
-                        Self::time_of(&s, x), m.n() as f64,
+                        Self::time_of(&s, x), acc.n[0],
                         ci[0], ci[1], ci[2], ci[3], cv[0], cv[1], cv[2], cv[3], cp[0], cp[1], cp[2], cp[3],
                         cm[0], cm[1], cm[2], cm[3],
                     ]);

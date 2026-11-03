@@ -52,7 +52,10 @@ pub struct MathProgram {
     pub source: String,
     ops: Vec<Op>,
     states: Vec<State>,
-    stack: Vec<f64>,
+    /// the evaluation stack (depth checked when compiling)
+    stack: [f64; STACK],
+    /// it reads t (else the caller needn't work out each sample's time)
+    pub uses_t: bool,
     dt: f64,
 }
 
@@ -301,6 +304,8 @@ impl<'a> Parser<'a> {
     }
 }
 
+const STACK: usize = 32;
+
 /// Moving averages longer than this many samples are refused (memory).
 const MAX_AVG: usize = 1 << 22;
 
@@ -314,7 +319,22 @@ impl MathProgram {
         if p.peek().is_some() {
             return p.err("unexpected text");
         }
-        Ok(MathProgram { source: src.to_string(), ops: p.ops, states: p.states, stack: Vec::with_capacity(16), dt: 0.0 })
+        // how deep the stack gets: values push one, binary operators take one off
+        let mut depth = 0i32;
+        let mut max = 0;
+        for op in &p.ops {
+            depth += match op {
+                Op::Const(_) | Op::I | Op::V | Op::P | Op::T => 1,
+                Op::Add | Op::Sub | Op::Mul | Op::Div | Op::Pow | Op::Min | Op::Max => -1,
+                _ => 0,
+            };
+            max = max.max(depth);
+        }
+        if max as usize > STACK {
+            return Err(format!("expression too deep (more than {STACK} values pending)"));
+        }
+        let uses_t = p.ops.contains(&Op::T);
+        Ok(MathProgram { source: src.to_string(), ops: p.ops, states: p.states, stack: [0.0; STACK], uses_t, dt: 0.0 })
     }
 
     /// Start the stateful functions over (a gap, or a new pass over the data).
@@ -358,22 +378,35 @@ impl MathProgram {
                 }
             }
         }
+        // a fixed stack with an index: no allocation, no growth checks
         let st = &mut self.stack;
-        st.clear();
+        let mut sp = 0usize;
+        macro_rules! push {
+            ($x:expr) => {{
+                st[sp] = $x;
+                sp += 1;
+            }};
+        }
+        macro_rules! pop {
+            () => {{
+                sp -= 1;
+                st[sp]
+            }};
+        }
         for op in &self.ops {
             match *op {
-                Op::Const(c) => st.push(c),
-                Op::I => st.push(i),
-                Op::V => st.push(v),
-                Op::P => st.push(i * v),
-                Op::T => st.push(t),
+                Op::Const(c) => push!(c),
+                Op::I => push!(i),
+                Op::V => push!(v),
+                Op::P => push!(i * v),
+                Op::T => push!(t),
                 Op::Neg => {
-                    let a = st.pop().unwrap_or(f64::NAN);
-                    st.push(-a)
+                    let a = pop!();
+                    push!(-a)
                 }
                 Op::Abs | Op::Sqrt | Op::Exp | Op::Ln | Op::Log10 => {
-                    let a = st.pop().unwrap_or(f64::NAN);
-                    st.push(match op {
+                    let a = pop!();
+                    push!(match op {
                         Op::Abs => a.abs(),
                         Op::Sqrt => a.sqrt(),
                         Op::Exp => a.exp(),
@@ -382,9 +415,9 @@ impl MathProgram {
                     })
                 }
                 Op::Add | Op::Sub | Op::Mul | Op::Div | Op::Pow | Op::Min | Op::Max => {
-                    let b = st.pop().unwrap_or(f64::NAN);
-                    let a = st.pop().unwrap_or(f64::NAN);
-                    st.push(match op {
+                    let b = pop!();
+                    let a = pop!();
+                    push!(match op {
                         Op::Add => a + b,
                         Op::Sub => a - b,
                         Op::Mul => a * b,
@@ -395,7 +428,7 @@ impl MathProgram {
                     })
                 }
                 Op::Avg(slot, _) => {
-                    let x = st.pop().unwrap_or(f64::NAN);
+                    let x = pop!();
                     let State::Avg { ring, pos, filled, sum, n } = &mut self.states[slot] else { unreachable!() };
                     *sum += x - ring[*pos];
                     ring[*pos] = x;
@@ -404,26 +437,30 @@ impl MathProgram {
                     if *pos == 0 {
                         *sum = ring.iter().sum(); // drift
                     }
-                    st.push(*sum / *filled as f64)
+                    push!(*sum / *filled as f64)
                 }
                 Op::Integ(slot) => {
-                    let x = st.pop().unwrap_or(f64::NAN);
+                    let x = pop!();
                     let State::Integ(acc) = &mut self.states[slot] else { unreachable!() };
                     if x.is_finite() {
                         *acc += x * dt;
                     }
-                    st.push(*acc)
+                    push!(*acc)
                 }
                 Op::Ddt(slot) => {
-                    let x = st.pop().unwrap_or(f64::NAN);
+                    let x = pop!();
                     let State::Ddt(prev) = &mut self.states[slot] else { unreachable!() };
                     let d = prev.map_or(0.0, |p| (x - p) / dt);
                     *prev = Some(x);
-                    st.push(d)
+                    push!(d)
                 }
             }
         }
-        st.pop().unwrap_or(f64::NAN)
+        if sp == 0 {
+            f64::NAN
+        } else {
+            pop!()
+        }
     }
 }
 

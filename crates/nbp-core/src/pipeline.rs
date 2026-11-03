@@ -209,15 +209,13 @@ impl Pipeline {
     /// One sample, decoded: buffer, statistics, integrals, trigger, recording.
     #[inline]
     fn sample(&mut self, ts: u64, step: u32, ic: u16, vc: u16, range: u8, dirty: bool) {
+        // since-start statistics and integrals come from the buffer's 64-sample
+        // summaries (feed_session), not per sample
         let i = self.cal.current(ic, range);
         let v = self.cal.voltage(vc);
-        let dt = step as f64 * TS_PERIOD_S;
-        self.accum.charge += i * dt;
-        self.accum.energy += i * v * dt;
-        self.accum.seconds += dt;
-        let m = self.buf.push(ts, step, ic, vc, range, dirty);
-        self.run.add(i, v, m);
+        let m = self.buf.push_phys(ts, step, ic, vc, range, dirty, i, v);
         if self.trig.enabled() {
+            let dt = step as f64 * TS_PERIOD_S;
             if self.next_ts != Some(ts) {
                 self.trig.gap();
             }
@@ -236,6 +234,10 @@ impl Pipeline {
     fn feed_session(&mut self) {
         for (t0, dur, m) in self.buf.take_completed() {
             self.session.add(t0, dur, &m);
+            self.run.merge(&m);
+            self.accum.charge += m.i.mean * dur;
+            self.accum.energy += m.p.mean * dur;
+            self.accum.seconds += dur;
         }
         let done = self.session.take_pending();
         if let Some(w) = &mut self.log {
@@ -363,6 +365,8 @@ impl Pipeline {
             return;
         };
         if h.flags & msg::BLK_FIRST != 0 {
+            // what the last stream left: into the session log first
+            self.feed_session();
             let resyncs = self.stats.resyncs;
             self.decoder = StreamDecoder::new();
             self.buf.clear();
@@ -412,10 +416,20 @@ impl Pipeline {
 
     pub fn meta(&self) -> Meta {
         let range = self.buf.time_range();
+        // plus the samples of the buffer's unfinished 64-sample summary
+        let (pdur, pm) = self.buf.partial();
+        let mut run = self.run;
+        run.merge(&pm);
+        let mut accum = self.accum;
+        if pm.n() > 0 {
+            accum.charge += pm.i.mean * pdur;
+            accum.energy += pm.p.mean * pdur;
+            accum.seconds += pdur;
+        }
         Meta {
             stats: self.stats,
-            accum: self.accum,
-            run: self.run,
+            accum,
+            run,
             log2n: self.decoder.log2n,
             stream_id: self.stream_id,
             has_data: range.is_some(),
