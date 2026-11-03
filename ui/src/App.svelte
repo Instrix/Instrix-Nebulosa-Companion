@@ -29,6 +29,7 @@
   import { KIND_LABEL, TriggerState, type KindType, type TrigMode } from './lib/trigger.svelte';
   import EventList from './lib/EventList.svelte';
   import Analysis from './lib/Analysis.svelte';
+  import LoggerView, { type LogView } from './lib/LoggerView.svelte';
   import { drag, stored, store as save } from './lib/drag';
 
   /** full-rate buffer sizes, MB (4 bytes per sample) */
@@ -107,7 +108,7 @@
   /** a recording open for playback: its header */
   let playback = $state<Record<string, unknown> | null>(null);
   let fitPending = false;
-  let scope: Scope;
+  let scope = $state<Scope>();
 
   async function refreshRecordings() {
     if (!isNative) return;
@@ -149,13 +150,21 @@
     error = '';
     try {
       await disconnect();
-      const { link, header } = await native.openRecording(path, {
+      const isLog = path.endsWith('.nblog');
+      const { link, header } = await (isLog ? native.openLog : native.openRecording)(path, {
         onMeta,
         onClosed: () => undefined,
       });
+      if (typeof header.wall_offset === 'number') wallOffset = header.wall_offset;
+      else if (typeof header.created === 'string') wallPending = Date.parse(header.created) / 1000;
+      if (isLog) {
+        setAppMode('logger');
+        lv = { follow: true, last: 0, t0: 0, t1: 0 };
+      }
       dev = new Device(link);
       playback = header;
       await linkMath(link);
+      await link.setLogInterval(logInterval);
       store.attach(link);
       setLink(link);
       trig.mode = 'roll';
@@ -208,6 +217,7 @@
   async function exportPng() {
     error = '';
     try {
+      if (!scope) throw new Error("the scope isn't shown");
       const canvas = scope.snapshot();
       const blob = await new Promise<Blob | null>((r) => canvas.toBlob(r, 'image/png'));
       if (!blob) throw new Error('no image');
@@ -424,6 +434,126 @@
     note = `Autoset: ${SIGNAL_INFO[src].name.toLowerCase()} ↑ at ${fmtSI(level, SIGNAL_INFO[src].unit, 3)}, period ${p >= 4 ? '–' : fmtTime(p)}, ${fmtTime(TIME_DIVS[k])}/div`;
   }
 
+  // ---- scope / logger ------------------------------------------------------------
+  let appMode = $state<'scope' | 'logger'>(stored('nebulosa.modeIsLogger', 0) === 1 ? 'logger' : 'scope');
+  function setAppMode(m: 'scope' | 'logger') {
+    appMode = m;
+    save('nebulosa.modeIsLogger', m === 'logger' ? 1 : 0);
+  }
+
+  let lv = $state<LogView>({ follow: true, last: 0, t0: 0, t1: 0 });
+  /** the session log's state, reactive (the store's copy isn't) */
+  let sess = $state.raw<Meta['session']>({ has_data: false, t_start: 0, t_end: 0, interval: 0.1, entries: 0, version: 0, bytes: 0 });
+  /** unix time − FPGA time, s: wall clock for the logger */
+  let wallOffset = $state(Date.now() / 1000);
+  let wallPending: number | null = null; // a file's start time (unix s), set at its first Meta
+
+  /** the logger's span now, FPGA time */
+  function loggerSpan(): [number, number] {
+    const s = store.session;
+    if (!lv.follow) return [lv.t0, lv.t1];
+    return [lv.last > 0 ? Math.max(s.t_start, s.t_end - lv.last) : s.t_start, s.t_end];
+  }
+
+  /** a moment of the logger in the scope: its raw samples, if still in memory */
+  function openInScope(t: number) {
+    if (store.empty || t < store.tStart || t > store.tEnd) {
+      note = `${new Date((t + wallOffset) * 1000).toLocaleString()}: its samples are no longer in memory (the scope keeps the last ${fmtTime(store.tEnd - store.tStart)}). Record raw samples to keep them.`;
+      return;
+    }
+    setAppMode('scope');
+    view.hold(store);
+    view.end = t + view.windowS / 2;
+  }
+
+  const LOG_INTERVALS = [0.01, 0.1, 1, 10];
+  let logInterval = $state(stored('nebulosa.logInterval', 0.1, (v) => LOG_INTERVALS.includes(v)));
+  let logging = $state<Meta['logging'] | null>(null);
+  let logPath = $state('');
+  let logRaw = $state(false);
+  let rawCapGB = $state(stored('nebulosa.rawCapGB', 20));
+  let rawByLogger = false;
+  let diskFree = $state<number | null>(null);
+
+  async function changeLogInterval(iv: number) {
+    if (store.session.has_data && !confirm('A new interval starts the session log over. Go on?')) return;
+    logInterval = iv;
+    save('nebulosa.logInterval', iv);
+    await activeLink?.setLogInterval(iv);
+  }
+
+  async function newSession() {
+    if (!confirm('Clear the session log and start over?')) return;
+    await activeLink?.clearSession();
+    lv = { follow: true, last: 0, t0: 0, t1: 0 };
+  }
+
+  async function startLog() {
+    error = '';
+    try {
+      save('nebulosa.rawCapGB', rawCapGB);
+      logPath = await native.startLogging({
+        app: 'Nebulosa Companion',
+        created: new Date().toISOString(),
+        wall_offset: wallOffset,
+        interval: logInterval,
+        link: dev?.link.description,
+        device: info,
+        rate_hz: rateHz,
+        decimation: { log2n, mode: decimMode },
+        calibration: $state.snapshot(cal),
+        math: mathInfo.on ? $state.snapshot(mathInfo) : null,
+      });
+      note = `Logging to ${logPath}`;
+      if (logRaw && !recording?.active) {
+        await toggleRecording();
+        rawByLogger = true;
+      }
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  async function stopLog(reason?: string) {
+    try {
+      const r = await native.stopLogging();
+      if (rawByLogger && recording?.active) await toggleRecording();
+      rawByLogger = false;
+      if (r) note = `${reason ? reason + ' ' : ''}Log saved: ${r.path.split(/[\\/]/).pop()} · ${r.entries.toLocaleString()} entries · ${fmtBytesSize(r.bytes)}`;
+      refreshRecordings();
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  /** every 2 s while writing: stop cleanly on a write error, a low disk, or the raw limit */
+  async function watchdog() {
+    if (!isNative || !(logging?.active || recording?.active)) return;
+    try {
+      const d = await native.diskStatus();
+      diskFree = d.free;
+      if (d.logging_error) {
+        error = `Logging stopped: ${d.logging_error}`;
+        await stopLog();
+      } else if (d.recording_error) {
+        error = `Raw recording stopped: ${d.recording_error}`;
+        await toggleRecording();
+      } else if (recording?.active && d.free < 2e9) {
+        await toggleRecording();
+        note = 'Raw recording stopped: less than 2 GB free.';
+      } else if (logging?.active && d.free < 3e8) {
+        await stopLog('Disk nearly full:');
+      } else if (recording?.active && recording.bytes > rawCapGB * 1e9) {
+        await toggleRecording();
+        note = `Raw recording stopped at its ${rawCapGB} GB limit (the log goes on).`;
+      } else if (d.dropped > 0) {
+        error = `The disk isn't keeping up: ${d.dropped} chunks lost.`;
+      }
+    } catch (e) {
+      console.warn('watchdog', e);
+    }
+  }
+
   // ---- analysis ---------------------------------------------------------------
   let analysis = $state<{ span: [number, number]; label: string } | null>(null);
 
@@ -585,7 +715,8 @@
       if (meterScope === 'run') {
         const r = runMoments;
         summary = r && r.i.n ? summarize({ i: Moments.from(r.i), v: Moments.from(r.v), p: Moments.from(r.p), m: Moments.from(r.m), t0: 0, t1: 0, charge: 0, energy: 0 }, accum?.seconds ?? NaN) : null;
-      } else if (meterScope === 'selection' && view.selection) summary = summarize(await store.stats(...view.selection));
+      } else if (appMode === 'logger') summary = store.session.has_data ? summarize(await store.sessionStats(...loggerSpan())) : null;
+      else if (meterScope === 'selection' && view.selection) summary = summarize(await store.stats(...view.selection));
       else if (store.empty) summary = null;
       else summary = summarize(await store.stats(...view.span(store)));
       markerRows = await Promise.all(
@@ -729,6 +860,7 @@
       await link.setCalibration($state.snapshot(cal));
       await link.setTrigger(trig.cfg());
       await linkMath(link);
+      await link.setLogInterval(logInterval);
       store.attach(link);
       setLink(link);
       info = await d.info();
@@ -763,6 +895,15 @@
 
   function onMeta(m: Meta) {
     store.update(m);
+    sess = m.session;
+    logging = m.logging;
+    if (wallPending != null && (m.session.has_data || m.has_data)) {
+      wallOffset = wallPending - (m.session.has_data ? m.session.t_start : m.t_start);
+      wallPending = null;
+    } else if (!dev?.link.playback && m.has_data && Math.abs(Date.now() / 1000 - m.t_end - wallOffset) > 2) {
+      // live: wall clock = now at the newest sample (re-anchored if the FPGA clock restarted)
+      wallOffset = Date.now() / 1000 - m.t_end;
+    }
     if (hasData !== m.has_data) hasData = m.has_data;
     recording = m.recording;
     if (fitPending && !store.empty) {
@@ -857,6 +998,7 @@
     scan();
     refreshRecordings();
     const t = setInterval(refreshMeter, 250);
+    const wd = setInterval(watchdog, 2000);
     let stopDemo = () => {};
     if (demoRequested) {
       streaming = true;
@@ -867,6 +1009,7 @@
       demo.setCalibration($state.snapshot(cal));
       demo.setTrigger(trig.cfg());
       linkMath(demo);
+      demo.setLogInterval(logInterval);
       store.attach(demo);
       setLink(demo);
       stopDemo = () => demo.close();
@@ -884,6 +1027,8 @@
         if (pos) trig.position = Number(pos);
       }
       if (q.get('tab') === 'events') bottomTab = 'events';
+      if (q.get('mode') === 'logger') appMode = 'logger';
+      if (q.get('mode') === 'scope') appMode = 'scope';
       const mx = q.get('math');
       if (mx) {
         mathDraft = { name: q.get('mname') ?? 'Math', unit: q.get('munit') ?? '', expr: mx };
@@ -904,6 +1049,7 @@
     }
     return () => {
       clearInterval(t);
+      clearInterval(wd);
       stopDemo();
     };
   });
@@ -946,6 +1092,10 @@
       <span class="logo">◉</span>
       <strong>Nebulosa</strong>
       <span class="muted">Companion</span>
+    </div>
+    <div class="modes" role="tablist" aria-label="View">
+      <button class:on={appMode === 'scope'} onclick={() => setAppMode('scope')} title="Waveforms: µs to seconds, triggers, markers">Scope</button>
+      <button class:on={appMode === 'logger'} onclick={() => setAppMode('logger')} title="The whole session: minutes to days, logging to disk">Logger</button>
     </div>
     <div class="status">
       {#if dev}
@@ -1089,6 +1239,49 @@
       </section>
     {/if}
 
+    {#if appMode === 'logger'}
+    <section>
+      <h2>Logger</h2>
+      <label>
+        Interval
+        <select value={logInterval} onchange={(e) => changeLogInterval(Number((e.currentTarget as HTMLSelectElement).value))}>
+          {#each LOG_INTERVALS as iv (iv)}<option value={iv}>{fmtTime(iv)}</option>{/each}
+        </select>
+      </label>
+      <small class="muted">
+        Per interval: min, max, mean, σ of every signal. In memory: bounded (older intervals merge 10×, then 100×), ~{fmtBytesSize(sess.bytes)} now.
+      </small>
+      {#if isNative}
+        {#if logging?.active}
+          <button class="danger" onclick={() => stopLog()}>■ Stop logging</button>
+          <dl>
+            <dt>File</dt><dd class="wrap">{logPath.split(/[\\/]/).pop()}</dd>
+            <dt>Entries</dt><dd>{logging.entries.toLocaleString()}</dd>
+            <dt>Size</dt><dd>{fmtBytesSize(logging.bytes)}</dd>
+            {#if recording?.active}<dt>Raw</dt><dd>{fmtBytesSize(recording.bytes)}</dd>{/if}
+            {#if diskFree != null}<dt>Disk free</dt><dd>{fmtBytesSize(diskFree)}</dd>{/if}
+          </dl>
+        {:else}
+          <label class="check"><input type="checkbox" bind:checked={logRaw} /> Also record every raw sample</label>
+          {#if logRaw}
+            <label>
+              Raw recording limit
+              <select bind:value={rawCapGB}>
+                {#each [1, 5, 20, 100, 500] as g (g)}<option value={g}>{g} GB ({fmtTime((g * 1e9) / 4 / (rateHz || 2e6))} at {fmtRate(rateHz || 2e6)})</option>{/each}
+              </select>
+            </label>
+          {/if}
+          <button class="primary" onclick={startLog} disabled={!dev || !!dev.link.playback}>● Start logging to file</button>
+          <small class="muted">
+            {fmtBytesSize(((24 * 3600) / logInterval) * 120)} a day at {fmtTime(logInterval)}{logRaw ? `, plus ${fmtBytesSize(4 * (rateHz || 2e6) * 86400)} a day of raw samples` : ''}. Stops cleanly when the disk runs low.
+          </small>
+        {/if}
+      {:else}
+        <small class="muted">Logging to a file needs the desktop app; here the session stays in memory (bounded).</small>
+      {/if}
+      <button class="ghost" onclick={newSession} disabled={!sess.has_data}>New session</button>
+    </section>
+    {:else}
     <section>
       <h2>Trigger</h2>
       <div class="seg wide" role="group" aria-label="Display mode">
@@ -1215,6 +1408,8 @@
       {/if}
     </section>
 
+    {/if}
+
     <section>
       <h2>Signals</h2>
       <div class="chips">
@@ -1326,6 +1521,11 @@
   </aside>
 
   <main bind:this={mainEl}>
+    {#if appMode === 'logger'}
+      <div class="logger-wrap">
+        <LoggerView {store} session={sess} {signals} {axes} {trace} {wallOffset} bind:lv onopen={openInScope} />
+      </div>
+    {:else}
     <div class="strip">
       <span class="badge" class:run={streaming} class:stop={!streaming}>{streaming ? 'RUN' : 'STOP'}</span>
       <button
@@ -1424,6 +1624,7 @@
       />
       {/if}
     </div>
+    {/if}
     <footer>
       {#if stats}
         <span>{fmtBytes(throughput)}</span>
@@ -1622,6 +1823,28 @@
     flex-direction: column;
     min-width: 0;
     min-height: 0;
+  }
+  .modes {
+    display: inline-flex;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    overflow: hidden;
+  }
+  .modes button {
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    padding: 4px 16px;
+    font-weight: 600;
+  }
+  .modes button.on {
+    background: var(--accent);
+    color: #fff;
+  }
+  .logger-wrap {
+    flex: 1;
+    min-height: 0;
+    padding: 8px 12px 12px;
   }
   .strip {
     display: flex;

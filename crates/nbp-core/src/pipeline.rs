@@ -11,6 +11,7 @@ use crate::frame::{Frame, FrameParser};
 use crate::msg::{self, BlockHdr};
 use crate::buffer::{pack, unpack, Moments3, SampleBuffer, SpanStats};
 use crate::recording::{Recorder, Recording, RecordingStatus};
+use crate::session::{LogFile, LogWriter, SessionInfo, SessionLog};
 use crate::stream::{StreamCounters, StreamDecoder, Word, TS_PERIOD_S};
 use crate::trigger::{Event, Trigger, TriggerCfg, TriggerInfo};
 use crate::units::Calibration;
@@ -66,6 +67,17 @@ pub struct Meta {
     pub sample_period: f64,
     pub trigger: TriggerInfo,
     pub recording: RecordingStatus,
+    /// the session log (all of the session, summarised)
+    pub session: SessionInfo,
+    /// writing the session log to a file
+    pub logging: LoggingStatus,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+pub struct LoggingStatus {
+    pub active: bool,
+    pub entries: u64,
+    pub bytes: u64,
 }
 
 /// Samples the buffer holds by default (4 bytes each): 64 MB.
@@ -82,6 +94,8 @@ pub struct Pipeline {
     rec: Option<Recorder>,
     /// opened from a file: its header
     file_header: Option<String>,
+    session: SessionLog,
+    log: Option<LogWriter>,
     responses: Vec<Frame>,
     expect_seq: Option<u32>,
     stats: DataStats,
@@ -107,6 +121,8 @@ impl Pipeline {
             next_ts: None,
             rec: None,
             file_header: None,
+            session: SessionLog::new(0.1),
+            log: None,
             responses: Vec::new(),
             expect_seq: None,
             stats: DataStats::default(),
@@ -213,6 +229,67 @@ impl Pipeline {
         self.next_ts = Some(ts + step as u64);
     }
 
+    // ---- session log ----------------------------------------------------------
+
+    /// The buffer's new 64-sample summaries into the session log, its new
+    /// entries into the log file.
+    fn feed_session(&mut self) {
+        for (t0, dur, m) in self.buf.take_completed() {
+            self.session.add(t0, dur, &m);
+        }
+        let done = self.session.take_pending();
+        if let Some(w) = &mut self.log {
+            w.add(&done);
+        }
+    }
+
+    /// Starts the session log over at a new interval (s).
+    pub fn set_log_interval(&mut self, interval: f64) {
+        self.session = SessionLog::new(interval);
+    }
+
+    pub fn clear_session(&mut self) {
+        self.session.clear();
+    }
+
+    pub fn session_lod(&self, t0: f64, t1: f64, bins: usize) -> Vec<f64> {
+        self.session.lod(t0, t1, bins)
+    }
+
+    pub fn session_stats(&self, t0: f64, t1: f64) -> SpanStats {
+        self.session.stats(t0, t1)
+    }
+
+    /// Starts writing the session log's entries to a file (bytes from take_log).
+    pub fn start_logging(&mut self, header_json: &str) {
+        self.log = Some(LogWriter::new(header_json));
+    }
+
+    pub fn take_log(&mut self) -> Vec<u8> {
+        self.log.as_mut().map(|w| w.take()).unwrap_or_default()
+    }
+
+    /// The log file's last bytes; logging stops.
+    pub fn stop_logging(&mut self) -> Option<(Vec<u8>, LoggingStatus)> {
+        self.session.close();
+        let done = self.session.take_pending();
+        let mut w = self.log.take()?;
+        w.add(&done);
+        let entries = w.entries;
+        let last = w.finish();
+        Some((last, LoggingStatus { active: false, entries, bytes: 0 }))
+    }
+
+    /// A log file opened for viewing: a pipeline with its session log only.
+    pub fn from_log(bytes: &[u8]) -> Result<Pipeline, String> {
+        let f = LogFile::parse(bytes)?;
+        let mut p = Pipeline::new();
+        p.set_buffer_samples(1 << 12);
+        p.session = SessionLog::from_entries(f.interval(), f.entries);
+        p.file_header = Some(f.header_json);
+        Ok(p)
+    }
+
     // ---- recording ----------------------------------------------------------
 
     /// Starts writing every sample from now on; the file's bytes come from
@@ -249,7 +326,10 @@ impl Pipeline {
                 p.sample(ts0 + k as u64 * *step as u64, *step, ic, vc, r, d);
             }
             p.decoder.log2n = step.trailing_zeros() as u8;
+            p.feed_session();
         }
+        p.session.close();
+        p.session.take_pending();
         p.buf.touch();
         p.file_header = Some(rec.header_json);
         Ok(p)
@@ -322,6 +402,7 @@ impl Pipeline {
             }
         }
         self.buf.touch();
+        self.feed_session();
         self.stats.stream = self.decoder.c;
     }
 
@@ -345,6 +426,8 @@ impl Pipeline {
             sample_period: (1u64 << self.decoder.log2n) as f64 * TS_PERIOD_S,
             trigger: self.trig.info(),
             recording: self.rec.as_ref().map(|r| r.status).unwrap_or_default(),
+            session: self.session.info(),
+            logging: self.log.as_ref().map(|w| LoggingStatus { active: true, entries: w.entries, bytes: w.bytes }).unwrap_or_default(),
         }
     }
 

@@ -22,7 +22,10 @@ struct AppState {
     trigger: std::sync::Mutex<nbp_core::trigger::TriggerCfg>,
     /// the math expression, applied at connect / open too
     math: std::sync::Mutex<Option<String>>,
-    recording: std::sync::Mutex<Option<files::ActiveRecording>>,
+    recording: std::sync::Mutex<Option<files::Writer>>,
+    logging: std::sync::Mutex<Option<files::Writer>>,
+    /// session log interval, s (applied at connect too)
+    log_interval: std::sync::Mutex<Option<f64>>,
 }
 
 fn pipe(state: &State<'_, AppState>) -> Option<SharedPipeline> {
@@ -49,6 +52,9 @@ async fn connect(state: State<'_, AppState>, target: Target, events: Events) -> 
     let cal = state.cal.lock().unwrap().clone();
     let c = Conn::open(target, events, samples, cal).await?;
     c.pipe.lock().unwrap().set_trigger(state.trigger.lock().unwrap().clone());
+    if let Some(iv) = *state.log_interval.lock().unwrap() {
+        c.pipe.lock().unwrap().set_log_interval(iv);
+    }
     let _ = c.pipe.lock().unwrap().set_math(state.math.lock().unwrap().as_deref());
     let d = c.description.clone();
     *state.pipe.lock().unwrap() = Some(c.pipe.clone());
@@ -59,6 +65,7 @@ async fn connect(state: State<'_, AppState>, target: Target, events: Events) -> 
 #[tauri::command]
 async fn disconnect(state: State<'_, AppState>) -> Result<(), String> {
     let _ = stop_recording(state.clone()).await;
+    let _ = stop_logging(state.clone()).await;
     state.conn.lock().await.take();
     state.pipe.lock().unwrap().take();
     Ok(())
@@ -98,6 +105,102 @@ async fn stop_recording(state: State<'_, AppState>) -> Result<Option<files::Reco
     let (pipe, sink) = (c.pipe.clone(), c.rec.clone());
     drop(conn);
     tokio::task::spawn_blocking(move || files::stop(rec, &pipe, &sink)).await.map_err(|e| e.to_string())?.map(Some)
+}
+
+// ---- logging (the session log to a file) -------------------------------------------
+
+/// Starts writing the session log to ~/Documents/Nebulosa/<time>.nblog; returns the path.
+#[tauri::command]
+async fn start_logging(app: AppHandle, state: State<'_, AppState>, header: String) -> Result<String, String> {
+    if state.logging.lock().unwrap().is_some() {
+        return Err("already logging".into());
+    }
+    let conn = state.conn.lock().await;
+    let c = conn.as_ref().ok_or("connect to a device to log")?;
+    let path = files::recordings_dir(&app)?.join(format!("{}.{}", files::timestamp(), files::LOG_EXT));
+    let w = files::start_log(path.clone(), &header, &c.pipe, &c.log)?;
+    *state.logging.lock().unwrap() = Some(w);
+    Ok(path.display().to_string())
+}
+
+#[tauri::command]
+async fn stop_logging(state: State<'_, AppState>) -> Result<Option<files::LoggingDone>, String> {
+    let Some(w) = state.logging.lock().unwrap().take() else { return Ok(None) };
+    let conn = state.conn.lock().await;
+    let c = conn.as_ref().ok_or("connection gone")?;
+    let (pipe, sink) = (c.pipe.clone(), c.log.clone());
+    drop(conn);
+    tokio::task::spawn_blocking(move || files::stop_log(w, &pipe, &sink)).await.map_err(|e| e.to_string())?.map(Some)
+}
+
+/// The session log's interval, s; it starts over.
+#[tauri::command]
+async fn set_log_interval(state: State<'_, AppState>, interval: f64) -> Result<(), String> {
+    let iv = interval.clamp(1e-3, 3600.0);
+    *state.log_interval.lock().unwrap() = Some(iv);
+    if let Some(p) = pipe(&state) {
+        p.lock().unwrap().set_log_interval(iv);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn clear_session(state: State<'_, AppState>) -> Result<(), String> {
+    if let Some(p) = pipe(&state) {
+        p.lock().unwrap().clear_session();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn session_lod(state: State<'_, AppState>, t0: f64, t1: f64, bins: usize) -> Result<Response, String> {
+    let v = match pipe(&state) {
+        Some(p) => p.lock().unwrap().session_lod(t0, t1, bins.min(8192)),
+        None => vec![3.0, 0.0, 18.0, 0.0],
+    };
+    Ok(Response::new(v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>()))
+}
+
+#[tauri::command]
+async fn session_stats(state: State<'_, AppState>, t0: f64, t1: f64) -> Result<Option<SpanStats>, String> {
+    Ok(pipe(&state).map(|p| p.lock().unwrap().session_stats(t0, t1)))
+}
+
+#[derive(serde::Serialize)]
+struct DiskStatus {
+    /// bytes free where the files go
+    free: u64,
+    recording_error: Option<String>,
+    logging_error: Option<String>,
+    dropped: u64,
+}
+
+/// For the UI's watchdog: free space, and whether a writer failed or fell behind.
+#[tauri::command]
+fn disk_status(app: AppHandle, state: State<'_, AppState>) -> Result<DiskStatus, String> {
+    let dir = files::recordings_dir(&app)?;
+    let err = |w: &std::sync::Mutex<Option<files::Writer>>| w.lock().unwrap().as_ref().and_then(|w| w.error.lock().unwrap().clone());
+    let dropped = [&state.recording, &state.logging]
+        .iter()
+        .filter_map(|w| w.lock().unwrap().as_ref().map(|w| w.dropped.load(std::sync::atomic::Ordering::Relaxed)))
+        .sum();
+    Ok(DiskStatus {
+        free: files::free_space(&dir),
+        recording_error: err(&state.recording),
+        logging_error: err(&state.logging),
+        dropped,
+    })
+}
+
+/// Opens a session log file (.nblog) for viewing; returns its header (JSON).
+#[tauri::command]
+async fn open_log(state: State<'_, AppState>, path: String, events: Events) -> Result<String, String> {
+    let _ = stop_recording(state.clone()).await;
+    let _ = stop_logging(state.clone()).await;
+    state.conn.lock().await.take();
+    let (p, header) = tokio::task::spawn_blocking(move || files::open_log(&path, &events)).await.map_err(|e| e.to_string())??;
+    *state.pipe.lock().unwrap() = Some(std::sync::Arc::new(std::sync::Mutex::new(p)));
+    Ok(header)
 }
 
 /// Opens a recording for playback (instead of a device); returns its header (JSON).
@@ -243,7 +346,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_usb, discover, connect, disconnect, request, set_buffer, set_calibration, set_trigger, query_lod, query_stats,
             query_value, recordings_dir, list_recordings, start_recording, stop_recording, open_recording, export_csv,
-            count_samples, save_bytes, query_events, clear_events, analyze, set_math
+            count_samples, save_bytes, query_events, clear_events, analyze, set_math, start_logging, stop_logging, set_log_interval, clear_session, session_lod, session_stats,
+            disk_status, open_log
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

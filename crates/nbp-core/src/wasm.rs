@@ -71,6 +71,23 @@ impl Pipeline {
         self.0.set_math(expr.as_deref()).err()
     }
 
+    /// the session log over [t0, t1] in `bins` columns (the lod layout)
+    pub fn session_lod(&self, t0: f64, t1: f64, bins: usize) -> Vec<f64> {
+        self.0.session_lod(t0, t1, bins)
+    }
+
+    pub fn session_stats(&self, t0: f64, t1: f64) -> JsValue {
+        to_js(&self.0.session_stats(t0, t1))
+    }
+
+    pub fn set_log_interval(&mut self, interval: f64) {
+        self.0.set_log_interval(interval.clamp(1e-3, 3600.0));
+    }
+
+    pub fn clear_session(&mut self) {
+        self.0.clear_session();
+    }
+
     pub fn set_buffer_samples(&mut self, n: usize) {
         self.0.set_buffer_samples(n);
     }

@@ -14,6 +14,7 @@
 //! - [`units`]: codes to A / V (calibration)
 //! - [`trigger`]: edge trigger on the full-rate samples
 //! - [`recording`]: the .nbrec file format
+//! - [`session`]: the session log: interval summaries over days, bounded memory, .nblog files
 //! - [`pipeline`]: all of the above for one connection
 
 pub mod analysis;
@@ -23,6 +24,7 @@ pub mod math;
 pub mod msg;
 pub mod pipeline;
 pub mod recording;
+pub mod session;
 pub mod stream;
 pub mod trigger;
 pub mod units;

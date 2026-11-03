@@ -37,6 +37,11 @@ export interface Link {
   stats(t0: number, t1: number): Promise<RawSpanStats | null>;
   /** [A, V, range, math] of the sample at or before t */
   valueAt(t: number): Promise<[number, number, number, number] | null>;
+  /** the session log over [t0, t1] (lod layout), its statistics, its interval (s; starts it over), clearing it */
+  sessionLod(t0: number, t1: number, bins: number): Promise<Float64Array>;
+  sessionStats(t0: number, t1: number): Promise<RawSpanStats | null>;
+  setLogInterval(s: number): Promise<void>;
+  clearSession(): Promise<void>;
   /** the math channel's expression, or null for none; resolves to an error message, or null */
   setMath(expr: string | null): Promise<string | null>;
   /** codes to units, for samples from now on */

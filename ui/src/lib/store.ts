@@ -120,6 +120,8 @@ export class SampleStore {
   /** s per sample */
   samplePeriod = 1 / 2e6;
   bufferSamples = 0;
+  /** the session log (everything since it started, per interval) */
+  session = { has_data: false, t_start: 0, t_end: 0, interval: 0.1, entries: 0, version: 0, bytes: 0 };
 
   attach(link: Link | null) {
     this.link = link;
@@ -138,6 +140,7 @@ export class SampleStore {
     this.tEnd = m.t_end;
     this.samplePeriod = m.sample_period;
     this.bufferSamples = m.buffer_samples;
+    this.session = m.session;
     this.version = m.version * 2 + 1; // distinct from clear()'s bumps
   }
 
@@ -149,6 +152,16 @@ export class SampleStore {
   async stats(t0: number, t1: number): Promise<SpanStats> {
     if (!this.link || this.empty) return spanStats(null);
     return spanStats(await this.link.stats(Math.min(t0, t1), Math.max(t0, t1)));
+  }
+
+  async sessionLod(t0: number, t1: number, bins: number): Promise<Lod> {
+    if (!this.link || !this.session.has_data || !(t1 > t0)) return emptyLod();
+    return decodeLod(await this.link.sessionLod(t0, t1, Math.max(1, Math.round(bins))));
+  }
+
+  async sessionStats(t0: number, t1: number): Promise<SpanStats> {
+    if (!this.link || !this.session.has_data) return spanStats(null);
+    return spanStats(await this.link.sessionStats(Math.min(t0, t1), Math.max(t0, t1)));
   }
 
   async valueAt(t: number): Promise<PointValue> {

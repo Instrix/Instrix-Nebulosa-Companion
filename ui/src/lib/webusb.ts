@@ -168,6 +168,22 @@ class WebUsbLink implements Link {
     return this.pipeline.value_at(t) as [number, number, number, number] | null;
   }
 
+  async sessionLod(t0: number, t1: number, bins: number) {
+    return this.pipeline.session_lod(t0, t1, bins);
+  }
+
+  async sessionStats(t0: number, t1: number) {
+    return this.pipeline.session_stats(t0, t1) as RawSpanStats | null;
+  }
+
+  async setLogInterval(s: number) {
+    this.pipeline.set_log_interval(s);
+  }
+
+  async clearSession() {
+    this.pipeline.clear_session();
+  }
+
   async setMath(expr: string | null) {
     return this.pipeline.set_math(expr ?? undefined) ?? null;
   }

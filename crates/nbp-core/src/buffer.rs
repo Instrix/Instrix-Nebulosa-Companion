@@ -204,6 +204,11 @@ pub struct SampleBuffer {
     /// the math channel: its program, and its value for every sample (f32)
     math: Option<crate::math::MathProgram>,
     mraw: Vec<f32>,
+    /// the level-0 entry being built: its first sample's time and the time it covers
+    l0: (f64, f64),
+    /// level-0 entries completed since the last take (for the session log)
+    completed: Vec<(f64, f64, Moments3)>,
+    rebuilding: bool,
     /// bumped on every change
     pub version: u64,
 }
@@ -228,6 +233,9 @@ impl SampleBuffer {
             cal,
             math: None,
             mraw: Vec::new(),
+            l0: (0.0, 0.0),
+            completed: Vec::new(),
+            rebuilding: false,
             version: 0,
         }
     }
@@ -314,6 +322,7 @@ impl SampleBuffer {
     /// Summaries (and the math channel) again from the raw samples, in order
     /// (after a calibration or math change).
     fn rebuild(&mut self) {
+        self.rebuilding = true;
         for l in &mut self.levels {
             l.pending = Moments3::default();
         }
@@ -333,7 +342,14 @@ impl SampleBuffer {
                 self.summarize(idx, i, v, mv);
             }
         }
+        self.rebuilding = false;
         self.version += 1;
+    }
+
+    /// Level-0 entries (64 samples) completed since the last call: (first
+    /// sample's time s, time covered s, moments).
+    pub fn take_completed(&mut self) -> Vec<(f64, f64, Moments3)> {
+        std::mem::take(&mut self.completed)
     }
 
     /// The math channel for one sample, kept in its ring.
@@ -357,6 +373,9 @@ impl SampleBuffer {
         // a level-0 entry is complete; carry it up while levels complete too
         let mut carry = self.sums.moments();
         self.sums.reset();
+        if !self.rebuilding {
+            self.completed.push((self.l0.0, self.l0.1, carry));
+        }
         for (li, l) in self.levels.iter_mut().enumerate() {
             if li > 0 {
                 l.pending.merge(&carry);
@@ -387,6 +406,12 @@ impl SampleBuffer {
         let (i, v) = self.phys(w);
         let seg = *self.segs.back().unwrap();
         let mv = self.eval_math(i, v, &seg, idx);
+        // the level-0 entry this sample is in: where it starts, how long it covers
+        let dt = step as f64 * TS_PERIOD_S;
+        if idx & ((1 << LEVEL_SHIFTS[0]) - 1) == 0 {
+            self.l0 = (ts as f64 * TS_PERIOD_S, 0.0);
+        }
+        self.l0.1 += dt;
         self.summarize(idx, i, v, mv);
         // drop segments that ended before the oldest sample
         let oldest = self.oldest();

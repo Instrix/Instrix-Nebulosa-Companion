@@ -137,6 +137,10 @@ export interface Meta {
   sample_period: number;
   trigger: { count: number; recent: number[] };
   recording: { active: boolean; samples: number; bytes: number; seconds: number };
+  /** the session log: everything since it started, summarised per interval */
+  session: { has_data: boolean; t_start: number; t_end: number; interval: number; entries: number; version: number; bytes: number };
+  /** writing the session log to a file */
+  logging: { active: boolean; entries: number; bytes: number };
 }
 
 /** trigger.rs Kind */

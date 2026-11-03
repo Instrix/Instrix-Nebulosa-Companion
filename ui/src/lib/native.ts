@@ -53,6 +53,22 @@ class NativeLink implements Link {
     return invoke<[number, number, number, number] | null>('query_value', { t });
   }
 
+  async sessionLod(t0: number, t1: number, bins: number) {
+    return new Float64Array(await invoke<ArrayBuffer>('session_lod', { t0, t1, bins }));
+  }
+
+  sessionStats(t0: number, t1: number) {
+    return invoke<RawSpanStats | null>('session_stats', { t0, t1 });
+  }
+
+  setLogInterval(interval: number) {
+    return invoke<void>('set_log_interval', { interval });
+  }
+
+  clearSession() {
+    return invoke<void>('clear_session');
+  }
+
   async setMath(expr: string | null) {
     try {
       await invoke<void>('set_math', { expr });
@@ -132,13 +148,37 @@ export async function openRecording(path: string, ev: LinkEvents): Promise<{ lin
 
 export async function pickRecording(): Promise<string | null> {
   const { open: dialog } = await import('@tauri-apps/plugin-dialog');
-  const p = await dialog({ multiple: false, directory: false, filters: [{ name: 'Nebulosa recording', extensions: ['nbrec'] }] });
+  const p = await dialog({
+    multiple: false,
+    directory: false,
+    filters: [{ name: 'Nebulosa recording or log', extensions: ['nbrec', 'nblog'] }],
+  });
   return typeof p === 'string' ? p : null;
 }
 
 export async function pickSave(defaultPath: string, name: string, ext: string): Promise<string | null> {
   const { save } = await import('@tauri-apps/plugin-dialog');
   return save({ defaultPath, filters: [{ name, extensions: [ext] }] });
+}
+
+ // ---- logging ----------------------------------------------------------------
+
+export const startLogging = (header: unknown) => invoke<string>('start_logging', { header: JSON.stringify(header) });
+export const stopLogging = () => invoke<{ path: string; entries: number; bytes: number } | null>('stop_logging');
+export const diskStatus = () =>
+  invoke<{ free: number; recording_error: string | null; logging_error: string | null; dropped: number }>('disk_status');
+
+/** Opens a session log (.nblog) for viewing. */
+export async function openLog(path: string, ev: LinkEvents): Promise<{ link: Link; header: Record<string, unknown> }> {
+  const header = await invoke<string>('open_log', { path, events: channel(ev) });
+  const name = path.split(/[\\/]/).pop() ?? path;
+  let h: Record<string, unknown> = {};
+  try {
+    h = JSON.parse(header);
+  } catch {
+    /* an unreadable header: show it anyway */
+  }
+  return { link: new NativeLink(`Log ${name}`, true), header: h };
 }
 
 export const exportCsv = (t0: number, t1: number, path: string) => invoke<number>('export_csv', { t0, t1, path });

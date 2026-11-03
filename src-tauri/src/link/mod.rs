@@ -60,8 +60,23 @@ pub(crate) enum Input {
 /// The pipeline, shared by the dispatcher and the query commands.
 pub type SharedPipeline = Arc<Mutex<Pipeline>>;
 
-/// Where recording bytes go (a writer thread), while recording.
-pub type RecSink = Arc<Mutex<Option<std::sync::mpsc::Sender<Vec<u8>>>>>;
+/// A writer thread's queue (bounded: a disk that can't keep up mustn't fill
+/// RAM or hold the stream up); chunks that didn't fit are counted.
+pub struct Sink {
+    pub tx: std::sync::mpsc::SyncSender<Vec<u8>>,
+    pub dropped: Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl Sink {
+    pub fn send(&self, b: Vec<u8>) {
+        if self.tx.try_send(b).is_err() {
+            self.dropped.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+}
+
+/// Where recording / log bytes go (a writer thread), while on.
+pub type RecSink = Arc<Mutex<Option<Sink>>>;
 
 pub(crate) enum Writer {
     Tcp(tokio::net::tcp::OwnedWriteHalf),
@@ -91,6 +106,8 @@ pub struct Conn {
     tasks: Vec<JoinHandle<()>>,
     pub pipe: SharedPipeline,
     pub rec: RecSink,
+    /// where session-log file bytes go, while logging
+    pub log: RecSink,
     pub description: String,
 }
 
@@ -107,8 +124,9 @@ impl Conn {
         let pipe: SharedPipeline = Arc::new(Mutex::new(p));
         let pending: Pending = Arc::default();
         let rec: RecSink = Arc::default();
-        tasks.push(tokio::spawn(dispatch(in_rx, pipe.clone(), pending.clone(), rec.clone(), events)));
-        Ok(Conn { writer, pending, seq: 0, tasks, pipe, rec, description })
+        let log: RecSink = Arc::default();
+        tasks.push(tokio::spawn(dispatch(in_rx, pipe.clone(), pending.clone(), rec.clone(), log.clone(), events)));
+        Ok(Conn { writer, pending, seq: 0, tasks, pipe, rec, log, description })
     }
 
     /// One command, its response. The protocol has one command in flight at
@@ -141,13 +159,26 @@ impl Drop for Conn {
     }
 }
 
-async fn dispatch(mut rx: mpsc::Receiver<Input>, pipe: SharedPipeline, pending: Pending, rec: RecSink, events: Events) {
+async fn dispatch(
+    mut rx: mpsc::Receiver<Input>,
+    pipe: SharedPipeline,
+    pending: Pending,
+    rec: RecSink,
+    log: RecSink,
+    events: Events,
+) {
     // recording bytes to the writer thread (whole blocks; all of it on `flush`)
     let forward = |p: &mut Pipeline, flush: bool| {
-        if let Some(tx) = rec.lock().unwrap().as_ref() {
+        if let Some(s) = rec.lock().unwrap().as_ref() {
             let b = p.take_recording(flush);
             if !b.is_empty() {
-                let _ = tx.send(b);
+                s.send(b);
+            }
+        }
+        if let Some(s) = log.lock().unwrap().as_ref() {
+            let b = p.take_log();
+            if !b.is_empty() {
+                s.send(b);
             }
         }
     };

@@ -2,7 +2,9 @@
 //! recordings folder, opening a recording for playback, CSV export, saving
 //! bytes (PNG).
 
-use crate::link::{Events, RecSink, SharedPipeline};
+use crate::link::{Events, RecSink, SharedPipeline, Sink};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use nbp_core::recording::RecordingStatus;
 use nbp_core::Pipeline;
 use serde::Serialize;
@@ -13,6 +15,7 @@ use std::thread::JoinHandle;
 use tauri::{AppHandle, Manager};
 
 pub const EXT: &str = "nbrec";
+pub const LOG_EXT: &str = "nblog";
 
 /// ~/Documents/Nebulosa (created on demand)
 pub fn recordings_dir(app: &AppHandle) -> Result<PathBuf, String> {
@@ -39,9 +42,54 @@ pub fn timestamp() -> String {
     format!("{y:04}-{m:02}-{d:02}_{:02}-{:02}-{:02}", rem / 3600, rem % 3600 / 60, rem % 60)
 }
 
-pub struct ActiveRecording {
+/// A file being written by its own thread, fed through a bounded queue.
+pub struct Writer {
     pub path: PathBuf,
     thread: JoinHandle<Result<(), String>>,
+    /// the first write error (a full disk): the UI shows it and stops
+    pub error: Arc<Mutex<Option<String>>>,
+    pub dropped: Arc<AtomicU64>,
+}
+
+/// Queue length in chunks (a chunk ≤ 64 Ki samples = 256 KB): ≤ ~64 MB waiting.
+const QUEUE: usize = 256;
+
+fn spawn_writer(path: PathBuf) -> Result<(Writer, Sink), String> {
+    let file = std::fs::File::create(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(QUEUE);
+    let error: Arc<Mutex<Option<String>>> = Arc::default();
+    let err2 = error.clone();
+    let thread = std::thread::spawn(move || -> Result<(), String> {
+        let mut w = std::io::BufWriter::with_capacity(8 << 20, file);
+        let mut failed = false;
+        for chunk in rx {
+            if failed {
+                continue; // drain, so the sender never blocks
+            }
+            if let Err(e) = w.write_all(&chunk) {
+                *err2.lock().unwrap() = Some(e.to_string());
+                failed = true;
+            }
+        }
+        if failed {
+            return Err(err2.lock().unwrap().clone().unwrap_or_default());
+        }
+        w.flush().map_err(|e| e.to_string())?;
+        w.into_inner().map_err(|e| e.to_string())?.sync_all().map_err(|e| e.to_string())
+    });
+    let dropped: Arc<AtomicU64> = Arc::default();
+    Ok((Writer { path, thread, error, dropped: dropped.clone() }, Sink { tx, dropped }))
+}
+
+impl Writer {
+    fn finish(self) -> Result<PathBuf, String> {
+        self.thread.join().map_err(|_| "file writer crashed".to_string())??;
+        let lost = self.dropped.load(Ordering::Relaxed);
+        if lost > 0 {
+            return Err(format!("{}: the disk didn't keep up, {lost} chunks were lost", self.path.display()));
+        }
+        Ok(self.path)
+    }
 }
 
 #[derive(Serialize)]
@@ -53,39 +101,84 @@ pub struct RecordingDone {
 
 /// Opens the file, starts the writer thread, and turns recording on in the
 /// pipeline; the dispatcher feeds the thread from then on.
-pub fn start(path: PathBuf, header_json: &str, pipe: &SharedPipeline, sink: &RecSink) -> Result<ActiveRecording, String> {
-    let file = std::fs::File::create(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let (tx, rx) = mpsc::channel::<Vec<u8>>();
-    let thread = std::thread::spawn(move || -> Result<(), String> {
-        let mut w = std::io::BufWriter::with_capacity(8 << 20, file);
-        for chunk in rx {
-            w.write_all(&chunk).map_err(|e| e.to_string())?;
-        }
-        w.flush().map_err(|e| e.to_string())?;
-        w.into_inner().map_err(|e| e.to_string())?.sync_all().map_err(|e| e.to_string())
-    });
+pub fn start(path: PathBuf, header_json: &str, pipe: &SharedPipeline, sink: &RecSink) -> Result<Writer, String> {
+    let (w, s) = spawn_writer(path)?;
     // lock order as in the dispatcher: pipeline, then sink
     let mut p = pipe.lock().unwrap();
     p.start_recording(header_json);
-    *sink.lock().unwrap() = Some(tx);
-    Ok(ActiveRecording { path, thread })
+    *sink.lock().unwrap() = Some(s);
+    Ok(w)
 }
 
 /// Stops recording: the last bytes, then waits for the writer to finish.
-pub fn stop(rec: ActiveRecording, pipe: &SharedPipeline, sink: &RecSink) -> Result<RecordingDone, String> {
-    let (tx, last) = {
+pub fn stop(rec: Writer, pipe: &SharedPipeline, sink: &RecSink) -> Result<RecordingDone, String> {
+    let (s, last) = {
         let mut p = pipe.lock().unwrap();
-        let tx = sink.lock().unwrap().take();
-        (tx, p.stop_recording())
+        let s = sink.lock().unwrap().take();
+        (s, p.stop_recording())
     };
     let mut status = RecordingStatus::default();
-    if let (Some(tx), Some((bytes, st))) = (tx, last) {
-        let _ = tx.send(bytes);
+    if let (Some(s), Some((bytes, st))) = (s, last) {
+        s.send(bytes);
         status = st;
     }
     // the sender is dropped here: the thread drains, flushes and ends
-    rec.thread.join().map_err(|_| "recording writer crashed".to_string())??;
-    Ok(RecordingDone { path: rec.path.display().to_string(), status })
+    let path = rec.finish()?;
+    Ok(RecordingDone { path: path.display().to_string(), status })
+}
+
+// ---- the session log file -------------------------------------------------------
+
+#[derive(Serialize)]
+pub struct LoggingDone {
+    pub path: String,
+    pub entries: u64,
+    pub bytes: u64,
+}
+
+pub fn start_log(path: PathBuf, header_json: &str, pipe: &SharedPipeline, sink: &RecSink) -> Result<Writer, String> {
+    let (w, s) = spawn_writer(path)?;
+    let mut p = pipe.lock().unwrap();
+    p.start_logging(header_json);
+    *sink.lock().unwrap() = Some(s);
+    Ok(w)
+}
+
+pub fn stop_log(w: Writer, pipe: &SharedPipeline, sink: &RecSink) -> Result<LoggingDone, String> {
+    let (s, last) = {
+        let mut p = pipe.lock().unwrap();
+        let s = sink.lock().unwrap().take();
+        // what was taken but not yet sent goes first
+        let pending = p.take_log();
+        (s, (pending, p.stop_logging()))
+    };
+    let mut entries = 0;
+    if let Some(s) = s {
+        if !last.0.is_empty() {
+            s.send(last.0);
+        }
+        if let Some((bytes, st)) = last.1 {
+            s.send(bytes);
+            entries = st.entries;
+        }
+    }
+    let path = w.finish()?;
+    let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    Ok(LoggingDone { path: path.display().to_string(), entries, bytes })
+}
+
+/// A log file opened for viewing; its Meta goes out on `events` once.
+pub fn open_log(path: &str, events: &Events) -> Result<(Pipeline, String), String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
+    let p = Pipeline::from_log(&bytes)?;
+    let header = p.file_header().unwrap_or("{}").to_string();
+    crate::link::send_meta(events, p.meta());
+    Ok((p, header))
+}
+
+/// Free space where the recordings go, bytes.
+pub fn free_space(dir: &Path) -> u64 {
+    fs2::available_space(dir).unwrap_or(u64::MAX)
 }
 
 #[derive(Serialize)]
@@ -102,7 +195,7 @@ pub fn list(dir: &Path) -> Vec<RecFile> {
         .into_iter()
         .flatten()
         .flatten()
-        .filter(|e| e.path().extension().is_some_and(|x| x == EXT))
+        .filter(|e| e.path().extension().is_some_and(|x| x == EXT || x == LOG_EXT))
         .filter_map(|e| {
             let md = e.metadata().ok()?;
             Some(RecFile {
