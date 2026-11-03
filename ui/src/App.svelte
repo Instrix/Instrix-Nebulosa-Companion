@@ -341,6 +341,85 @@
 
   let bottomTab = $state<'markers' | 'events'>('markers');
 
+  // ---- autoset ----------------------------------------------------------------
+
+  /**
+   * Like a scope's: the most active signal of the last seconds, an edge
+   * trigger at 50 % of its swing, a time/div showing ~2.5 periods, Auto mode,
+   * axes on auto. No periodic activity: Roll.
+   */
+  async function autoset() {
+    if (store.empty) return;
+    error = '';
+    const t1 = store.tEnd;
+    const t0 = Math.max(store.tStart, t1 - 4);
+    const st = await store.stats(t0, t1);
+    // the most active: largest swing for its level (power follows current)
+    const score = (s: Signal) => {
+      const m = st[s];
+      return m.n ? m.pp / Math.max(Math.abs(m.mean), m.pp * 0.01, 1e-12) : 0;
+    };
+    const src: Signal = score('v') > 1.5 * score('i') ? 'v' : 'i';
+    const m = st[src];
+    for (const s of SIGNALS) axes[s].auto = true;
+    if (!m.n || m.pp < Math.abs(m.mean) * 0.02) {
+      // flat: nothing to trigger on
+      trig.mode = 'roll';
+      view.divIndex = TIME_DIVS.indexOf(0.1);
+      view.live = true;
+      note = 'Autoset: no activity to trigger on; rolling.';
+      return;
+    }
+    const level = (m.min + m.max) / 2;
+    const hyst = (m.max - m.min) * 0.1;
+
+    /** median interval between rising crossings over [a, b] */
+    async function period(a: number, b: number): Promise<number | null> {
+      const L = await store.lod(a, b, 8000);
+      const c = L.ch[src];
+      let armed = false;
+      const ups: number[] = [];
+      for (let k = 0; k < L.t.length; k++) {
+        const lo = c.min[k], hi = c.max[k];
+        if (lo == null || hi == null) {
+          armed = false; // a gap
+          continue;
+        }
+        // armed by a column wholly below (a column holding a falling edge has
+        // lows and highs too: it mustn't count as a rising one)
+        if (armed && hi >= level) {
+          ups.push(L.t[k]);
+          armed = false;
+        } else if (hi < level - hyst) armed = true;
+      }
+      if (ups.length < 3) return null;
+      const d = ups.slice(1).map((t, k) => t - ups[k]).sort((x, y) => x - y);
+      return d[d.length >> 1];
+    }
+
+    let p = await period(t0, t1);
+    // short next to the resolution (4 s / 8000 = 0.5 ms): zoom in and measure again
+    if (p != null && p < ((t1 - t0) / 8000) * 40) p = (await period(Math.max(store.tStart, t1 - p * 60), t1)) ?? p;
+    if (p == null) {
+      // one-off or slow: trigger anyway, show a few seconds
+      p = 4;
+    }
+    let k = TIME_DIVS.findIndex((d) => d * 10 >= p! * 2.5);
+    if (k < 0) k = TIME_DIVS.length - 1;
+    view.divIndex = k;
+    trig.source = src;
+    trig.kind = 'edge';
+    trig.slope = 'rise';
+    trig.level = level;
+    trig.hysteresis = hyst;
+    trig.holdoff = 0;
+    trig.filter = 0;
+    trig.position = 0.3;
+    trig.mode = 'auto';
+    view.live = true;
+    note = `Autoset: ${SIGNAL_INFO[src].name.toLowerCase()} ↑ at ${fmtSI(level, SIGNAL_INFO[src].unit, 3)}, period ${p >= 4 ? '–' : fmtTime(p)}, ${fmtTime(TIME_DIVS[k])}/div`;
+  }
+
   // ---- analysis ---------------------------------------------------------------
   let analysis = $state<{ span: [number, number]; label: string } | null>(null);
 
@@ -1160,6 +1239,7 @@
           {({ roll: 'ROLL', wait: 'WAIT', trigd: "TRIG'D", auto: 'AUTO', stop: 'STOP' } as const)[trig.status]}
         </span>
       {/if}
+      <button class="small autoset" onclick={autoset} disabled={!hasData} title="Trigger, time/div and axes from the signal (like a scope's Autoset)">Autoset</button>
       <div class="tdiv">
         <button class="ghost small" onclick={() => view.zoom(store, -1)} disabled={view.divIndex === 0} title="Faster (+, wheel)">−</button>
         <span class="mono">{fmtTime(view.timeDiv)}/div</span>
@@ -1501,6 +1581,12 @@
   }
   .seg.wide button {
     flex: 1;
+  }
+  .autoset {
+    font-weight: 600;
+    border-color: var(--accent);
+    color: var(--accent);
+    background: transparent;
   }
   .rec {
     color: var(--danger);
