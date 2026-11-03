@@ -1,0 +1,110 @@
+:root {
+  --bg: #f6f7f9;
+  --panel: #ffffff;
+  --border: #e3e6eb;
+  --text: #1b1f24;
+  --muted: #6b7380;
+  --grid: #e9ecf0;
+  --accent: #6a4cff;
+  --accent-2: #0a9e8a;
+  --ok: #1f9d55;
+  --warn: #b7791f;
+  --danger: #d64545;
+  /* the scope screen is dark in both themes */
+  --scope-bg: #06080b;
+  --scope-border: #1d222b;
+  --scope-grid: rgba(255, 255, 255, 0.1);
+  --scope-axis: rgba(255, 255, 255, 0.28);
+  --scope-text: #8d97a8;
+  --trace-i: #f7d51d;
+  --trace-v: #2ad4f0;
+  --trace-p: #ff8a3d;
+  --sel: #ff4fd8;
+  --live: #3ccf7a;
+  --hold: #f5a524;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1115;
+    --panel: #161920;
+    --border: #262b34;
+    --text: #e6e8ec;
+    --muted: #8a93a3;
+    --grid: #232833;
+    --accent: #9b85ff;
+    --accent-2: #3cc9b3;
+    --ok: #3ccf7a;
+    --warn: #e0a84a;
+    --danger: #ff6b6b;
+    color-scheme: dark;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.4 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+
+button,
+input,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  cursor: pointer;
+}
+button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+button.danger {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+}
+button.ghost {
+  background: transparent;
+}
+button.small {
+  padding: 2px 8px;
+  font-size: 12px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+input:not([type='checkbox']):not([type='range']),
+select {
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  width: 100%;
+}
+
+input[type='range'] {
+  accent-color: var(--accent);
+}

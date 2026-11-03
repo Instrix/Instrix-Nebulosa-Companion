@@ -1,0 +1,31 @@
+{
+  "name": "nebulosa-companion",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "wasm": "wasm-pack build crates/nbp-core --target web --out-dir ../../ui/src/lib/nbp-wasm --out-name nbp_core --no-pack -- --features wasm",
+    "dev:ui": "npm run wasm && vite",
+    "build:ui": "npm run wasm && vite build",
+    "web": "npm run dev:ui",
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "test": "cargo test -p nbp-core",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.12.4",
+    "uplot": "^1.6.32"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^5.1.1",
+    "@tauri-apps/cli": "^2.12.4",
+    "@tsconfig/svelte": "^5.0.8",
+    "@types/w3c-web-usb": "^1.0.14",
+    "svelte": "^5.57.3",
+    "svelte-check": "^4.7.8",
+    "typescript": "^5.9.3",
+    "vite": "^6.4.5"
+  }
+}
