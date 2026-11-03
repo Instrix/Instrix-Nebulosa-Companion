@@ -317,6 +317,14 @@ export class DemoLink implements Link {
 
   async request(cmd: number, payload = new Uint8Array()): Promise<Reply> {
     if ((cmd >= 0x38 && cmd <= 0x3f) || cmd === 0x10 || cmd === 0x11) return this.board.request(cmd, payload);
+    if (cmd === 0x30) {
+      // SET_DECIMATION: answered as applied (the synthetic data stays at 2 MS/s)
+      const out = new Uint8Array(8);
+      out[0] = payload[0] ?? 0;
+      out[1] = payload[1] ?? 0;
+      new DataView(out.buffer).setUint32(4, RATE >> (payload[0] ?? 0), true);
+      return { ty: cmd | 0x40, status: 0, payload: out };
+    }
     return { ty: cmd | 0x40, status: 0, payload: new Uint8Array() };
   }
   async setBuffer(samples: number) {

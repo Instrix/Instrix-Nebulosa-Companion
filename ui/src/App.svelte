@@ -40,6 +40,7 @@
   import MathPanel from './lib/panels/MathPanel.svelte';
   import BoardPanel from './lib/panels/BoardPanel.svelte';
   import Help from './lib/Help.svelte';
+  import { SCALES, canScale, restoreScale, setScale, stepScale, uiScale } from './lib/uiScale.svelte';
   import * as boardCmd from './lib/board';
   import LoggerView, { type LogView } from './lib/LoggerView.svelte';
   import ExportEditor, { defaultOutput, type OutputCfg } from './lib/ExportEditor.svelte';
@@ -894,7 +895,32 @@
     else view.live = true;
   }
 
+  function scaleMenu(e: MouseEvent) {
+    openMenu(e, [
+      { head: canScale ? 'UI scale' : "UI scale: the browser's zoom" },
+      ...SCALES.map((v) => ({
+        label: `${Math.round(v * 100)} %`,
+        hint: v === 1 ? 'Ctrl 0' : undefined,
+        checked: canScale && uiScale.value === v,
+        disabled: !canScale,
+        run: () => setScale(v),
+      })),
+      { sep: true },
+      { label: canScale ? 'Bigger / smaller: Ctrl + / Ctrl −' : 'Use Ctrl + / Ctrl − / Ctrl 0', disabled: true },
+    ]);
+  }
+
   function onKey(e: KeyboardEvent) {
+    // Ctrl / ⌘ + − 0: the UI scale (the browser zooms by itself)
+    if (e.ctrlKey || e.metaKey) {
+      if (!canScale) return;
+      if (e.key === '=' || e.key === '+') stepScale(1);
+      else if (e.key === '-' || e.key === '_') stepScale(-1);
+      else if (e.key === '0') setScale(1);
+      else return;
+      e.preventDefault();
+      return;
+    }
     const tag = (e.target as HTMLElement).tagName;
     if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
     if (e.key === ' ') {
@@ -1295,6 +1321,7 @@
   }
 
   onMount(() => {
+    restoreScale();
     scan();
     refreshRecordings();
     const t = setInterval(refreshMeter, 250);
@@ -1411,6 +1438,9 @@
           <span class="dot"></span><span class="muted">Not connected</span>
         {/if}
       {/if}
+      <button class="ghost side-btn" onclick={(e) => scaleMenu(e)} title="UI scale: bigger / smaller (Ctrl + / −)" aria-label="UI scale"
+        >Aa{#if canScale && uiScale.value !== 1}<small class="scale-pct">{Math.round(uiScale.value * 100)}%</small>{/if}</button
+      >
       <button class="ghost side-btn" onclick={() => (helpOpen = true)} title="Keys and mouse (?)" aria-label="Help">?</button>
       <button class="ghost side-btn" class:on={rightOpen} onclick={() => toggleSide('right')} title="Show / hide the meter ( ] )" aria-label="Meter panel">◨</button>
     </div>
@@ -1458,7 +1488,7 @@
       </section>
 
       {#if info.caps & CAP.BOARD}
-        <BoardPanel {dev} {streaming} bind:board onstop={stop} onnote={(m) => (note = m)} />
+        <BoardPanel {dev} {streaming} bind:board onstop={stop} onstart={start} onnote={(m) => (note = m)} />
       {/if}
 
       <section>
@@ -1773,6 +1803,10 @@
     font-size: 16px;
     line-height: 1;
     color: var(--muted);
+  }
+  .scale-pct {
+    font-size: 10px;
+    margin-left: 3px;
   }
   .side-btn.on {
     color: var(--accent);

@@ -37,6 +37,7 @@
         ['[ / ]', 'Hide / show the settings / the meter'],
         ['Drag a divider', 'Resize panels and plots'],
         ['Double-click a divider', 'Reset its size'],
+        ['Ctrl + / Ctrl − / Ctrl 0', 'UI scale: bigger / smaller / 100 %'],
         ['? or F1', 'This help'],
       ],
     ],

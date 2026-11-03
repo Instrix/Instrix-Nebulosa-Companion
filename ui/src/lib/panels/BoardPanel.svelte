@@ -13,6 +13,7 @@
     streaming,
     board = $bindable(),
     onstop,
+    onstart,
     onnote,
   }: {
     dev: Device;
@@ -21,6 +22,8 @@
     board: bd.BoardStatus | null;
     /** stops the stream (the self-tests and PD changes need it stopped) */
     onstop: () => Promise<void>;
+    /** starts the stream again (after the self-tests stopped it) */
+    onstart: () => Promise<void>;
     onnote: (msg: string) => void;
   } = $props();
 
@@ -29,6 +32,27 @@
   let testing = $state(false);
   let testOk = $state<boolean | null>(null);
   let unsupported = $state(false);
+  let showTests = $state(false);
+
+  // the board's clock set to this computer's when it connects (and is off by more than 2 s)
+  const AUTO_KEY = 'nebulosa.clockAutoSync';
+  let autoSync = $state(loadAuto());
+  function loadAuto() {
+    try {
+      return localStorage.getItem(AUTO_KEY) !== '0';
+    } catch {
+      return true;
+    }
+  }
+  function setAuto(on: boolean) {
+    autoSync = on;
+    try {
+      localStorage.setItem(AUTO_KEY, on ? '1' : '0');
+    } catch {
+      /* storage unavailable */
+    }
+  }
+  let firstStatus = true;
 
   async function poll() {
     if (busy || unsupported) return;
@@ -36,6 +60,14 @@
       const s = await bd.status(dev);
       if (!s) unsupported = true;
       board = s;
+      if (s && firstStatus) {
+        firstStatus = false;
+        const off = s.rtc_s - Date.now() / 1000;
+        if (autoSync && (!s.rtc_running || Math.abs(off) > 2)) {
+          await act(() => bd.syncClock(dev));
+          if (!error) onnote(`Board clock synced to this computer's (it was ${s.rtc_running ? fmtOffset(off) : 'not running'}).`);
+        }
+      }
     } catch {
       /* a missed poll: the next one */
     }
@@ -90,9 +122,12 @@
     if (!error) onnote("The board's clock is set to this computer's.");
   }
 
+  /** the stream stops for the tests (they take the buses) and starts again after */
   async function runTests() {
-    if (streaming && !confirm('The self-tests need the stream stopped. Stop it and run them?')) return;
-    if (streaming) await onstop();
+    const wasStreaming = streaming;
+    if (wasStreaming && !confirm('The self-tests stop the stream for a few seconds (it starts again after). Run them?')) return;
+    showTests = true;
+    if (wasStreaming) await onstop();
     error = '';
     testing = true;
     busy = true;
@@ -106,6 +141,20 @@
       testing = false;
       busy = false;
     }
+    if (wasStreaming) await onstart();
+  }
+
+  const ran = $derived(board?.tests.filter((t) => t.result !== 'none') ?? []);
+  const failed = $derived(ran.filter((t) => t.result === 'fail').length);
+
+  /** a test's detail in its unit */
+  function fmtDetail(t: bd.TestResult) {
+    if (!t.detail_unit || (t.result === 'skip' && !t.detail)) return '';
+    if (t.detail_unit === 'ID' || t.detail_unit === 'PHY ID') return hex(t.detail, 6);
+    if (t.detail_unit.endsWith('Hz')) return t.detail >= 1e6 ? `${(t.detail / 1e6).toFixed(2)} MHz` : `${t.detail.toLocaleString()} Hz`;
+    if (t.detail_unit.endsWith('mV')) return `${(t.detail / 1000).toFixed(2)} V`;
+    if (t.detail_unit === 'error step') return t.result === 'fail' ? `failed at step ${t.detail}` : '';
+    return `${t.detail} ${t.detail_unit}`;
   }
 
   const v = (mv: number) => (mv < 500 ? '–' : `${(mv / 1000).toFixed(2)} V`);
@@ -164,9 +213,20 @@
         <dd>
           {#if clockOff == null}<span class="warn">not running</span>
           {:else if Math.abs(clockOff) < 3}<span class="muted">in sync</span>
-          {:else}<span class="warn">{fmtOffset(clockOff)}</span> <button class="link" disabled={busy} onclick={syncClock}>Sync</button>{/if}
+          {:else}<span class="warn">{fmtOffset(clockOff)}</span>{/if}
         </dd>
       </dl>
+
+      <div class="actions">
+        <button class="ghost small" disabled={busy} onclick={syncClock} title="Set the board's clock (its RTC) to this computer's">Sync clock</button>
+        <button class="ghost small" disabled={busy} onclick={runTests} title="Crystals, clock, supplies, flash, SD card, screen, FPGA, Ethernet, USB PD">
+          {testing ? 'Testing…' : 'Self-test'}
+        </button>
+        {#if ran.length && !testing}
+          <button class="link small" class:fail={failed} onclick={() => (showTests = true)}>{failed ? `${failed} failed` : `${ran.filter((t) => t.result === 'pass').length} passed`}</button>
+        {/if}
+      </div>
+      <label class="check small"><input type="checkbox" checked={autoSync} onchange={(e) => setAuto((e.currentTarget as HTMLInputElement).checked)} /> Sync the clock on connect</label>
 
       <details>
         <summary><h2>Power and board</h2></summary>
@@ -198,23 +258,44 @@
             <dt>FPGA</dt><dd>{board.fpga_done ? `configured${board.fpga_cfg_ms ? ` in ${board.fpga_cfg_ms} ms` : ''}` : 'not configured'} <small class="muted">{hex(board.fpga_id)}</small></dd>
             {#if board.pd_errors || board.pd_hard_resets}<dt>PD errors</dt><dd class="warn">{board.pd_errors} · {board.pd_hard_resets} resets</dd>{/if}
           </dl>
-          <button class="ghost" disabled={busy} onclick={runTests}>{testing ? 'Testing…' : 'Run self-test'}</button>
-          {#if board.tests.some((t) => t.result !== 'none')}
-            <ul class="tests" class:bad={testOk === false}>
-              {#each board.tests as t (t.name)}
-                <li class={t.result} title={t.what}>
-                  <span class="mark">{MARK[t.result]}</span>{t.name}
-                  {#if t.result === 'fail' && t.detail_unit}<small>{t.detail} {t.detail_unit}</small>{/if}
-                </li>
-              {/each}
-            </ul>
-          {/if}
         </div>
       </details>
     {/if}
     {#if error}<p class="error small">{error}</p>{/if}
   </section>
 {/if}
+
+{#if showTests && board}
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <div class="backdrop" role="presentation" onclick={() => !testing && (showTests = false)}>
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <div class="dialog" role="dialog" aria-label="Self-test" tabindex="-1" onclick={(e) => e.stopPropagation()}>
+      <header>
+        <h3>Self-test</h3>
+        {#if testing}<span class="muted">running…</span>
+        {:else if ran.length}<span class={failed ? 'error' : 'ok'}>{failed ? `${failed} failed` : 'all passed'}</span>{/if}
+        <button class="ghost small close" disabled={testing} onclick={() => (showTests = false)}>✕</button>
+      </header>
+      <table>
+        <tbody>
+          {#each board.tests as t (t.name)}
+            <tr class={testing ? 'none' : t.result}>
+              <td class="mark">{testing ? '…' : MARK[t.result]}</td>
+              <td><b>{t.name}</b><br /><small class="muted">{t.what}</small></td>
+              <td class="det">{testing ? '' : t.result === 'skip' ? 'skipped' : fmtDetail(t)}</td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+      {#if testOk === false && !testing}<p class="small muted">A failure points at that part of the board: see docs/hardware-test.md.</p>{/if}
+      <div class="foot">
+        <button class="ghost" disabled={testing} onclick={runTests}>Run again</button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+<svelte:window onkeydown={(e) => e.key === 'Escape' && showTests && !testing && (showTests = false)} />
 
 <style>
   .fe {
@@ -281,31 +362,84 @@
     gap: 4px;
     font-size: 13px;
   }
-  .tests {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 2px 8px;
-    font-size: 12px;
+  .actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 6px;
   }
-  .mark {
-    display: inline-block;
-    width: 14px;
-  }
-  .pass .mark {
+  .actions .link {
+    margin-left: auto;
     color: var(--ok);
   }
-  .fail {
+  .actions .link.fail {
     color: var(--danger);
   }
-  .skip,
-  .none {
+  .backdrop {
+    position: fixed;
+    inset: 0;
+    background: #0008;
+    display: grid;
+    place-items: center;
+    z-index: 55;
+  }
+  .dialog {
+    width: min(520px, 92vw);
+    max-height: 90vh;
+    overflow: auto;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .dialog header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .dialog h3 {
+    margin: 0;
+    font-size: 16px;
+  }
+  .close {
+    margin-left: auto;
+  }
+  table {
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  td {
+    padding: 5px 6px;
+    border-top: 1px solid var(--border);
+    vertical-align: top;
+  }
+  td.mark {
+    width: 18px;
+    font-weight: 700;
+  }
+  td.det {
+    text-align: right;
+    white-space: nowrap;
+    font-family: ui-monospace, monospace;
+    font-size: 12px;
+  }
+  tr.pass .mark,
+  .ok {
+    color: var(--ok);
+  }
+  tr.fail,
+  .error {
+    color: var(--danger);
+  }
+  tr.skip .mark,
+  tr.none .mark {
     color: var(--muted);
   }
-  .tests small {
-    display: block;
-    margin-left: 14px;
+  .foot {
+    display: flex;
+    justify-content: flex-end;
   }
 </style>
