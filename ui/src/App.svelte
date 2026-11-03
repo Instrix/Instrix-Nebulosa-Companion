@@ -39,7 +39,8 @@
   import ConnectPanel from './lib/panels/ConnectPanel.svelte';
   import MathPanel from './lib/panels/MathPanel.svelte';
   import BoardPanel from './lib/panels/BoardPanel.svelte';
-  import Help from './lib/Help.svelte';
+  import Help, { type HelpTab } from './lib/Help.svelte';
+  import Tour, { markTourSeen, tourSeen, type TourStep } from './lib/Tour.svelte';
   import { SCALES, canScale, restoreScale, setScale, stepScale, uiScale } from './lib/uiScale.svelte';
   import * as boardCmd from './lib/board';
   import LoggerView, { type LogView } from './lib/LoggerView.svelte';
@@ -367,6 +368,101 @@
   let bottomTab = $state<'markers' | 'events'>('markers');
   let updating = $state(false);
   let helpOpen = $state(false);
+  let helpTab = $state<HelpTab>('start');
+
+  function openHelp(tab: HelpTab) {
+    helpTab = tab;
+    helpOpen = true;
+  }
+
+  function helpMenu(e: MouseEvent) {
+    openMenu(e, [
+      { label: 'Getting started', hint: '?', run: () => openHelp('start') },
+      { label: 'Walkthrough', run: startTour },
+      { label: 'Keys and mouse', run: () => openHelp('keys') },
+      { label: 'Troubleshooting', run: () => openHelp('trouble') },
+      { sep: true },
+      { label: 'About Nebulosa Companion', run: () => openHelp('about') },
+    ]);
+  }
+
+  // ---- the walkthrough: on the first run, and from Help ----------------------
+  let touring = $state(false);
+
+  function startTour() {
+    helpOpen = false;
+    // every part on show
+    leftOpen = rightOpen = true;
+    touring = true;
+  }
+
+  const TOUR: TourStep[] = [
+    {
+      title: 'Welcome to Nebulosa Companion',
+      body: 'A quick look around: what each part of the window is for. <kbd>→</kbd> next, <kbd>←</kbd> back, <kbd>Esc</kbd> to leave. It is under <b>?</b> → Walkthrough any time.',
+    },
+    {
+      target: 'sidebar',
+      title: 'Connect a board',
+      body: 'Boards on USB and Ethernet show here: click one. In the desktop app you can also type an IP address; recordings and logs you made are listed below.',
+      when: () => !dev,
+    },
+    {
+      target: 'device',
+      title: 'The device',
+      body: 'Its firmware, gateware and link. <b>Software update…</b> installs new firmware and gateware.',
+    },
+    {
+      target: 'board',
+      title: 'Power and the board',
+      body: 'The measurement side (the analog front end) needs 12 V and must be <b>on</b>: switch it here. Also the input voltages, USB-C, the board clock (<b>Sync clock</b>) and the <b>Self-test</b>.',
+    },
+    {
+      target: 'acquisition',
+      title: 'Acquisition',
+      body: 'The source (ADC for real measurements), the sample rate (decimation N = 1: 2 MS/s) and the current ranges. <b>Start</b> / <b>Stop</b> the stream.',
+    },
+    {
+      target: 'modes',
+      title: 'Scope or Logger',
+      body: '<b>Scope</b>: a rolling oscilloscope, microseconds to seconds. <b>Logger</b>: the whole session, minutes to days, and logging to files.',
+    },
+    {
+      target: 'strip',
+      title: 'The scope’s controls',
+      body: '<b>LIVE</b> / <b>HOLD</b> (<kbd>Space</kbd>), <b>Autoset</b>, the time per division, markers, and export: CSV, PNG, <b>Analyze</b>.',
+    },
+    {
+      target: 'overview',
+      title: 'The overview',
+      body: 'Everything in the buffer; the box is what the plots show. Drag it to go back in time.',
+    },
+    {
+      target: 'plots',
+      title: 'The plots',
+      body: 'Wheel: zoom in time. Drag across: a dual marker with Δt, mean and charge. Double-click: a single marker. <b>Right-click</b> for a menu: markers, trigger here, axis, export.',
+    },
+    {
+      target: 'trigger',
+      title: 'The trigger',
+      body: '<b>Roll</b> like a chart recorder, or <b>Auto</b> / <b>Normal</b> / <b>Single</b> on an edge, a window, a pulse width or a timeout. Drag its level line on the plot.',
+    },
+    {
+      target: 'meter',
+      title: 'The meter',
+      body: 'Mean and statistics of the screen, the run, or the selection (⚙ chooses which); charge and energy since you cleared them; and battery life for a capacity you enter.',
+    },
+    {
+      target: 'lists',
+      title: 'Markers and events',
+      body: 'Every marker with its measurements; the trigger’s events with their width and charge. Click one to go to it; right-click for more.',
+    },
+    {
+      target: 'help',
+      title: 'Help is here',
+      body: 'Getting started, keys and mouse, troubleshooting, about, and this walkthrough again. <b>Aa</b> next to it makes the UI bigger or smaller; ◧ ◨ hide the side panels.',
+    },
+  ];
 
   // ---- the board (power, analog front end) ------------------------------------
   let board = $state<boardCmd.BoardStatus | null>(null);
@@ -936,7 +1032,7 @@
     else if (e.key === 'ArrowRight') view.pan(store, 0.1);
     else if (e.key === '?' || e.key === 'F1') {
       e.preventDefault();
-      helpOpen = true;
+      openHelp('start');
     } else if (e.key === '[') toggleSide('left');
     else if (e.key === ']') toggleSide('right');
   }
@@ -1326,7 +1422,10 @@
     refreshRecordings();
     const t = setInterval(refreshMeter, 250);
     const wd = setInterval(watchdog, 2000);
+    // the first run: the walkthrough (not in demo / screenshot mode)
+    if (!demoRequested && !tourSeen()) setTimeout(startTour, 600);
     if (demoRequested) {
+      markTourSeen();
       startDemo();
       // screenshot helpers: &log=i,p  &trace=mean,range,sigma
       const q = new URLSearchParams(location.search);
@@ -1378,7 +1477,11 @@
 {/if}
 
 {#if helpOpen}
-  <Help onclose={() => (helpOpen = false)} />
+  <Help bind:tab={helpTab} {info} link={dev?.link.description ?? ''} onclose={() => (helpOpen = false)} ontour={startTour} />
+{/if}
+
+{#if touring}
+  <Tour steps={TOUR} connected={!!dev} ondemo={startDemo} onclose={() => (touring = false)} />
 {/if}
 
 {#if analysis}
@@ -1422,7 +1525,7 @@
       <strong>Nebulosa</strong>
       <span class="muted">Companion</span>
     </div>
-    <div class="modes" role="tablist" aria-label="View">
+    <div class="modes" role="tablist" aria-label="View" data-tour="modes">
       <button class:on={appMode === 'scope'} onclick={() => setAppMode('scope')} title="Waveforms: µs to seconds, triggers, markers">Scope</button>
       <button class:on={appMode === 'logger'} onclick={() => setAppMode('logger')} title="The whole session: minutes to days, logging to disk">Logger</button>
     </div>
@@ -1441,12 +1544,12 @@
       <button class="ghost side-btn" onclick={(e) => scaleMenu(e)} title="UI scale: bigger / smaller (Ctrl + / −)" aria-label="UI scale"
         >Aa{#if canScale && uiScale.value !== 1}<small class="scale-pct">{Math.round(uiScale.value * 100)}%</small>{/if}</button
       >
-      <button class="ghost side-btn" onclick={() => (helpOpen = true)} title="Keys and mouse (?)" aria-label="Help">?</button>
+      <button class="ghost side-btn" onclick={(e) => helpMenu(e)} title="Help, walkthrough, about (?)" aria-label="Help" data-tour="help">?</button>
       <button class="ghost side-btn" class:on={rightOpen} onclick={() => toggleSide('right')} title="Show / hide the meter ( ] )" aria-label="Meter panel">◨</button>
     </div>
   </header>
 
-  <aside class:hidden={!leftOpen}>
+  <aside class:hidden={!leftOpen} data-tour="sidebar">
     {#if !dev}
       <ConnectPanel {candidates} {scanning} {busy} {recFiles} {recDir} onscan={scan} onconnect={connect} onpair={pair} onopen={openRecording} onopenfile={openFile} ondemo={startDemo} />
     {:else if playback}
@@ -1468,7 +1571,7 @@
         <button onclick={fitAll}>Show all</button>
       </section>
     {:else if info}
-      <section>
+      <section data-tour="device">
         <h2>Device</h2>
         <dl>
           <dt>Firmware</dt><dd>{info.fw_version_str} <small class="muted">{info.build}</small></dd>
@@ -1491,7 +1594,7 @@
         <BoardPanel {dev} {streaming} bind:board onstop={stop} onstart={start} onnote={(m) => (note = m)} />
       {/if}
 
-      <section>
+      <section data-tour="acquisition">
         <h2>Acquisition</h2>
         <label>
           Source
@@ -1536,7 +1639,7 @@
     {/if}
 
     {#if appMode === 'logger'}
-    <section>
+    <section data-tour="logger-panel">
       <h2>Logger</h2>
       <label>
         Interval
@@ -1591,7 +1694,7 @@
       <button class="ghost" onclick={newSession} disabled={!sess.has_data}>New session</button>
     </section>
     {:else}
-    <TriggerPanel {trig} {available} onlevel50={level50} onarm={() => trig.rearm(store, view)} />
+    <div data-tour="trigger"><TriggerPanel {trig} {available} onlevel50={level50} onarm={() => trig.rearm(store, view)} /></div>
 
     {/if}
 
@@ -1615,7 +1718,7 @@
         <LoggerView {store} session={sess} {signals} {axes} {trace} {wallOffset} bind:lv onopen={openInScope} />
       </div>
     {:else}
-    <div class="strip">
+    <div class="strip" data-tour="strip">
       <span class="badge" class:run={streaming} class:stop={!streaming}>{streaming ? 'RUN' : 'STOP'}</span>
       <button
         class="badge btn"
@@ -1677,10 +1780,10 @@
         {#if board?.apwr_ok}<button class="small primary" onclick={frontEndOn}>Turn on</button>{/if}
       </div>
     {/if}
-    <div class="overview-wrap">
+    <div class="overview-wrap" data-tour="overview">
       <Overview {store} {view} />
     </div>
-    <div class="scope-wrap">
+    <div class="scope-wrap" data-tour="plots">
       <Scope bind:this={scope} {store} {view} {signals} {axes} {trace} {trig} onmenu={scopeMenu} />
     </div>
     <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -1692,7 +1795,7 @@
       onpointerdown={startSplit}
       ondblclick={() => (listH = 190)}
     ></div>
-    <div class="markers-wrap" style="height: min({listH}px, 22vh)">
+    <div class="markers-wrap" data-tour="lists" style="height: min({listH}px, 22vh)">
       <div class="tabs">
         <button class:on={bottomTab === 'markers'} onclick={() => (bottomTab = 'markers')}>Markers <small>{view.markers.length}</small></button>
         <button class:on={bottomTab === 'events'} onclick={() => (bottomTab = 'events')}>Events <small>{trig.count.toLocaleString()}</small></button>
@@ -1741,7 +1844,7 @@
     </footer>
   </main>
 
-  <div class="meter-col" class:hidden={!rightOpen}>
+  <div class="meter-col" class:hidden={!rightOpen} data-tour="meter">
     <Meter
       {summary}
       accum={accumView}

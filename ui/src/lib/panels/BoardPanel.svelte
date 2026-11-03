@@ -173,7 +173,7 @@
 </script>
 
 {#if !unsupported}
-  <section class="board">
+  <section class="board" data-tour="board">
     <h2>Board</h2>
     {#if !board}
       <small class="muted">Asking the board…</small>
