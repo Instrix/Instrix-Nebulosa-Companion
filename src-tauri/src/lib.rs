@@ -1,6 +1,6 @@
-mod discovery;
-mod files;
-mod link;
+pub mod discovery;
+pub mod files;
+pub mod link;
 
 use link::{Conn, Events, Reply, SharedPipeline, Target};
 use nbp_core::buffer::SpanStats;
