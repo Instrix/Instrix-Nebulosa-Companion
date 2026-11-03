@@ -42,6 +42,7 @@
   import { DIVS_X, DIVS_Y, fmtTime, markerColor, markerName, type Marker, type View } from './view.svelte';
   import { fmtSI, prefixFor } from './si';
   import type { TriggerState } from './trigger.svelte';
+  import { drag as dragAct, store as save } from './drag';
 
   let {
     store,
@@ -60,6 +61,57 @@
   } = $props();
 
   const MIN_FRAME_MS = 33;
+  const WEIGHTS_KEY = 'nebulosa.plotWeights';
+  const MIN_ROW = 60;
+
+  /** relative heights of the plots, dragged with the splitters between them */
+  function loadWeights(): Record<Signal, number> {
+    try {
+      const w = JSON.parse(localStorage.getItem(WEIGHTS_KEY) ?? 'null');
+      if (w && w.i > 0 && w.v > 0 && w.p > 0) return w;
+    } catch {
+      /* storage unavailable */
+    }
+    return { i: 1, v: 1, p: 1 };
+  }
+  let weights = $state<Record<Signal, number>>(loadWeights());
+  let rowEls: Record<string, HTMLDivElement> = $state({});
+
+  function rowSplit(a: Signal, b: Signal) {
+    let ha = 0, hb = 0, wa = 0, wb = 0;
+    return {
+      start: () => {
+        ha = rowEls[a].clientHeight;
+        hb = rowEls[b].clientHeight;
+        wa = weights[a];
+        wb = weights[b];
+      },
+      move: (_dx: number, dy: number) => {
+        const d = Math.max(MIN_ROW - ha, Math.min(hb - MIN_ROW, dy));
+        const total = wa + wb;
+        weights[a] = (total * (ha + d)) / (ha + hb);
+        weights[b] = (total * (hb - d)) / (ha + hb);
+      },
+      end: () => save(WEIGHTS_KEY, $state.snapshot(weights)),
+    };
+  }
+
+  function equalize() {
+    weights = { i: 1, v: 1, p: 1 };
+    save(WEIGHTS_KEY, weights);
+  }
+
+  // every plot follows its own host's size (rows change size without the scope doing so)
+  const ro =
+    typeof ResizeObserver === 'undefined'
+      ? null
+      : new ResizeObserver(() => {
+          for (const { sig, u } of plots) {
+            const el = hosts[sig];
+            if (el && (el.clientWidth !== u.width || el.clientHeight !== u.height))
+              u.setSize({ width: el.clientWidth, height: el.clientHeight });
+          }
+        });
   const SYNC_KEY = 'nebulosa-scope';
 
   let root: HTMLDivElement;
@@ -373,6 +425,7 @@
       );
       u.over.addEventListener('wheel', onWheel(u), { passive: false });
       u.over.addEventListener('dblclick', onDbl(u));
+      ro?.observe(el);
       plots.push({ sig, u });
     });
     drawnKey = '';
@@ -539,16 +592,10 @@
 
   onMount(() => {
     raf = requestAnimationFrame(frame);
-    const ro = new ResizeObserver(() => {
-      for (const { sig, u } of plots) {
-        const el = hosts[sig];
-        if (el) u.setSize({ width: el.clientWidth, height: el.clientHeight });
-      }
-    });
-    ro.observe(root);
+    ro?.observe(root);
     return () => {
       cancelAnimationFrame(raf);
-      ro.disconnect();
+      ro?.disconnect();
       for (const p of plots) p.u.destroy();
     };
   });
@@ -619,9 +666,19 @@
     {/if}
   </div>
 
-  {#each signals as sig (sig)}
+  {#each signals as sig, k (sig)}
     {@const info = SIGNAL_INFO[sig]}
-    <div class="row">
+    {#if k > 0}
+      <div
+        class="rsplit"
+        role="separator"
+        aria-orientation="horizontal"
+        title="Drag to resize the plots; double-click: equal heights"
+        use:dragAct={rowSplit(signals[k - 1], sig)}
+        ondblclick={equalize}
+      ></div>
+    {/if}
+    <div class="row" bind:this={rowEls[sig]} style="flex: {weights[sig]} 1 0px">
       <div class="host" bind:this={hosts[sig]}></div>
       <span class="name" style="color: var({info.color})">{info.name}</span>
       {#if readout && readout.v[sig]}
@@ -777,12 +834,21 @@
   }
   .row {
     position: relative;
-    flex: 1;
-    min-height: 90px;
-    border-bottom: 1px solid var(--scope-border);
+    min-height: 60px;
   }
-  .row:last-of-type {
-    border-bottom: 0;
+  .rsplit {
+    flex: none;
+    height: 6px;
+    margin: -3px 0;
+    position: relative;
+    z-index: 3;
+    cursor: row-resize;
+    touch-action: none;
+    border-top: 1px solid var(--scope-border);
+  }
+  .rsplit:hover,
+  .rsplit:active {
+    border-top: 2px solid var(--accent);
   }
   .host {
     position: absolute;

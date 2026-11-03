@@ -28,6 +28,7 @@
   import { DemoLink, demoRequested, demoSelection } from './lib/demo';
   import { KIND_LABEL, TriggerState, type KindType, type TrigMode } from './lib/trigger.svelte';
   import EventList from './lib/EventList.svelte';
+  import { drag, stored, store as save } from './lib/drag';
 
   /** full-rate buffer sizes, MB (4 bytes per sample) */
   const BUFFER_CHOICES = [64, 128, 256, 512, 1024, 2048];
@@ -326,6 +327,24 @@
   }
 
   let bottomTab = $state<'markers' | 'events'>('markers');
+
+  // ---- sidebar widths --------------------------------------------------------
+  const LEFT_W = 280, RIGHT_W = 280;
+  let leftW = $state(stored('nebulosa.leftW', LEFT_W, (v) => v >= 200 && v <= 600));
+  let rightW = $state(stored('nebulosa.rightW', RIGHT_W, (v) => v >= 200 && v <= 600));
+
+  function colDrag(side: 'left' | 'right') {
+    let w0 = 0;
+    return {
+      start: () => (w0 = side === 'left' ? leftW : rightW),
+      move: (dx: number) => {
+        const w = Math.round(Math.min(600, Math.max(200, w0 + (side === 'left' ? dx : -dx))));
+        if (side === 'left') leftW = w;
+        else rightW = w;
+      },
+      end: () => save(side === 'left' ? 'nebulosa.leftW' : 'nebulosa.rightW', side === 'left' ? leftW : rightW),
+    };
+  }
 
   // ---- splitter between the plots and the lists ----------------------------
   const SPLIT_KEY = 'nebulosa.listHeight';
@@ -707,7 +726,32 @@
 
 <svelte:window onkeydown={onKey} />
 
-<div class="app">
+<div class="app" style="grid-template-columns: {leftW}px 1fr {rightW}px">
+  <!-- column splitters: on the grid, so the sidebars' scrolling doesn't move or clip them -->
+  <div
+    class="vsplit"
+    style="left: {leftW - 4}px"
+    role="separator"
+    aria-orientation="vertical"
+    title="Drag to resize; double-click to reset"
+    use:drag={colDrag('left')}
+    ondblclick={() => {
+      leftW = LEFT_W;
+      save('nebulosa.leftW', leftW);
+    }}
+  ></div>
+  <div
+    class="vsplit"
+    style="right: {rightW - 4}px"
+    role="separator"
+    aria-orientation="vertical"
+    title="Drag to resize; double-click to reset"
+    use:drag={colDrag('right')}
+    ondblclick={() => {
+      rightW = RIGHT_W;
+      save('nebulosa.rightW', rightW);
+    }}
+  ></div>
   <header>
     <div class="brand">
       <span class="logo">◉</span>
@@ -1191,9 +1235,22 @@
 </div>
 
 <style>
+  .vsplit {
+    position: absolute;
+    top: 48px;
+    bottom: 0;
+    width: 7px;
+    cursor: col-resize;
+    touch-action: none;
+    z-index: 5;
+  }
+  .vsplit:hover,
+  .vsplit:active {
+    background: linear-gradient(90deg, transparent 2px, var(--accent) 2px, var(--accent) 4px, transparent 4px);
+  }
   .app {
+    position: relative;
     display: grid;
-    grid-template-columns: 280px 1fr 280px;
     grid-template-rows: 48px 1fr;
     height: 100vh;
   }
