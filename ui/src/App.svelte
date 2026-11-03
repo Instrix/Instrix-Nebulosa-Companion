@@ -22,7 +22,8 @@
     type Signal,
     type TrigEvent,
   } from './lib/nbp';
-  import { fmtSI, parseSI } from './lib/si';
+  import { fmtSI, fmtRate, fmtBytes as fmtBytesSize } from './lib/si';
+  import { siInput } from './lib/siInput';
   import * as native from './lib/native';
   import * as web from './lib/webusb';
   import { DemoLink, demoRequested, demoSelection } from './lib/demo';
@@ -30,6 +31,11 @@
   import EventList from './lib/EventList.svelte';
   import Analysis from './lib/Analysis.svelte';
   import Updater from './lib/Updater.svelte';
+  import TriggerPanel from './lib/panels/TriggerPanel.svelte';
+  import SignalsPanel from './lib/panels/SignalsPanel.svelte';
+  import CalibrationPanel from './lib/panels/CalibrationPanel.svelte';
+  import ConnectPanel from './lib/panels/ConnectPanel.svelte';
+  import MathPanel from './lib/panels/MathPanel.svelte';
   import LoggerView, { type LogView } from './lib/LoggerView.svelte';
   import ExportEditor, { defaultOutput, type OutputCfg } from './lib/ExportEditor.svelte';
   import { drag, stored, store as save } from './lib/drag';
@@ -42,7 +48,6 @@
   // ---- connection ---------------------------------------------------------
   let candidates = $state<Candidate[]>([]);
   let scanning = $state(false);
-  let manualHost = $state('');
   let busy = $state(false);
   let error = $state('');
 
@@ -244,9 +249,7 @@
     return new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
   }
 
-  function fmtBytesSize(b: number) {
-    return b >= 1e9 ? `${(b / 1e9).toFixed(2)} GB` : b >= 1e6 ? `${(b / 1e6).toFixed(1)} MB` : `${(b / 1e3).toFixed(0)} kB`;
-  }
+
 
   // ---- link counters ------------------------------------------------------
   let stats = $state<DataStats | null>(null);
@@ -732,15 +735,6 @@
 
   // ---- math channel ---------------------------------------------------------
   const MATH_KEY = 'nebulosa.math';
-  const MATH_EXAMPLES = [
-    { label: 'Power in mW', expr: 'P*1000', name: 'Power', unit: 'mW' },
-    { label: 'Load resistance', expr: 'V/I', name: 'Load', unit: 'Ω' },
-    { label: 'Charge since start (mAh)', expr: 'integ(I)/3.6', name: 'Charge', unit: 'mAh' },
-    { label: 'Energy since start (mWh)', expr: 'integ(P)/3.6', name: 'Energy', unit: 'mWh' },
-    { label: 'Current, 1 ms average', expr: 'avg(I, 1ms)', name: 'I avg 1 ms', unit: 'A' },
-    { label: 'dI/dt', expr: 'ddt(I)', name: 'dI/dt', unit: 'A/s' },
-    { label: 'Current in µA, log', expr: 'log10(I/1u)', name: 'log I', unit: 'dec µA' },
-  ];
   let mathDraft = $state({ name: 'Power', unit: 'mW', expr: 'P*1000' });
   let mathError = $state('');
   try {
@@ -757,10 +751,6 @@
     save(MATH_KEY, { ...$state.snapshot(mathDraft), on: mathInfo.on });
   }
 
-  function pickMathExample(expr: string) {
-    const ex = MATH_EXAMPLES.find((x) => x.expr === expr);
-    if (ex) mathDraft = { name: ex.name, unit: ex.unit, expr: ex.expr };
-  }
 
   async function applyMath() {
     mathError = '';
@@ -1058,34 +1048,10 @@
     streaming = false;
   }
 
-  function fmtRate(hz: number) {
-    return hz >= 1e6 ? `${hz / 1e6} MS/s` : hz >= 1e3 ? `${(hz / 1e3).toFixed(hz % 1000 ? 2 : 0)} kS/s` : `${hz} S/s`;
-  }
+
 
   function fmtBytes(bps: number) {
     return bps >= 1e6 ? `${(bps / 1e6).toFixed(2)} MB/s` : `${(bps / 1e3).toFixed(0)} kB/s`;
-  }
-
-  /** an SI text field: shows `value`, writes back what parses. Pass `v` (the value) so outside changes show. */
-  function siInput(node: HTMLInputElement, p: { get: () => number; set: (v: number) => void; unit: string; v?: number }) {
-    let cur = p;
-    const show = () => (node.value = fmtSI(cur.get(), cur.unit, 4));
-    const commit = () => {
-      const v = parseSI(node.value);
-      if (isFinite(v)) cur.set(v);
-      show();
-    };
-    show();
-    node.addEventListener('change', commit);
-    return {
-      update(n: typeof p) {
-        cur = n;
-        if (document.activeElement !== node) show();
-      },
-      destroy() {
-        node.removeEventListener('change', commit);
-      },
-    };
   }
 
   onMount(() => {
@@ -1213,57 +1179,7 @@
 
   <aside>
     {#if !dev}
-      <section>
-        <h2>
-          Devices
-          <button class="ghost small" onclick={scan} disabled={scanning}>{scanning ? 'Scanning…' : 'Refresh'}</button>
-        </h2>
-        {#each candidates as c (c.key)}
-          <button class="device" onclick={() => connect(c)} disabled={busy}>
-            <span>{c.label}</span>
-            <small>{c.detail}</small>
-          </button>
-        {:else}
-          <p class="muted small">{scanning ? 'Looking…' : 'No devices found.'}</p>
-        {/each}
-
-        {#if isNative}
-          <form
-            class="row"
-            onsubmit={(e) => {
-              e.preventDefault();
-              if (manualHost.trim()) connect(native.tcpCandidate(manualHost.trim()));
-            }}
-          >
-            <input placeholder="IP address or host" bind:value={manualHost} />
-            <button type="submit" disabled={busy || !manualHost.trim()}>Connect</button>
-          </form>
-        {:else if web.webUsbAvailable}
-          <button class="primary" onclick={pair} disabled={busy}>Pair USB device…</button>
-          <p class="muted small">Browser build: USB only. Ethernet needs the desktop app.</p>
-        {:else}
-          <p class="warn small">This browser has no WebUSB. Use Chrome or Edge, or the desktop app.</p>
-        {/if}
-      </section>
-      {#if isNative}
-        <section>
-          <h2>
-            Recordings
-            <button class="ghost small" onclick={openFile} disabled={busy}>Open file…</button>
-          </h2>
-          <div class="recs">
-            {#each recFiles as f (f.path)}
-              <button class="device" onclick={() => openRecording(f.path)} disabled={busy} title={f.path}>
-                <span>{f.name.replace(/\.nbrec$/, '')}</span>
-                <small>{fmtBytesSize(f.bytes)} · {new Date(f.modified).toLocaleString()}</small>
-              </button>
-            {:else}
-              <p class="muted small">None yet. Connect and press REC.</p>
-            {/each}
-          </div>
-          {#if recDir}<small class="muted path" title={recDir}>{recDir}</small>{/if}
-        </section>
-      {/if}
+      <ConnectPanel {candidates} {scanning} {busy} {recFiles} {recDir} onscan={scan} onconnect={connect} onpair={pair} onopen={openRecording} onopenfile={openFile} />
     {:else if playback}
       <section>
         <h2>Recording <button class="ghost small" onclick={disconnect}>Close</button></h2>
@@ -1402,235 +1318,15 @@
       <button class="ghost" onclick={newSession} disabled={!sess.has_data}>New session</button>
     </section>
     {:else}
-    <section>
-      <h2>Trigger</h2>
-      <div class="seg wide" role="group" aria-label="Display mode">
-        {#each [['roll', 'Roll'], ['auto', 'Auto'], ['normal', 'Normal'], ['single', 'Single']] as [m, label] (m)}
-          <button class:on={trig.mode === m} onclick={() => setMode(m as TrigMode)}>{label}</button>
-        {/each}
-      </div>
-      {#if trig.mode === 'roll'}
-        <label class="check" title="Detect and list events while free-running">
-          <input type="checkbox" bind:checked={trig.log} /> Log events
-        </label>
-      {/if}
-      {#if trig.detecting}
-        {@const unit = SIGNAL_INFO[trig.source].unit}
-        <div class="axis">
-          <span>Source</span>
-          <div class="seg">
-            {#each available as sg (sg)}
-              <button class:on={trig.source === sg} onclick={() => (trig.source = sg)} style="color: {trig.source === sg ? '' : `var(${SIGNAL_INFO[sg].color})`}">{SIGNAL_INFO[sg].sym}</button>
-            {/each}
-          </div>
-        </div>
-        <label>
-          Type
-          <select bind:value={trig.kind}>
-            {#each Object.entries(KIND_LABEL) as [k, label] (k)}<option value={k as KindType}>{label}</option>{/each}
-          </select>
-        </label>
-
-        {#if trig.kind === 'edge'}
-          <div class="axis">
-            <span>Edge</span>
-            <div class="seg">
-              <button class:on={trig.slope === 'rise'} onclick={() => (trig.slope = 'rise')}>↑ Rise</button>
-              <button class:on={trig.slope === 'fall'} onclick={() => (trig.slope = 'fall')}>↓ Fall</button>
-              <button class:on={trig.slope === 'both'} onclick={() => (trig.slope = 'both')} title="Either">↕</button>
-            </div>
-          </div>
-        {:else if trig.kind === 'window'}
-          <div class="axis">
-            <span>When</span>
-            <div class="seg">
-              <button class:on={trig.when === 'enter'} onclick={() => (trig.when = 'enter')} title="Entering the band">Enter</button>
-              <button class:on={trig.when === 'exit'} onclick={() => (trig.when = 'exit')} title="Leaving the band">Exit</button>
-              <button class:on={trig.when === 'both'} onclick={() => (trig.when = 'both')}>Both</button>
-            </div>
-          </div>
-        {:else}
-          <div class="axis">
-            <span>{trig.kind === 'pulse' ? 'Pulse' : 'Stays'}</span>
-            <div class="seg">
-              <button class:on={trig.polarity === 'high'} onclick={() => (trig.polarity = 'high')} title="Above the level">Above</button>
-              <button class:on={trig.polarity === 'low'} onclick={() => (trig.polarity = 'low')} title="Below the level">Below</button>
-            </div>
-          </div>
-        {/if}
-
-        {#if trig.kind === 'window'}
-          <div class="row">
-            <label>Low <input use:siInput={{ get: () => trig.low, set: (v) => (trig.low = v), unit, v: trig.low }} /></label>
-            <label>High <input use:siInput={{ get: () => trig.high, set: (v) => (trig.high = v), unit, v: trig.high }} /></label>
-          </div>
-        {:else}
-          <div class="row">
-            <label>Level <input use:siInput={{ get: () => trig.level, set: (v) => (trig.level = v), unit, v: trig.level }} /></label>
-            <button class="ghost small fifty" onclick={level50} title="Halfway between the screen's min and max">50%</button>
-          </div>
-        {/if}
-
-        {#if trig.kind === 'pulse'}
-          <label>
-            Width
-            <select bind:value={trig.cond}>
-              <option value="any">any</option>
-              <option value="gt">longer than</option>
-              <option value="lt">shorter than</option>
-              <option value="within">between</option>
-            </select>
-          </label>
-          {#if trig.cond !== 'any'}
-            <div class="row">
-              {#if trig.cond !== 'lt'}
-                <label>{trig.cond === 'within' ? 'Min' : 'Width >'} <input use:siInput={{ get: () => trig.minWidth, set: (v) => (trig.minWidth = Math.max(0, v)), unit: 's' }} /></label>
-              {/if}
-              {#if trig.cond !== 'gt'}
-                <label>{trig.cond === 'within' ? 'Max' : 'Width <'} <input use:siInput={{ get: () => trig.maxWidth, set: (v) => (trig.maxWidth = Math.max(0, v)), unit: 's' }} /></label>
-              {/if}
-            </div>
-          {/if}
-        {:else if trig.kind === 'timeout'}
-          <label title="Fires when the signal has stayed on its side of the level this long">
-            For longer than
-            <input use:siInput={{ get: () => trig.timeout, set: (v) => (trig.timeout = Math.max(0, v)), unit: 's' }} />
-          </label>
-        {/if}
-
-        <details class="more">
-          <summary>Noise, holdoff, filter</summary>
-          <div class="row">
-            <label title="Re-arm only after the signal has gone this far back past the level: noise on the level doesn't fire it again and again">
-              Noise reject
-              <input use:siInput={{ get: () => trig.hysteresis, set: (v) => (trig.hysteresis = Math.abs(v)), unit }} />
-            </label>
-            <label title="Minimum time between triggers">
-              Holdoff
-              <input use:siInput={{ get: () => trig.holdoff, set: (v) => (trig.holdoff = Math.max(0, v)), unit: 's' }} />
-            </label>
-          </div>
-          <label title="Trigger on a moving average of the source over this time (its delay is taken out of the event times); 0: off">
-            Filter (moving average)
-            <input use:siInput={{ get: () => trig.filter, set: (v) => (trig.filter = Math.max(0, v)), unit: 's' }} />
-          </label>
-        </details>
-
-        {#if trig.mode !== 'roll'}
-          <label>
-            Position {Math.round(trig.position * 100)} % pre-trigger
-            <input type="range" min="0.1" max="0.9" step="0.05" bind:value={trig.position} />
-          </label>
-        {/if}
-        {#if trig.mode === 'single'}
-          <button class="primary" onclick={() => trig.rearm(store, view)}>Arm</button>
-        {/if}
-      {/if}
-    </section>
+    <TriggerPanel {trig} {available} onlevel50={level50} onarm={() => trig.rearm(store, view)} />
 
     {/if}
 
-    <section>
-      <h2>Signals</h2>
-      <div class="chips">
-        {#each available as s (s)}
-          <label class="chip" style="--c: var({SIGNAL_INFO[s].color})">
-            <input type="checkbox" bind:checked={shown[s]} />
-            {SIGNAL_INFO[s].name}
-          </label>
-        {/each}
-      </div>
-      <div class="axis">
-        <span title="Each pixel column covers many samples: the line is their mean, the bands their min–max range and ±1 standard deviation">Trace</span>
-        <div class="seg">
-          <button class:on={trace.mean} onclick={() => (trace.mean = !trace.mean)} title="Mean line">Mean</button>
-          <button class:on={trace.range} onclick={() => (trace.range = !trace.range)} title="Min–max band">Min–max</button>
-          <button class:on={trace.sigma} onclick={() => (trace.sigma = !trace.sigma)} title="Mean ± 1 standard deviation">±σ</button>
-        </div>
-      </div>
-      {#each signals as s (s)}
-        {@const a = axes[s]}
-        {@const unit = SIGNAL_INFO[s].unit}
-        <div class="axis">
-          <span style="color: var({SIGNAL_INFO[s].color})">{SIGNAL_INFO[s].name} axis</span>
-          <div class="seg">
-            <button class:on={a.log} onclick={() => (a.log = !a.log)} title="Logarithmic scale">Log</button>
-            <button class:on={a.auto} onclick={() => (a.auto = true)}>Auto</button>
-            <button class:on={!a.auto} onclick={() => (a.auto = false)}>Fixed</button>
-          </div>
-        </div>
-        {#if !a.auto}
-          <div class="row">
-            <label>Min <input use:siInput={{ get: () => a.min, set: (v) => (a.min = v), unit }} /></label>
-            <label>Max <input use:siInput={{ get: () => a.max, set: (v) => (a.max = v), unit }} /></label>
-          </div>
-        {/if}
-      {/each}
-      <label>
-        Sample buffer (RAM)
-        <select bind:value={bufferMB} onchange={applyBuffer}>
-          {#each BUFFER_CHOICES as mb (mb)}<option value={mb}>{mb >= 1024 ? `${mb / 1024} GB` : `${mb} MB`}</option>{/each}
-        </select>
-        <small class="muted">every sample: {fmtTime(bufferS)} at {fmtRate(rateHz || 2e6)}</small>
-      </label>
-    </section>
+    <SignalsPanel {available} {signals} bind:shown bind:trace bind:axes bind:bufferMB bufferChoices={BUFFER_CHOICES} {bufferS} {rateHz} onbuffer={applyBuffer} />
 
-    <section>
-      <details open={mathInfo.on}>
-        <summary><h2>Math channel</h2></summary>
-        <div class="cal">
-          <label>
-            Example
-            <select onchange={(e) => pickMathExample((e.currentTarget as HTMLSelectElement).value)}>
-              <option value="">Choose…</option>
-              {#each MATH_EXAMPLES as ex (ex.expr)}<option value={ex.expr}>{ex.label}</option>{/each}
-            </select>
-          </label>
-          <label title="I (A), V (V), P (W), t (s); + - * / ^; abs sqrt exp ln log10 min max; avg(x, 1ms) integ(x) ddt(x); numbers with SI prefixes (10m, 1u)">
-            Expression
-            <input class="mono" bind:value={mathDraft.expr} placeholder="P*1000" onkeydown={(e) => e.key === 'Enter' && applyMath()} />
-          </label>
-          <div class="row">
-            <label>Name <input bind:value={mathDraft.name} placeholder="Math" /></label>
-            <label>Unit <input bind:value={mathDraft.unit} placeholder="mW" /></label>
-          </div>
-          <div class="row">
-            <button class="primary" onclick={applyMath}>{mathInfo.on ? 'Update' : 'Apply'}</button>
-            {#if mathInfo.on}<button class="ghost" onclick={mathOff}>Off</button>{/if}
-          </div>
-          {#if mathError}<p class="error small">{mathError}</p>{/if}
-          <p class="muted small">Computed on every sample, as the 4th signal: plots, stats, markers, triggers, analysis and CSV.</p>
-        </div>
-      </details>
-    </section>
+    <MathPanel bind:draft={mathDraft} error={mathError} onapply={applyMath} onoff={mathOff} />
 
-    <section>
-      <details>
-        <summary><h2>Calibration</h2></summary>
-        <div class="cal">
-          <p class="muted small">Firmware scaling by default. I = code × full scale / 16384; V = code × scale + offset.</p>
-          {#each Array.from({ length: CURRENT_RANGES }, (_, r) => r) as r (r)}
-            <label class="inline">
-              Range {r} full scale
-              <input use:siInput={{ get: () => cal.i_fs[r], set: (v) => (cal.i_fs[r] = v), unit: 'A' }} />
-            </label>
-          {/each}
-          <label class="inline">
-            Voltage scale (per code)
-            <input use:siInput={{ get: () => cal.v_scale, set: (v) => (cal.v_scale = v), unit: 'V' }} />
-          </label>
-          <label class="inline">
-            Voltage offset
-            <input use:siInput={{ get: () => cal.v_offset, set: (v) => (cal.v_offset = v), unit: 'V' }} />
-          </label>
-          <div class="row">
-            <button class="primary" onclick={() => applyCal()}>Apply</button>
-            <button class="ghost" onclick={resetCal}>Firmware defaults</button>
-          </div>
-          {#if calNote}<p class="muted small">{calNote}</p>{/if}
-        </div>
-      </details>
-    </section>
+    <CalibrationPanel bind:cal ranges={CURRENT_RANGES} note={calNote} onapply={() => applyCal()} onreset={resetCal} />
 
     {#if error}
       <p class="error">{error}</p>
@@ -1842,122 +1538,11 @@
     display: flex;
     flex-direction: column;
   }
-  section {
-    padding: 12px 0;
-    border-bottom: 1px solid var(--border);
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-  }
-  h2 {
-    font-size: 12px;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--muted);
-    margin: 0;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-  }
-  details summary {
-    cursor: pointer;
-    list-style: none;
-  }
-  details summary h2 {
-    display: inline;
-  }
-  details summary::before {
-    content: '▸ ';
-    color: var(--muted);
-  }
-  details[open] summary::before {
-    content: '▾ ';
-  }
-  .cal {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    margin-top: 8px;
-  }
-  .device {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 2px;
-    text-align: left;
-  }
-  .device small {
-    color: var(--muted);
-  }
-  dl {
-    display: grid;
-    grid-template-columns: auto 1fr;
-    gap: 4px 12px;
-    margin: 0;
-    font-size: 13px;
-  }
-  dt {
-    color: var(--muted);
-  }
-  dd {
-    margin: 0;
-    font-variant-numeric: tabular-nums;
-  }
-  label {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    font-size: 13px;
-  }
-  label.check {
-    flex-direction: row;
-    align-items: center;
-  }
-  label.inline {
-    font-size: 12px;
-  }
-  .chips {
-    display: flex;
-    gap: 6px;
-    flex-wrap: wrap;
-  }
-  .chip {
-    flex-direction: row;
-    align-items: center;
-    gap: 4px;
-    padding: 3px 8px;
-    border: 1px solid var(--border);
-    border-left: 3px solid var(--c);
-    border-radius: 6px;
-    font-size: 12px;
-  }
-  .row {
-    display: flex;
-    gap: 8px;
-  }
-  .row > * {
-    flex: 1;
-  }
   main {
     display: flex;
     flex-direction: column;
     min-width: 0;
     min-height: 0;
-  }
-  details.out summary {
-    cursor: pointer;
-    list-style: none;
-    margin-bottom: 6px;
-  }
-  details.out summary h2 {
-    display: inline;
-  }
-  details.out summary::before {
-    content: '▸ ';
-    color: var(--muted);
-  }
-  details.out[open] summary::before {
-    content: '▾ ';
   }
   .modes {
     display: inline-flex;
@@ -2036,12 +1621,6 @@
     border-color: var(--danger);
     color: #fff;
   }
-  .seg.wide {
-    display: flex;
-  }
-  .seg.wide button {
-    flex: 1;
-  }
   .autoset {
     font-weight: 600;
     border-color: var(--accent);
@@ -2064,39 +1643,10 @@
       opacity: 0.75;
     }
   }
-  .recs {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    max-height: 260px;
-    overflow-y: auto;
-  }
-  .path {
-    font-size: 11px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .wrap {
-    word-break: break-all;
-  }
-  .note {
-    color: var(--ok);
-    word-break: break-word;
-  }
-  .fifty {
-    flex: none !important;
-    align-self: flex-end;
-    margin-bottom: 2px;
-  }
   .tdiv {
     display: inline-flex;
     align-items: center;
     gap: 4px;
-  }
-  .mono {
-    font-family: ui-monospace, monospace;
-    font-variant-numeric: tabular-nums;
   }
   .legend {
     margin-left: auto;
@@ -2200,12 +1750,6 @@
     color: var(--muted);
     margin-left: 4px;
   }
-  details.more summary {
-    cursor: pointer;
-    font-size: 12px;
-    color: var(--muted);
-    margin-bottom: 6px;
-  }
   footer {
     display: flex;
     flex-wrap: wrap;
@@ -2216,31 +1760,26 @@
     font-variant-numeric: tabular-nums;
     color: var(--muted);
   }
-  .axis {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    font-size: 13px;
-  }
-  .seg {
-    display: inline-flex;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    overflow: hidden;
-  }
-  .seg button {
-    border: 0;
-    border-radius: 0;
-    background: transparent;
-    padding: 3px 10px;
-    font-size: 12px;
-  }
-  .seg button.on {
-    background: var(--accent);
-    color: #fff;
-  }
   .bad {
     color: var(--danger);
+  }
+  .row {
+    display: flex;
+    gap: 8px;
+  }
+  .row > * {
+    flex: 1;
+  }
+  .wrap {
+    word-break: break-all;
+  }
+  .note {
+    color: var(--ok);
+    word-break: break-word;
+  }
+  .mono {
+    font-family: ui-monospace, monospace;
+    font-variant-numeric: tabular-nums;
   }
   .error {
     color: var(--danger);
@@ -2255,5 +1794,197 @@
   }
   .muted {
     color: var(--muted);
+  }
+  /* the sidebar's panels (components too): shared look */
+  aside :global {
+    section {
+      padding: 12px 0;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    h2 {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+      margin: 0;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    details summary {
+      cursor: pointer;
+      list-style: none;
+    }
+    details summary h2 {
+      display: inline;
+    }
+    details summary::before {
+      content: '▸ ';
+      color: var(--muted);
+    }
+    details[open] summary::before {
+      content: '▾ ';
+    }
+    .cal {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-top: 8px;
+    }
+    .device {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 2px;
+      text-align: left;
+    }
+    .device small {
+      color: var(--muted);
+    }
+    dl {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 4px 12px;
+      margin: 0;
+      font-size: 13px;
+    }
+    dt {
+      color: var(--muted);
+    }
+    dd {
+      margin: 0;
+      font-variant-numeric: tabular-nums;
+    }
+    label {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      font-size: 13px;
+    }
+    label.check {
+      flex-direction: row;
+      align-items: center;
+    }
+    label.inline {
+      font-size: 12px;
+    }
+    .chips {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .chip {
+      flex-direction: row;
+      align-items: center;
+      gap: 4px;
+      padding: 3px 8px;
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--c);
+      border-radius: 6px;
+      font-size: 12px;
+    }
+    .row {
+      display: flex;
+      gap: 8px;
+    }
+    .row > * {
+      flex: 1;
+    }
+    details.out summary {
+      cursor: pointer;
+      list-style: none;
+      margin-bottom: 6px;
+    }
+    details.out summary h2 {
+      display: inline;
+    }
+    details.out summary::before {
+      content: '▸ ';
+      color: var(--muted);
+    }
+    details.out[open] summary::before {
+      content: '▾ ';
+    }
+    .seg.wide {
+      display: flex;
+    }
+    .seg.wide button {
+      flex: 1;
+    }
+    .recs {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      max-height: 260px;
+      overflow-y: auto;
+    }
+    .path {
+      font-size: 11px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .wrap {
+      word-break: break-all;
+    }
+    .note {
+      color: var(--ok);
+      word-break: break-word;
+    }
+    .fifty {
+      flex: none !important;
+      align-self: flex-end;
+      margin-bottom: 2px;
+    }
+    .mono {
+      font-family: ui-monospace, monospace;
+      font-variant-numeric: tabular-nums;
+    }
+    details.more summary {
+      cursor: pointer;
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
+    .axis {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 13px;
+    }
+    .seg {
+      display: inline-flex;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      overflow: hidden;
+    }
+    .seg button {
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+      padding: 3px 10px;
+      font-size: 12px;
+    }
+    .seg button.on {
+      background: var(--accent);
+      color: #fff;
+    }
+    .error {
+      color: var(--danger);
+      font-size: 13px;
+      word-break: break-word;
+    }
+    .warn {
+      color: var(--warn);
+    }
+    .small {
+      font-size: 12px;
+    }
+    .muted {
+      color: var(--muted);
+    }
   }
 </style>

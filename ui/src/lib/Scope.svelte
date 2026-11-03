@@ -151,7 +151,7 @@
   );
 
   function cssVar(name: string) {
-    return getComputedStyle(root).getPropertyValue(name).trim();
+    return getComputedStyle(root ?? document.documentElement).getPropertyValue(name).trim();
   }
 
   function yRange(sig: Signal) {

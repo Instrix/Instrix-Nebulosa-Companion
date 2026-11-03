@@ -61,7 +61,7 @@
   let span = $state<[number, number]>([0, 1]);
 
   function cssVar(n: string) {
-    return getComputedStyle(root).getPropertyValue(n).trim();
+    return getComputedStyle(root ?? document.documentElement).getPropertyValue(n).trim();
   }
 
   /** the span lv describes, now */

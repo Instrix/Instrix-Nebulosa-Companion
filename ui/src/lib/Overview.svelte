@@ -25,7 +25,7 @@
   let newer = $state('');
 
   function cssVar(name: string) {
-    return getComputedStyle(wrap).getPropertyValue(name).trim();
+    return getComputedStyle(wrap ?? document.documentElement).getPropertyValue(name).trim();
   }
 
   function axisSpan(): [number, number] {

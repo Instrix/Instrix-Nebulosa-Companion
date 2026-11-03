@@ -77,3 +77,13 @@ export function logSplits(_u: unknown, _i: number, min: number, max: number): nu
     }
   return out.length >= 2 ? out : evenSplits(4)(_u, _i, min, max);
 }
+
+/** bytes, with a unit: 512 B, 12 kB, 3.4 MB, 1.2 GB, 2.0 TB */
+export function fmtBytes(b: number): string {
+  return b >= 1e12 ? `${(b / 1e12).toFixed(1)} TB` : b >= 1e9 ? `${(b / 1e9).toFixed(2)} GB` : b >= 1e6 ? `${(b / 1e6).toFixed(1)} MB` : b >= 1e3 ? `${(b / 1e3).toFixed(0)} kB` : `${b.toFixed(0)} B`;
+}
+
+/** samples per second: 2 MS/s, 125 kS/s, 7.81 kS/s */
+export function fmtRate(hz: number): string {
+  return hz >= 1e6 ? `${hz / 1e6} MS/s` : hz >= 1e3 ? `${(hz / 1e3).toFixed(hz % 1000 ? 2 : 0)} kS/s` : `${hz} S/s`;
+}
