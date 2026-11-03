@@ -17,6 +17,7 @@
     onjump,
     onclear,
     onexport,
+    onmenu,
   }: {
     trig: TriggerState;
     /** the source's unit (peak, mean) */
@@ -28,6 +29,8 @@
     onjump: (e: TrigEvent) => void;
     onclear: () => void;
     onexport: () => void;
+    /** right-click on an event, or on the table (no event) */
+    onmenu?: (m: MouseEvent, e: TrigEvent | null) => void;
   } = $props();
 
   const rows = $derived.by(() => {
@@ -75,7 +78,8 @@
     <button class="ghost small" onclick={onexport} disabled={!summary}>CSV</button>
     <button class="ghost small" onclick={onclear} disabled={!summary}>Clear</button>
   </div>
-  <div class="list">
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div class="list" oncontextmenu={(m) => onmenu?.(m, null)}>
     <table>
       <thead>
         <tr>
@@ -90,7 +94,7 @@
       </thead>
       <tbody>
         {#each rows as e (e.seq)}
-          <tr class:shown={trig.shown != null && Math.abs(trig.shown - e.t) < 1e-9} onclick={() => onjump(e)}>
+          <tr class:shown={trig.shown != null && Math.abs(trig.shown - e.t) < 1e-9} onclick={() => onjump(e)} oncontextmenu={(m) => onmenu?.(m, e)}>
             <td class="l muted">{e.seq + 1}</td>
             <td>{fmtTime(e.t - origin)}</td>
             <td class="l">{EVENT_LABEL[e.what]}</td>

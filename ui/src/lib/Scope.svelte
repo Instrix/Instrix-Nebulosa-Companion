@@ -1,5 +1,6 @@
 <script lang="ts" module>
   import type { Signal } from './nbp';
+  import type { Marker as MarkerT } from './view.svelte';
 
   export interface AxisCfg {
     auto: boolean;
@@ -14,6 +15,21 @@
     mean: boolean;
     range: boolean;
     sigma: boolean;
+  }
+
+  /** where a right-click was */
+  export interface ScopeSpot {
+    /** s, FPGA time */
+    t: number;
+    /** the right edge on screen then (the view rolls on while the menu is open) */
+    end: number;
+    /** on a plot: its signal and the value at the pointer */
+    sig?: Signal;
+    value?: number;
+    /** the plot's Y range on screen */
+    range?: [number, number];
+    /** the marker there, if any */
+    marker?: MarkerT;
   }
 
   /** the math channel's name, unit and expression (set in the Math panel) */
@@ -65,6 +81,7 @@
     axes,
     trace,
     trig,
+    onmenu,
   }: {
     store: SampleStore;
     view: View;
@@ -72,6 +89,8 @@
     axes: Record<Signal, AxisCfg>;
     trace: TraceCfg;
     trig: TriggerState;
+    /** a right-click: on a plot (its signal, the time and value there) or on a marker */
+    onmenu?: (e: MouseEvent, at: ScopeSpot) => void;
   } = $props();
 
   const MIN_FRAME_MS = 33;
@@ -440,6 +459,7 @@
       );
       u.over.addEventListener('wheel', onWheel(u), { passive: false });
       u.over.addEventListener('dblclick', onDbl(u));
+      u.over.addEventListener('contextmenu', onCtx(sig, u));
       // before uPlot's own mousedown (selection): grab a trigger level line
       u.over.addEventListener('mousedown', levelDown(sig, u), { capture: true });
       u.over.addEventListener('mousemove', levelHover(sig, u));
@@ -547,6 +567,45 @@
       view.hold(store);
       view.addSingle(u.posToVal(e.offsetX, 'x'));
     };
+  }
+
+  // ---- right-click -------------------------------------------------------------
+  /** the marker at time t: a single one within a few pixels, else the active / shortest dual one around t */
+  function markerAt(t: number, pxPerS: number): Marker | undefined {
+    let best: Marker | undefined, bestD = GRAB_PX + 1;
+    for (const m of view.markers) {
+      if (m.t1 != null) continue;
+      const d = Math.abs(m.t0 - t) * pxPerS;
+      if (d < bestD) [best, bestD] = [m, d];
+    }
+    if (best) return best;
+    const around = view.markers.filter((m) => m.t1 != null && m.t0 <= t && t <= m.t1);
+    return around.find((m) => m.id === view.active) ?? around.sort((a, b) => a.t1! - a.t0 - (b.t1! - b.t0))[0];
+  }
+
+  function onCtx(sig: Signal, u: uPlot) {
+    return (e: MouseEvent) => {
+      if (!onmenu) return;
+      // client coordinates: the target can be a child of the overlay (the cursor lines)
+      const r = u.over.getBoundingClientRect();
+      const t = u.posToVal(e.clientX - r.left, 'x');
+      const value = u.posToVal(e.clientY - r.top, 'y');
+      const y = u.scales.y;
+      onmenu(e, {
+        t,
+        sig,
+        value: isFinite(value) ? value : undefined,
+        range: y.min != null && y.max != null ? [y.min, y.max] : undefined,
+        end: span[1],
+        marker: markerAt(t, area.width / (span[1] - span[0])),
+      });
+    };
+  }
+
+  function markerCtx(e: MouseEvent, m: Marker) {
+    if (!onmenu) return;
+    view.active = m.id;
+    onmenu(e, { t: timeAtClient(e.clientX), end: span[1], marker: m });
   }
 
   function markersKey() {
@@ -698,15 +757,16 @@
           class:c0={g.c0}
           class:c1={g.c1}
           style="left: {g.x0}px; width: {Math.max(2, g.x1 - g.x0)}px; --m: {col}"
-          onpointerdown={(e) => startDrag(e, g.m, 'both')}
+          onpointerdown={(e) => e.button === 0 && startDrag(e, g.m, 'both')}
           onpointermove={moveDrag}
           onpointerup={endDrag}
+          oncontextmenu={(e) => markerCtx(e, g.m)}
         >
           {#if !g.c0}
-            <span class="handle l" onpointerdown={(e) => startDrag(e, g.m, 0)} onpointermove={moveDrag} onpointerup={endDrag}></span>
+            <span class="handle l" onpointerdown={(e) => e.button === 0 && startDrag(e, g.m, 0)} onpointermove={moveDrag} onpointerup={endDrag}></span>
           {/if}
           {#if !g.c1}
-            <span class="handle r" onpointerdown={(e) => startDrag(e, g.m, 1)} onpointermove={moveDrag} onpointerup={endDrag}></span>
+            <span class="handle r" onpointerdown={(e) => e.button === 0 && startDrag(e, g.m, 1)} onpointermove={moveDrag} onpointerup={endDrag}></span>
           {/if}
           <span class="tag">
             {markerName(g.m)} Δt {fmtTime(g.m.t1! - g.m.t0)}
@@ -719,9 +779,10 @@
           class="flag"
           class:active
           style="left: {g.x0}px; --m: {col}"
-          onpointerdown={(e) => startDrag(e, g.m, 'both')}
+          onpointerdown={(e) => e.button === 0 && startDrag(e, g.m, 'both')}
           onpointermove={moveDrag}
           onpointerup={endDrag}
+          oncontextmenu={(e) => markerCtx(e, g.m)}
         >
           <span class="tag">
             {markerName(g.m)}

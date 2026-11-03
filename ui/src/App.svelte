@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
-  import Scope, { SIGNAL_INFO, mathInfo, type AxisCfg, type TraceCfg } from './lib/Scope.svelte';
+  import Scope, { SIGNAL_INFO, mathInfo, type AxisCfg, type ScopeSpot, type TraceCfg } from './lib/Scope.svelte';
+  import ContextMenu from './lib/ContextMenu.svelte';
+  import { openMenu, type MenuEntry } from './lib/menu.svelte';
   import Overview from './lib/Overview.svelte';
   import MarkerList from './lib/MarkerList.svelte';
   import Meter, { type AccumView, type MarkerRow, type Scope as MeterScope, type Summary } from './lib/Meter.svelte';
@@ -27,7 +29,7 @@
   import * as native from './lib/native';
   import * as web from './lib/webusb';
   import { DemoLink, demoRequested, demoSelection } from './lib/demo';
-  import { KIND_LABEL, TriggerState, type KindType, type TrigMode } from './lib/trigger.svelte';
+  import { EVENT_LABEL, KIND_LABEL, TriggerState, type KindType, type TrigMode } from './lib/trigger.svelte';
   import EventList from './lib/EventList.svelte';
   import Analysis from './lib/Analysis.svelte';
   import Updater from './lib/Updater.svelte';
@@ -892,6 +894,150 @@
     view.end = mid + view.windowS / 2;
   }
 
+  // ---- right-click menus --------------------------------------------------------
+  function analyzeMarker(id: number) {
+    view.active = id;
+    openAnalysis();
+  }
+
+  function exportMarker(id: number) {
+    view.active = id;
+    exportCsv();
+  }
+
+  /** what can be done with one marker */
+  function markerItems(id: number): MenuEntry[] {
+    const m = view.markers.find((x) => x.id === id);
+    if (!m) return [];
+    const dual = m.t1 != null;
+    return [
+      { head: dual ? `${markerName(m)} · Δt ${fmtTime(m.t1! - m.t0)}` : markerName(m) },
+      { label: 'Zoom to it', run: () => zoomToMarker(id) },
+      ...(dual
+        ? [
+            { label: 'Analyze…', run: () => analyzeMarker(id) },
+            ...(isNative ? [{ label: 'Export samples to CSV…', run: () => exportMarker(id) }] : []),
+          ]
+        : []),
+      { label: 'Delete', hint: 'Del', danger: true, run: () => view.remove(id) },
+    ];
+  }
+
+  function allMarkerItems(): MenuEntry[] {
+    const n = view.markers.length;
+    const duals = view.markers.filter((m) => m.t1 != null).length;
+    return [
+      { label: `Delete all markers${n ? ` (${n})` : ''}`, danger: true, disabled: !n, run: () => view.clearMarkers() },
+      ...(duals && duals < n
+        ? [
+            { label: `Delete the dual markers (${duals})`, danger: true, run: () => view.markers.filter((m) => m.t1 != null).forEach((m) => view.remove(m.id)) },
+            { label: `Delete the single markers (${n - duals})`, danger: true, run: () => view.markers.filter((m) => m.t1 == null).forEach((m) => view.remove(m.id)) },
+          ]
+        : []),
+    ];
+  }
+
+  /** puts the trigger on `sig` at `v` (a window: the same width, centred on v) */
+  function triggerAt(sig: Signal, v: number) {
+    trig.source = sig;
+    if (trig.kind === 'window') {
+      const h = Math.abs(trig.high - trig.low) / 2 || Math.abs(v) * 0.1 || 1e-6;
+      trig.low = v - h;
+      trig.high = v + h;
+    } else trig.level = v;
+    if (trig.mode === 'roll') trig.mode = 'auto';
+  }
+
+  /** HOLD where the screen was at the right-click (LIVE moves on while the menu is open) */
+  function holdAt(at: ScopeSpot) {
+    if (!view.live) return;
+    view.live = false;
+    view.end = at.end;
+  }
+
+  function scopeMenu(e: MouseEvent, at: ScopeSpot) {
+    const items: MenuEntry[] = [];
+    if (at.marker) items.push(...markerItems(at.marker.id), { sep: true });
+    if (at.sig && hasData) {
+      const info = SIGNAL_INFO[at.sig];
+      const w = view.timeDiv;
+      items.push(
+        { label: 'Add marker here', hint: 'dbl-click', run: () => (holdAt(at), view.addSingle(at.t)) },
+        { label: 'Add dual marker here', run: () => (holdAt(at), view.addDual(at.t - w / 2, at.t + w / 2)) },
+      );
+      if (at.value != null && (!axes[at.sig].log || at.value > 0))
+        items.push({ label: `Trigger on ${info.name.toLowerCase()} at ${fmtSI(at.value, info.unit, 3)}`, run: () => triggerAt(at.sig!, at.value!) });
+      items.push({ sep: true });
+    }
+    items.push(
+      { label: view.live ? 'Hold' : 'Live', hint: 'Space', run: () => (view.live ? holdAt(at) : (view.live = true)) },
+      { label: 'Zoom in here', hint: '+', disabled: view.divIndex === 0, run: () => (holdAt(at), view.zoom(store, -1, at.t)) },
+      { label: 'Zoom out', hint: '−', disabled: view.divIndex === TIME_DIVS.length - 1, run: () => view.zoom(store, 1, at.t) },
+      { label: 'Autoset', disabled: !hasData, run: autoset },
+    );
+    if (at.sig) {
+      const sig = at.sig, ax = axes[sig], range = at.range;
+      items.push(
+        { sep: true },
+        { head: `${SIGNAL_INFO[sig].name} axis` },
+        { label: 'Auto range', checked: ax.auto, run: () => (ax.auto = true) },
+        {
+          label: 'Fixed at this range',
+          checked: !ax.auto,
+          disabled: !range,
+          run: () => {
+            if (!range) return;
+            [ax.min, ax.max] = range;
+            ax.auto = false;
+          },
+        },
+        { label: 'Logarithmic', checked: ax.log, run: () => (ax.log = !ax.log) },
+        { label: `Hide ${SIGNAL_INFO[sig].name.toLowerCase()}`, disabled: signals.length < 2, run: () => (shown[sig] = false) },
+      );
+    }
+    items.push(
+      { sep: true },
+      ...allMarkerItems(),
+      { sep: true },
+      { label: view.selection ? 'Analyze the active marker…' : 'Analyze the screen…', disabled: !hasData, run: openAnalysis },
+      { label: 'Save as PNG…', disabled: !hasData, run: exportPng },
+    );
+    openMenu(e, items);
+  }
+
+  function markerListMenu(e: MouseEvent, id: number | null) {
+    if (id != null) view.active = id;
+    openMenu(e, [
+      ...(id != null ? markerItems(id) : []),
+      { sep: true },
+      { label: 'Add marker', hint: 'M', disabled: !hasData, run: addSingleMarker },
+      { label: 'Add dual marker', hint: 'D', disabled: !hasData, run: addDualMarker },
+      { sep: true },
+      ...allMarkerItems(),
+    ]);
+  }
+
+  function eventMenu(e: MouseEvent, ev: TrigEvent | null) {
+    openMenu(e, [
+      ...(ev
+        ? [
+            { head: `Event ${ev.seq + 1} · ${EVENT_LABEL[ev.what]}` },
+            { label: 'Show it', run: () => jumpToEvent(ev) },
+            {
+              label: 'Mark it (single marker)',
+              run: () => (jumpToEvent(ev), view.addSingle(ev.t)),
+            },
+            ...(ev.width != null && ev.width > 0
+              ? [{ label: 'Mark its width (dual marker)', run: () => (jumpToEvent(ev), view.addDual(ev.t - ev.width!, ev.t)) }]
+              : []),
+            { sep: true } as const,
+          ]
+        : []),
+      { label: 'Export events to CSV…', disabled: !trig.count, run: exportEvents },
+      { label: 'Clear events', danger: true, disabled: !trig.count, run: () => trig.clearLog(activeLink) },
+    ]);
+  }
+
   function addSingleMarker() {
     if (store.empty) return;
     view.hold(store);
@@ -1122,6 +1268,7 @@
 </script>
 
 <svelte:window onkeydown={onKey} />
+<ContextMenu />
 
 {#if updating && dev}
   <Updater {dev} onclose={() => (updating = false)} onrestart={() => { updating = false; boardRestarts(); }} />
@@ -1401,7 +1548,7 @@
       <Overview {store} {view} />
     </div>
     <div class="scope-wrap">
-      <Scope bind:this={scope} {store} {view} {signals} {axes} {trace} {trig} />
+      <Scope bind:this={scope} {store} {view} {signals} {axes} {trace} {trig} onmenu={scopeMenu} />
     </div>
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
@@ -1426,6 +1573,7 @@
           onjump={jumpToEvent}
           onclear={() => trig.clearLog(activeLink)}
           onexport={exportEvents}
+          onmenu={eventMenu}
         />
       {:else}
       <MarkerList
@@ -1437,6 +1585,7 @@
         ondelete={(id) => view.remove(id)}
         onzoom={zoomToMarker}
         onclear={() => view.clearMarkers()}
+        onmenu={markerListMenu}
       />
       {/if}
     </div>

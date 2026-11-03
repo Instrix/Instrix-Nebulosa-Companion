@@ -15,6 +15,7 @@
     ondelete,
     onzoom,
     onclear,
+    onmenu,
   }: {
     rows: (MarkerRow & { t0: number })[];
     /** a math channel column */
@@ -26,13 +27,16 @@
     ondelete: (id: number) => void;
     onzoom: (id: number) => void;
     onclear: () => void;
+    /** right-click on a marker's row, or on the table (null) */
+    onmenu?: (e: MouseEvent, id: number | null) => void;
   } = $props();
 
   const I = SIGNAL_INFO.i, V = SIGNAL_INFO.v, P = SIGNAL_INFO.p, M = SIGNAL_INFO.m;
   const f = (x: number | undefined, unit: string) => (x == null || !isFinite(x) ? '–' : fmtSI(x, unit, 4));
 </script>
 
-<div class="list">
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div class="list" oncontextmenu={(e) => onmenu?.(e, null)}>
   <table>
     <thead>
       <tr>
@@ -52,7 +56,7 @@
     </thead>
     <tbody>
       {#each rows as m (m.id)}
-        <tr class:on={m.id === active} style="--m: {m.color}" onclick={() => onpick(m.id)}>
+        <tr class:on={m.id === active} style="--m: {m.color}" onclick={() => onpick(m.id)} oncontextmenu={(e) => onmenu?.(e, m.id)}>
           <td class="name"><span class="dot"></span>{m.name}</td>
           <td>{fmtTime(m.t0 - origin)}</td>
           <td>{m.dt == null ? '–' : fmtTime(m.dt)}</td>
