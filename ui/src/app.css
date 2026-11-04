@@ -65,6 +65,27 @@ body {
   font: 14px/1.4 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
 }
 
+/* an app, not a page: dragging (plots, markers, dividers) doesn't select text
+   all over the UI. What is worth copying stays selectable. */
+body {
+  -webkit-user-select: none;
+  user-select: none;
+}
+input,
+textarea,
+[contenteditable],
+pre,
+code,
+dd,
+.selectable,
+.error,
+.note,
+.mon-list,
+.slist .msg {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
 button,
 input,
 select {

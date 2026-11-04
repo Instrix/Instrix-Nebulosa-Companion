@@ -2556,7 +2556,7 @@
         <span class="key"><i class="gap"></i>gap</span>
       </span>
       <button class="hint muted linkish" onclick={() => (helpOpen = true)} title="All the keys and mouse gestures (?)"
-        >wheel: time/div · shift+wheel: pan · space: live/hold · right-click: menu · ? keys</button
+        >wheel: time/div · shift+wheel: pan · ctrl+drag: zoom in · space: live/hold · right-click: menu · ? keys</button
       >
     </div>
     {#if frontEndOff}

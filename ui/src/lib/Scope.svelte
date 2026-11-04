@@ -167,6 +167,16 @@
   let plots: { sig: Signal; u: uPlot }[] = [];
   /** the plot the last drag started on */
   let selectSrc: uPlot | null = null;
+  /**
+   * this drag zooms (Ctrl / ⌘ held at the press) instead of making a marker.
+   * Not $state: the plots are built in an effect that reads it (their hooks),
+   * and a change would rebuild them mid-drag.
+   */
+  let zoomDrag = false;
+  function setZoomDrag(on: boolean) {
+    zoomDrag = on;
+    root?.classList.toggle('zooming', on);
+  }
   let drawnKey = '';
   let lastDraw = 0;
   let span: [number, number] = [0, 1];
@@ -505,9 +515,15 @@
                 if (u.select.width > 3 && u === selectSrc) {
                   const a = u.posToVal(u.select.left, 'x');
                   const b = u.posToVal(u.select.left + u.select.width, 'x');
-                  view.hold(store);
-                  view.addDual(a, b);
+                  // Ctrl (⌘) + drag zooms in on the span; a plain drag makes a dual marker
+                  if (zoomDrag) view.zoomTo(store, a, b);
+                  else {
+                    view.hold(store);
+                    view.addDual(a, b);
+                  }
                 }
+                // (the synced plots run this too, maybe first: only the dragged one ends the zoom)
+                if (u === selectSrc) setZoomDrag(false);
                 u.setSelect({ left: 0, top: 0, width: 0, height: 0 }, false);
               },
             ],
@@ -537,7 +553,16 @@
         [[], [], [], [], [], []],
         el,
       );
-      u.over.addEventListener('mousedown', () => (selectSrc = u), { capture: true });
+      u.over.addEventListener(
+        'mousedown',
+        (e) => {
+          selectSrc = u;
+          setZoomDrag(e.button === 0 && (e.ctrlKey || e.metaKey));
+          // a click with no drag makes no selection: end it after uPlot's mouseup
+          if (zoomDrag) addEventListener('mouseup', () => setTimeout(() => setZoomDrag(false)), { once: true });
+        },
+        { capture: true },
+      );
       u.over.addEventListener('wheel', onWheel(u), { passive: false });
       u.over.addEventListener('dblclick', onDbl(u));
       u.over.addEventListener('contextmenu', onCtx(sig, u));
@@ -1129,6 +1154,15 @@
     background: color-mix(in srgb, var(--sel) 22%, transparent);
     border-left: 1px solid var(--sel);
     border-right: 1px solid var(--sel);
+  }
+  /* Ctrl + drag: the span to zoom in on */
+  .scope:global(.zooming) :global(.u-select) {
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+    border-left: 1px dashed var(--accent);
+    border-right: 1px dashed var(--accent);
+  }
+  .scope:global(.zooming) :global(.u-over) {
+    cursor: zoom-in;
   }
   .scope :global(.u-cursor-x),
   .scope :global(.u-cursor-y) {

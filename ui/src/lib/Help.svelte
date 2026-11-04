@@ -95,6 +95,7 @@
         ['Shift + wheel, ← →', 'Pan'],
         ['+ / −', 'Zoom in / out'],
         ['Drag across a plot', 'Dual marker (a window: Δt, mean, ∫)'],
+        ['Ctrl (⌘) + drag across a plot', 'Zoom in on that span (holds the view)'],
         ['Double-click a plot', 'Single marker'],
         ['M / D', 'Add a single / dual marker'],
         ['A', 'Analyze the active dual marker (else the screen): histogram, CDF, spectrum, worst window'],

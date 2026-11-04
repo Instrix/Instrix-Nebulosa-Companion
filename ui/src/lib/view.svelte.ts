@@ -185,6 +185,19 @@ export class View {
     this.divIndex = i;
   }
 
+  /** Shows [a, b]: the smallest time/div that fits it, centred on it, on HOLD. */
+  zoomTo(store: SampleStore, a: number, b: number) {
+    if (!(b > a)) return;
+    let i = TIME_DIVS.findIndex((d) => d * DIVS_X >= b - a);
+    if (i < 0) i = TIME_DIVS.length - 1;
+    this.divIndex = i;
+    const w = TIME_DIVS[i] * DIVS_X;
+    // held even at the newest data: a zoom is to look at something
+    this.anchor = null;
+    this.live = false;
+    this.end = Math.max(Math.min((a + b) / 2 + w / 2, store.tEnd), Math.min(store.tStart + w, store.tEnd));
+  }
+
   pan(store: SampleStore, fraction: number) {
     const [, b] = this.span(store);
     this.moveTo(store, b + fraction * this.windowS);

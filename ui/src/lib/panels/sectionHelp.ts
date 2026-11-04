@@ -60,7 +60,7 @@ export const SECTION_HELP: Record<string, SectionHelp> = {
       { name: 'Auto / Fixed', text: 'Auto fits the y axis to the data; Fixed keeps the Min and Max you type.', at: '~axis' },
       { name: 'Log', text: 'Logarithmic y axis: sleep currents and active bursts on one plot.', at: '$button[title="Logarithmic scale"]' },
     ],
-    tips: ['Wheel: time per division; Shift + wheel pans. Space: Live / Hold.', 'Drag across a plot for a dual marker; double-click for a single one.'],
+    tips: ['Wheel: time per division; Shift + wheel pans. Space: Live / Hold.', 'Drag across a plot for a dual marker; Ctrl + drag zooms in on the span; double-click for a single marker.'],
   },
   trigger: {
     intro: 'Freeze the scope on an event, or keep it running and just detect and list events.',
