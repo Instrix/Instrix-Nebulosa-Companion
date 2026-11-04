@@ -2,9 +2,13 @@
 # them as artifacts named packages-<os>. Called by ci.yml (main / manual runs)
 # and release.yml (tags); can also be run on its own from the Actions tab.
 #
-#   Linux    .deb, .rpm, .AppImage                      (x86_64)
-#   Windows  NSIS setup .exe, .msi, portable .exe (zip)  (x64)
-#   macOS    .dmg, .app (zip)                            (universal: Apple silicon + Intel)
+#   Linux    .deb, .rpm, .AppImage                       (x86_64, arm64)
+#   Windows  NSIS setup .exe, .msi, portable .exe (zip)   (x64; arm64: no .msi, WiX has no ARM64)
+#   macOS    .dmg, .app (zip)                             (universal: Apple silicon + Intel)
+#
+# Windows arm64 is cross-compiled on the x64 runner; Linux arm64 builds on
+# GitHub's arm64 runner. The arm64 jobs are allowed to fail without stopping a
+# release (the runner may not be available to every repository plan).
 #
 # Builds are unsigned (macOS gets an ad-hoc signature): Windows SmartScreen and
 # macOS Gatekeeper warn on first launch. See the end of this file for signing.
@@ -24,25 +28,46 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: Linux
+          - name: Linux x64
             os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             bundles: deb,rpm,appimage
             rust-targets: wasm32-unknown-unknown
-            artifact: packages-linux
-          - name: Windows
+            deb-arch: amd64
+            rpm-arch: x86_64
+            artifact: packages-linux-x64
+          - name: Linux arm64
+            os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            bundles: deb,rpm,appimage
+            rust-targets: wasm32-unknown-unknown
+            deb-arch: arm64
+            rpm-arch: aarch64
+            artifact: packages-linux-arm64
+            optional: true
+          - name: Windows x64
             os: windows-latest
             target: x86_64-pc-windows-msvc
             bundles: nsis,msi
             rust-targets: wasm32-unknown-unknown
-            artifact: packages-windows
-          - name: macOS
+            win-arch: x64
+            artifact: packages-windows-x64
+          - name: Windows arm64
+            os: windows-latest
+            target: aarch64-pc-windows-msvc
+            bundles: nsis
+            rust-targets: wasm32-unknown-unknown,aarch64-pc-windows-msvc
+            win-arch: arm64
+            artifact: packages-windows-arm64
+            optional: true
+          - name: macOS universal
             os: macos-latest
             target: universal-apple-darwin
             bundles: app,dmg
             rust-targets: wasm32-unknown-unknown,aarch64-apple-darwin,x86_64-apple-darwin
             artifact: packages-macos
     runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.optional == true }}
     steps:
       - uses: actions/checkout@v4
 
@@ -84,13 +109,14 @@ jobs:
           N=nebulosa-companion_${VER}
           case "${{ runner.os }}" in
             Linux)
-              cp $B/deb/*.deb           "$OUT/${N}_amd64.deb"
-              cp $B/rpm/*.rpm           "$OUT/${N}_x86_64.rpm"
-              cp $B/appimage/*.AppImage "$OUT/${N}_amd64.AppImage"
+              cp $B/deb/*.deb           "$OUT/${N}_${{ matrix.deb-arch }}.deb"
+              cp $B/rpm/*.rpm           "$OUT/${N}_${{ matrix.rpm-arch }}.rpm"
+              cp $B/appimage/*.AppImage "$OUT/${N}_${{ matrix.deb-arch }}.AppImage"
               ;;
             Windows)
-              cp $B/nsis/*-setup.exe    "$OUT/${N}_x64-setup.exe"
-              cp $B/msi/*.msi           "$OUT/${N}_x64.msi"
+              A=${{ matrix.win-arch }}
+              cp $B/nsis/*-setup.exe    "$OUT/${N}_${A}-setup.exe"
+              if compgen -G "$B/msi/*.msi" > /dev/null; then cp $B/msi/*.msi "$OUT/${N}_${A}.msi"; fi
               # portable: the bare executable, no installer (needs the WebView2
               # runtime, which Windows 10 and 11 already have)
               mkdir -p portable
@@ -103,7 +129,7 @@ jobs:
                 "https://developer.microsoft.com/microsoft-edge/webview2/" \
                 "Settings are kept in %LOCALAPPDATA%\\com.instrix.nebulosa.companion." \
                 > portable/README.txt
-              (cd portable && 7z a -tzip "../$OUT/${N}_x64-portable.zip" "Nebulosa Companion.exe" README.txt)
+              (cd portable && 7z a -tzip "../$OUT/${N}_${A}-portable.zip" "Nebulosa Companion.exe" README.txt)
               ;;
             macOS)
               cp $B/dmg/*.dmg "$OUT/${N}_universal.dmg"

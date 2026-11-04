@@ -63,9 +63,12 @@ GitHub Actions builds every package (`.github/workflows/packages.yml`):
 
 | Platform | Packages |
 |:--|:--|
-| Linux (x86_64) | `.deb`, `.rpm` (both install the udev rule), `.AppImage` |
-| Windows (x64) | NSIS installer `-setup.exe`, `.msi`, portable `.exe` (zip, needs WebView2) |
-| macOS (universal) | `.dmg`, `.app` (zip) |
+| Linux (x86_64, arm64) | `.deb`, `.rpm` (both install the udev rule), `.AppImage` |
+| Windows (x64, arm64) | NSIS installer `-setup.exe`, `.msi` (x64 only), portable `.exe` (zip, needs WebView2) |
+| macOS (universal: Apple silicon + Intel) | `.dmg`, `.app` (zip) |
+
+Windows arm64 is cross-compiled on the x64 runner; Linux arm64 builds on GitHub's arm64
+runner. The arm64 jobs may fail without blocking a release.
 
 - **CI** (`ci.yml`): tests on every push and pull request; on `main` and manual runs also
   the packages, as build artifacts.
