@@ -751,14 +751,21 @@
 
   /** the span on screen, gliding to the view's (zoom and pan animate) */
   const glide = new Glide();
-  /** the span the data last asked for covers */
-  let fetched = '';
+  /** what the plotted data was fetched for: its span and s per column */
+  let fetched = { a: NaN, b: NaN, res: NaN };
   let lastDiv = -1;
 
   function frame(now: number) {
     raf = requestAnimationFrame(frame);
     if (!plots.length) return;
-    const target = view.span(store);
+    const real = view.span(store);
+    // live: the window never runs ahead of the data it has (no empty strip at the
+    // right while the next data is on its way: it trails the newest by one fetch)
+    let target = real;
+    if (view.live && lod && fetched.b < real[1]) {
+      const d = real[1] - fetched.b;
+      target = [real[0] - d, real[1] - d];
+    }
     // live, the window scrolls with the data: that mustn't lag; a zoom glides
     const zooming = view.divIndex !== lastDiv && lastDiv >= 0;
     lastDiv = view.divIndex;
@@ -786,24 +793,27 @@
     if (inflight) return;
     // the data: new samples while live; held, only the oldest dropping out of the buffer
     const key = `${view.live ? store.version : store.tStart}|${viewKey}`;
-    // gliding: data for everything the glide crosses, as fine as the end view needs;
-    // arrived: the end view's own, if what's there was for a wider span
-    const want = moving ? union(sp, target) : target;
-    const refine = !moving && fetched !== `${target[0]},${target[1]}` && !view.live;
+    const px = Math.max(50, Math.round(plots[0].u.bbox.width / devicePixelRatio));
+    const tw = real[1] - real[0];
+    // gliding: data for everything the glide crosses; held: half a window more each
+    // side, so a pan shows data at once (all as fine as the end view needs)
+    let want = moving ? union(sp, real) : real;
+    if (!view.live) want = [want[0] - tw / 2, want[1] + tw / 2];
+    // held and still: fetch again only if the view left what's there, or needs it finer
+    const refine = !moving && !view.live && (fetched.a > real[0] || fetched.b < real[1] || fetched.res > (tw / px) * 1.5);
     if (key === drawnKey && !refine) return;
     // only new samples: paced by what a redraw costs; the user's moves at once
     if (!moved && !refine && now - lastDraw < Math.max(MIN_FRAME_MS, drawCost * 2)) return;
     drawnKey = key;
     drawnView = viewKey;
     lastDraw = now;
-    const px = Math.max(50, Math.round(plots[0].u.bbox.width / devicePixelRatio));
-    const bins = Math.min(8192, Math.round((px * (want[1] - want[0])) / (target[1] - target[0])));
+    const bins = Math.min(8192, Math.round((px * (want[1] - want[0])) / tw));
     inflight = true;
     const t0 = performance.now();
     store
       .lod(want[0], want[1], bins)
       .then((l) => {
-        fetched = `${want[0]},${want[1]}`;
+        fetched = { a: want[0], b: want[1], res: (want[1] - want[0]) / bins };
         lod = l;
         const now = glide.shown!;
         shownSpan = `${now[0]},${now[1]}`;

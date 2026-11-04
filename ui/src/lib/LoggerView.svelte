@@ -401,18 +401,24 @@
 
   /** the span on screen, gliding to the wanted one (zoom and pan animate) */
   const glide = new Glide();
-  /** the span the data last asked for covers */
-  let fetched = '';
+  /** what the plotted data was fetched for: its span and s per column */
+  let fetched = { a: NaN, b: NaN, res: NaN };
 
   function frame(now: number) {
     raf = requestAnimationFrame(frame);
     if (!plots.length) return;
-    const target = wanted();
+    const real = wanted();
+    // following: the window never runs ahead of the data it has (no empty strip at the right)
+    let target = real;
+    if (lv.follow && lod && fetched.b < real[1]) {
+      const d = real[1] - fetched.b;
+      target = [real[0] - d, real[1] - d];
+    }
     // following, the window scrolls with the log: that mustn't lag
     const moving = glide.step(now, target, lv.follow);
     const shown = glide.shown!;
     const viewKey = [
-      lv.follow ? `follow ${lv.last}` : target.join(),
+      lv.follow ? `follow ${lv.last}` : real.join(),
       signals.map((s) => `${axes[s].auto},${axes[s].min},${axes[s].max},${axes[s].log}`).join(';'),
       plots.map((p) => `${p.u.width}x${p.u.height}`).join(),
       wallOffset,
@@ -432,10 +438,14 @@
     }
     if (inflight) return;
     const key = `${lv.follow ? store.session.version : ''}|${viewKey}`;
-    // gliding: data for everything the glide crosses, as fine as the end view needs;
-    // arrived: the end view's own, if what's there was for a wider span
-    const want = moving ? union(shown, target) : target;
-    const refine = !moving && !lv.follow && fetched !== target.join();
+    const px = Math.max(50, Math.round(plots[0].u.bbox.width / devicePixelRatio));
+    const tw = real[1] - real[0];
+    // gliding: data for everything the glide crosses; not following: half a window
+    // more each side, so a pan shows data at once (all as fine as the end view needs)
+    let want: [number, number] = moving ? union(shown, real) : real;
+    if (!lv.follow) want = [want[0] - tw / 2, want[1] + tw / 2];
+    // still: fetch again only if the view left what's there, or needs it finer
+    const refine = !moving && !lv.follow && (fetched.a > real[0] || fetched.b < real[1] || fetched.res > (tw / px) * 1.5);
     if (key === drawnKey && !refine) return;
     if (!moved && !refine && now - lastDraw < Math.max(MIN_FRAME_MS, drawCost * 2)) return;
     drawnKey = key;
@@ -443,15 +453,16 @@
     lastDraw = now;
     inflight = true;
     const t0 = performance.now();
-    const px = Math.max(50, Math.round(plots[0].u.bbox.width / devicePixelRatio));
-    const bins = Math.min(8192, Math.round((px * (want[1] - want[0])) / (target[1] - target[0])));
     // zoomed in past the log interval on data the sample buffer still holds: draw from the buffer,
-    // down to single samples; else from the session log
+    // down to single samples (the padding kept inside the buffer); else from the session log
     const iv = store.session.interval;
-    const fromBuf = (want[1] - want[0]) / bins < iv && want[0] >= store.tStart && want[1] <= store.tEnd;
+    const fromBuf = tw / px < iv && real[0] >= store.tStart && real[1] <= store.tEnd;
+    if (fromBuf) want = [Math.max(want[0], store.tStart), Math.min(want[1], store.tEnd)];
+    // as fine as the end view needs, over all of it
+    const bins = Math.max(1, Math.min(8192, Math.round((px * (want[1] - want[0])) / tw)));
     (fromBuf ? store.lod(want[0], want[1], bins) : store.sessionLod(want[0], want[1], bins))
       .then((l) => {
-        fetched = want.join();
+        fetched = { a: want[0], b: want[1], res: (want[1] - want[0]) / bins };
         lod = l;
         const shown = glide.shown!;
         span = shown;
