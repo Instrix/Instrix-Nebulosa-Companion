@@ -1047,4 +1047,11 @@
   .plots :global(.u-select) {
     background: color-mix(in srgb, var(--accent) 22%, transparent);
   }
+
+  /* a narrow window: the one-line hints give their room to the plots (Help › Keys has them all) */
+  @media (max-width: 1300px) {
+    .hint {
+      display: none;
+    }
+  }
 </style>

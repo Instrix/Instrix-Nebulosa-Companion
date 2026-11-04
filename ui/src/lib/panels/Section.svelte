@@ -93,10 +93,11 @@
   // ---- popped out: a floating window -------------------------------------------
   // The same body (its controls, their state) moves into the window and back:
   // nothing is drawn twice. Where it was and its size are remembered.
-  type Win = { x: number; y: number; w: number; h: number };
+  /** auto: its height follows its contents (until the reader resizes it) */
+  type Win = { x: number; y: number; w: number; h: number; auto?: boolean };
   const fkey = () => `nebulosa.section.${id}.float`;
   function loadWin(): { on: boolean; win: Win } {
-    const d = { on: false, win: { x: 300, y: 72, w: 600, h: 0 } };
+    const d = { on: false, win: { x: 300, y: 72, w: 600, h: 0, auto: true } };
     try {
       const v = JSON.parse(localStorage.getItem(fkey()) ?? 'null');
       if (v?.win && typeof v.win.x === 'number' && v.win.h > 0) return { on: !!v.on && popout, win: v.win };
@@ -131,23 +132,35 @@
     win.y = Math.min(Math.max(8, win.y), H - win.h - 8);
   }
   function popOut() {
-    const fit = !win.h;
-    if (fit) win.h = 400;
+    if (!win.h) win.h = 400;
     floating = true;
     set(true);
     clamp();
     raise();
-    // the first time: as tall as its contents (within the screen)
-    if (fit)
-      requestAnimationFrame(() => {
-        if (!winEl || !winBody || !bodyEl) return;
-        // the contents' own height (the scroll area is at least as tall as the window), with its padding and border
-        win.h = Math.min(innerHeight - 100, (winEl.querySelector('.whead') as HTMLElement).offsetHeight + bodyEl.offsetHeight + 28 + 2);
-        clamp();
-        saveWin();
-      });
-    else saveWin();
+    saveWin();
   }
+  /** as tall as its contents (within the screen) */
+  function fitHeight() {
+    if (!winEl || !bodyEl) return;
+    const head = (winEl.querySelector('.whead') as HTMLElement | null)?.offsetHeight ?? 36;
+    // the contents' own height (the scroll area is at least as tall as the window), with its padding and border
+    const h = Math.min(innerHeight - 100, head + bodyEl.offsetHeight + 28 + 2);
+    if (Math.abs(h - win.h) < 2) return;
+    lastFit = h;
+    win.h = h;
+    clamp();
+    saveWin();
+  }
+  // its height follows its contents (another mode shows more, say) until the reader resizes it
+  let pressing = false;
+  /** the height fitHeight last set (a resize to it is ours, not the reader's) */
+  let lastFit = -1;
+  $effect(() => {
+    if (!floating || !bodyEl || !winEl) return;
+    const ro = new ResizeObserver(() => win.auto !== false && requestAnimationFrame(fitHeight));
+    ro.observe(bodyEl);
+    return () => ro.disconnect();
+  });
   function dock() {
     floating = false;
     saveWin();
@@ -172,8 +185,12 @@
     if (!winEl) return;
     const ro = new ResizeObserver(() => {
       if (!winEl) return;
-      win.w = winEl.offsetWidth;
-      win.h = winEl.offsetHeight;
+      const w = winEl.offsetWidth, h = winEl.offsetHeight;
+      if (w === win.w && h === win.h) return;
+      // the reader dragging the corner: from now on its size is theirs
+      if (pressing && !(h === lastFit && w === win.w)) win.auto = false;
+      win.w = w;
+      win.h = h;
       saveWin();
     });
     ro.observe(winEl);
@@ -258,7 +275,7 @@
     use:portal
     bind:this={winEl}
     style="left: {win.x}px; top: {win.y}px; width: {win.w}px; height: {win.h}px; z-index: {z}"
-    onpointerdown={raise}
+    onpointerdown={() => (raise(), (pressing = true), addEventListener('pointerup', () => (pressing = false), { once: true }))}
     onkeydown={winKey}
   >
     <div class="whead" role="presentation" onpointerdown={dragWin}>

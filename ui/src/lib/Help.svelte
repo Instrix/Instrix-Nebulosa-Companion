@@ -64,6 +64,10 @@
       'The <b>Logger</b> view shows the whole session. Log to CSV, TXT, JSON or HDF5 with the fields you choose, per interval or every sample; memory stays bounded. <b>REC</b> keeps every raw sample (.nbrec).',
     ],
     [
+      'Catch a rare fault: triggered capture',
+      'In the Logger section choose <b>◎ Triggered</b>: nothing is written until the trigger (or a serial message) fires, then the file starts from a while <i>before</i> it. <b>Watch</b> to set the trigger by eye on the plots, then <b>Arm</b>. <b>Learn › Catch a rare event</b> walks through it.',
+    ],
+    [
       'Keep it up to date',
       '<b>Software update…</b> under Device installs firmware (.nbfw) and gateware (.bit / .bin) over any link; the old gateware stays as a fallback.',
     ],

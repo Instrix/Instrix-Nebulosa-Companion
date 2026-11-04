@@ -1267,7 +1267,12 @@
     const n = captures.length + 1;
     captures = [...captures, { t, pre, end: null, label: `capture ${n}` }];
     note = `Triggered at ${new Date((t + wallOffset) * 1000).toLocaleTimeString()}: capturing from ${fmtTime(pre)} before${capture.post ? `, for ${fmtTime(capture.post)} after` : ''}.`;
-    if (streamed) await startLog(from);
+    if (streamed && !(await startLog(from))) {
+      // the file didn't start: no capture after all
+      capturing = null;
+      captures = captures.slice(0, -1);
+      return;
+    }
     // the end counts from the trigger, which came a moment before we heard of it
     if (capture.post > 0) {
       const wait = () => {
@@ -1352,6 +1357,7 @@
     if (!(await ask('Clear the session log and start over?'))) return;
     await activeLink?.clearSession();
     lv = { follow: true, last: 0, t0: 0, t1: 0 };
+    if (!capturing) captures = [];
   }
 
   /** what the log holds: interval statistics, or every sample as measured */
@@ -1368,7 +1374,8 @@
   /** rough size of an every-sample log: 4 bytes a sample natively, ~11 characters a column as text */
   const rawBytesPerS = $derived(rateHz * (out.kind === 'native' ? 4 : out.kind === 'hdf5' ? 4 * out.cfg.fields.length : 11 * out.cfg.fields.length));
 
-  async function startLog(from?: number) {
+  /** starts the file; false if it couldn't (the reason is in `error`) */
+  async function startLog(from?: number): Promise<boolean> {
     if (out.kind !== 'native') return startExportLog(from);
     error = '';
     try {
@@ -1392,12 +1399,14 @@
         await toggleRecording(from);
         rawByLogger = true;
       }
+      return true;
     } catch (e) {
       error = String(e);
+      return false;
     }
   }
 
-  async function startExportLog(from?: number) {
+  async function startExportLog(from?: number): Promise<boolean> {
     error = '';
     try {
       logPath = await native.startExport($state.snapshot(out.cfg), wallOffset, logHeader(), from);
@@ -1405,8 +1414,10 @@
       exportBytes = 0;
       logStarted = Date.now();
       note = `Logging to ${logPath}`;
+      return true;
     } catch (e) {
       error = String(e);
+      return false;
     }
   }
 
@@ -2233,6 +2244,18 @@
   }
 
   /** puts the trigger on `sig` at `v` (a window: the same width, centred on v) */
+  // ---- a window too small to use ---------------------------------------------------
+  const MIN_W = 960;
+  const MIN_H = 600;
+  let winW = $state(typeof innerWidth === 'number' ? innerWidth : 1440);
+  let winH = $state(typeof innerHeight === 'number' ? innerHeight : 900);
+  const tooSmall = $derived(winW < MIN_W || winH < MIN_H);
+  /** the largest scale step at which it fits again (the desktop app sets its own scale) */
+  const fitScale = $derived.by(() => {
+    const room = Math.min(winW / MIN_W, winH / MIN_H) * uiScale.value;
+    return [...SCALES].reverse().find((v) => v <= room) ?? SCALES[0];
+  });
+
   let pickTrigger = $state(false);
   /** click-to-set: a plot click sets the trigger source and level there */
   function onPickTrigger(spot: ScopeSpot) {
@@ -2661,7 +2684,23 @@
   });
 </script>
 
-<svelte:window onkeydown={onKey} onmouseup={onMouseNav} />
+<svelte:window onkeydown={onKey} onmouseup={onMouseNav} bind:innerWidth={winW} bind:innerHeight={winH} />
+
+{#if tooSmall}
+  <!-- below this the panels and plots no longer fit: say so, rather than show a broken layout -->
+  <div class="toosmall" role="alertdialog" aria-live="polite" aria-label="Window too small">
+    <div>
+      <img src={instrixIconWhite} alt="" />
+      <h2>Please make the window bigger</h2>
+      <p>Nebulosa Companion needs at least {MIN_W} × {MIN_H}; the window is {winW} × {winH}{canScale && uiScale.value !== 1 ? ` at ${Math.round(uiScale.value * 100)} % scale` : ''}.</p>
+      {#if canScale && fitScale < uiScale.value}
+        <button class="primary" onclick={() => setScale(fitScale)}>Make the interface smaller ({Math.round(fitScale * 100)} %)</button>
+      {:else if !canScale}
+        <p class="muted">Or zoom the page out: <kbd>Ctrl</kbd> <kbd>−</kbd> (<kbd>⌘</kbd> <kbd>−</kbd> on a Mac).</p>
+      {/if}
+    </div>
+  </div>
+{/if}
 <ContextMenu />
 
 {#if updating && dev}
@@ -2755,7 +2794,7 @@
       <img class="logo light" src={instrixIcon} alt="INSTRIX" />
       <img class="logo dark" src={instrixIconWhite} alt="INSTRIX" />
       <strong>Nebulosa</strong>
-      <span class="muted">Companion</span>
+      <span class="muted companion">Companion</span>
     </div>
     <div class="modes" role="tablist" aria-label="View" data-tour="modes">
       <button class:on={appMode === 'scope'} onclick={() => setAppMode('scope')} title="Waveforms: µs to seconds, triggers, markers">Scope</button>
@@ -2764,7 +2803,7 @@
     </div>
     <div class="status">
       {#if dev}
-        <span class="dot ok"></span>{dev.link.description}
+        <span class="dot ok" title={dev.link.description}></span><span class="conn" title={dev.link.description}>{dev.link.description}</span>
         <button class="ghost" onclick={disconnect}>Disconnect</button>
       {:else}
         {#if reconnecting}
@@ -3056,8 +3095,8 @@
       </div>
       <label>Flow control <select bind:value={serialCfg.flow} disabled={monitor.open}><option value="none">none</option><option value="hardware">hardware (RTS/CTS)</option>{#if isNative}<option value="software">software (XON/XOFF)</option>{/if}</select></label>
       <div class="mon-row">
-        <label class="mon-chk"><input type="checkbox" bind:checked={serialCfg.rts} onchange={() => monitor.open && monitor.setSignals(serialCfg.rts, serialCfg.dtr)} /> RTS</label>
-        <label class="mon-chk"><input type="checkbox" bind:checked={serialCfg.dtr} onchange={() => monitor.open && monitor.setSignals(serialCfg.rts, serialCfg.dtr)} /> DTR</label>
+        <label class="check mon-chk"><input type="checkbox" bind:checked={serialCfg.rts} onchange={() => monitor.open && monitor.setSignals(serialCfg.rts, serialCfg.dtr)} /> RTS</label>
+        <label class="check mon-chk"><input type="checkbox" bind:checked={serialCfg.dtr} onchange={() => monitor.open && monitor.setSignals(serialCfg.rts, serialCfg.dtr)} /> DTR</label>
         <span class="muted small">{monitor.open ? 'toggles live' : 'asserted on open'}</span>
       </div>
       <button class="small" class:danger={monitor.open} class:primary={!monitor.open} onclick={monitorConnect}>
@@ -3079,15 +3118,15 @@
       <details class="mon-more">
         <summary>Line handling and trigger</summary>
         <label>Split received on <select bind:value={serialCfg.rxNewline}><option value="any">any (CR / LF / CRLF)</option><option value="lf">\n</option><option value="cr">\r</option><option value="crlf">\r\n</option></select></label>
-        <label class="mon-chk"><input type="checkbox" bind:checked={serialCfg.echo} /> Echo sent lines on the log</label>
-        <label class="mon-chk"><input type="checkbox" bind:checked={serialCfg.clearOnConnect} /> Clear the list when the port opens</label>
-        <label class="mon-chk"><input type="checkbox" bind:checked={serialCfg.trigger.on} /> Trigger on a message</label>
+        <label class="check mon-chk"><input type="checkbox" bind:checked={serialCfg.echo} /> Echo sent lines on the log</label>
+        <label class="check mon-chk"><input type="checkbox" bind:checked={serialCfg.clearOnConnect} /> Clear the list when the port opens</label>
+        <label class="check mon-chk"><input type="checkbox" bind:checked={serialCfg.trigger.on} /> Trigger on a message</label>
         {#if serialCfg.trigger.on}
           <div class="mon-send">
             <input class="mono" placeholder={serialCfg.trigger.regex ? 'regex' : 'text to match'} bind:value={serialCfg.trigger.pattern} />
           </div>
-          <label class="mon-chk"><input type="checkbox" bind:checked={serialCfg.trigger.regex} /> Regular expression</label>
-          <label class="mon-chk"><input type="checkbox" bind:checked={serialCfg.trigger.hold} /> Freeze the view on a match (Scope: like a trigger)</label>
+          <label class="check mon-chk"><input type="checkbox" bind:checked={serialCfg.trigger.regex} /> Regular expression</label>
+          <label class="check mon-chk"><input type="checkbox" bind:checked={serialCfg.trigger.hold} /> Freeze the view on a match (Scope: like a trigger)</label>
           <p class="muted small">A match is a red marker. {monitor.matches} so far.</p>
         {/if}
       </details>
@@ -3105,8 +3144,8 @@
           {/each}
         </div>
         <div class="mon-row">
-          <label class="mon-chk"><input type="checkbox" bind:checked={monitorHex} /> Hex</label>
-          <label class="mon-chk"><input type="checkbox" bind:checked={serialCfg.timestamps} /> Time</label>
+          <label class="check mon-chk"><input type="checkbox" bind:checked={monitorHex} /> Hex</label>
+          <label class="check mon-chk"><input type="checkbox" bind:checked={serialCfg.timestamps} /> Time</label>
           <span class="spacer"></span>
           <button class="ghost small" onclick={saveMessages}>Save…</button>
           <button class="ghost small" onclick={() => monitor.clear()}>Clear</button>
@@ -3370,6 +3409,8 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
+    gap: 12px;
+    min-width: 0;
     padding: 0 16px;
     border-bottom: 1px solid var(--border);
     background: var(--panel);
@@ -3415,9 +3456,11 @@
     color: var(--accent);
   }
   .brand {
+    flex: none;
     display: flex;
     gap: 8px;
     align-items: center;
+    white-space: nowrap;
   }
   .logo {
     height: 18px;
@@ -3433,10 +3476,43 @@
     display: block;
   }
   .status {
+    flex: 0 1 auto;
+    min-width: 0;
     display: flex;
     gap: 10px;
     align-items: center;
+    justify-content: flex-end;
     font-size: 13px;
+    white-space: nowrap;
+  }
+  .status > :global(button) {
+    flex: none;
+  }
+  /* the connection's name gives way first: one line, cut short (the whole of it on hover) */
+  .conn {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .dot {
+    flex: none;
+  }
+  /* a narrower window: the extras in the header go */
+  @media (max-width: 1240px) {
+    .companion,
+    .find :global(kbd) {
+      display: none;
+    }
+  }
+  @media (max-width: 1100px) {
+    .conn {
+      max-width: 150px;
+    }
+  }
+  @media (max-width: 1060px) {
+    .conn {
+      display: none;
+    }
   }
   .dot {
     width: 8px;
@@ -3480,6 +3556,7 @@
     min-height: 0;
   }
   .modes {
+    flex: none;
     display: inline-flex;
     border: 1px solid var(--border);
     border-radius: var(--r);
@@ -3489,6 +3566,7 @@
     border: 0;
     border-radius: 0;
     background: transparent;
+    white-space: nowrap;
     padding: 4px 16px;
     font-weight: 600;
   }
@@ -3998,6 +4076,37 @@
     min-width: 96px;
   }
   /* the sidebar's panels (components too): shared look */
+  .toosmall {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    display: grid;
+    place-items: center;
+    padding: 16px;
+    background: #000;
+    color: #e8eaf0;
+    text-align: center;
+  }
+  .toosmall > div {
+    max-width: 420px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+  }
+  .toosmall img {
+    height: 28px;
+    opacity: 0.85;
+  }
+  .toosmall h2 {
+    margin: 4px 0 0;
+    font-size: 18px;
+  }
+  .toosmall p {
+    margin: 0;
+    font-size: 13px;
+    color: #a9afc0;
+  }
   .fwins {
     position: fixed;
     inset: 0;
@@ -4199,6 +4308,13 @@
     }
     .muted {
       color: var(--muted);
+    }
+  }
+
+  /* a narrow window: the one-line hints give their room to the plots (Help › Keys has them all) */
+  @media (max-width: 1300px) {
+    .hint.linkish {
+      display: none;
     }
   }
 </style>

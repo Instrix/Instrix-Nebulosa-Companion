@@ -16,8 +16,8 @@
         "title": "Nebulosa Companion",
         "width": 1280,
         "height": 820,
-        "minWidth": 800,
-        "minHeight": 560,
+        "minWidth": 960,
+        "minHeight": 640,
         "maximized": true,
         "backgroundColor": "#161826"
       }

@@ -1227,4 +1227,11 @@
   .scope :global(.u-cursor-y) {
     border-color: #ffffff55;
   }
+
+  /* a narrow window: the one-line hints give their room to the plots (Help › Keys has them all) */
+  @media (max-width: 1300px) {
+    .hintbar {
+      display: none;
+    }
+  }
 </style>
