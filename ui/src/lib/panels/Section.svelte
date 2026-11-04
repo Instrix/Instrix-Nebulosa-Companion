@@ -3,6 +3,7 @@
   // folded. Open or folded is remembered per section.
   import type { Snippet } from 'svelte';
   import Icon from './Icon.svelte';
+  import { SECTION_HELP } from './sectionHelp';
 
   let {
     id,
@@ -63,6 +64,22 @@
       removeEventListener('nebulosa:all-sections', all);
     };
   });
+  // the "?": a quick rundown of this section's options
+  const help = $derived(SECTION_HELP[id]);
+  let helpOpen = $state(false);
+  /** shown over everything: moved to <body>, out of the sidebar's scrolling */
+  function portal(node: HTMLElement) {
+    document.body.appendChild(node);
+    return { destroy: () => node.remove() };
+  }
+  function onHelpKey(e: KeyboardEvent) {
+    if (helpOpen && e.key === 'Escape') {
+      e.stopPropagation();
+      e.preventDefault();
+      helpOpen = false;
+    }
+  }
+
   function toggle() {
     open = !open;
     try {
@@ -82,12 +99,45 @@
       {#if !open && summary}<span class="sum">{summary}</span>{/if}
     </button>
     {#if actions}<div class="actions">{@render actions()}</div>{/if}
+    {#if help}
+      <button class="help" onclick={() => (helpOpen = true)} title="{title}: what's here and how to use it" aria-label="Help: {title}">?</button>
+    {/if}
   </div>
   <!-- folded, the contents stay (their state with them), only hidden -->
   <div class="body" hidden={!open}>
     {@render children()}
   </div>
 </section>
+
+<svelte:window onkeydowncapture={onHelpKey} />
+
+{#if helpOpen && help}
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <div class="hbackdrop" role="presentation" use:portal onclick={() => (helpOpen = false)}>
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <div class="hdialog" role="dialog" aria-label="Help: {title}" tabindex="-1" onclick={(e) => e.stopPropagation()}>
+      <header>
+        {#if icon}<Icon name={icon} />{/if}
+        <h3>{title}</h3>
+        <button class="ghost small hclose" onclick={() => (helpOpen = false)} aria-label="Close">✕</button>
+      </header>
+      <p class="intro">{help.intro}</p>
+      <dl>
+        {#each help.items as it (it.name)}
+          <dt>{it.name}</dt>
+          <dd>{it.text}</dd>
+        {/each}
+      </dl>
+      {#if help.tips?.length}
+        <h4>How to use</h4>
+        <ul>
+          {#each help.tips as t (t)}<li>{t}</li>{/each}
+        </ul>
+      {/if}
+      <p class="more muted">More in Help (? or F1) and the user manual.</p>
+    </div>
+  </div>
+{/if}
 
 <style>
   .sec {
@@ -170,5 +220,99 @@
   }
   .body[hidden] {
     display: none;
+  }
+  .help {
+    flex: none;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: 50%;
+    background: transparent;
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1;
+    cursor: help;
+    opacity: 0.6;
+    transition: opacity 0.12s, color 0.12s;
+  }
+  .sec:hover .help,
+  .help:hover,
+  .help:focus-visible {
+    opacity: 1;
+  }
+  .help:hover {
+    color: var(--accent);
+    border-color: var(--accent);
+  }
+  .hbackdrop {
+    position: fixed;
+    inset: 0;
+    background: #0008;
+    display: grid;
+    place-items: center;
+    z-index: 70;
+  }
+  .hdialog {
+    width: min(540px, 94vw);
+    max-height: 86vh;
+    overflow: auto;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--r-lg);
+    padding: 14px 18px 16px;
+    color: var(--text);
+    font-size: 13px;
+    line-height: 1.45;
+  }
+  .hdialog header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .hdialog header :global(.icon) {
+    color: var(--accent);
+  }
+  .hdialog h3 {
+    margin: 0;
+    font-size: 16px;
+  }
+  .hclose {
+    margin-left: auto;
+  }
+  .intro {
+    margin: 8px 0 10px;
+  }
+  .hdialog dl {
+    display: grid;
+    grid-template-columns: minmax(110px, max-content) 1fr;
+    gap: 6px 14px;
+    margin: 0;
+  }
+  .hdialog dt {
+    font-weight: 600;
+  }
+  .hdialog dd {
+    margin: 0;
+    color: var(--muted);
+  }
+  .hdialog h4 {
+    margin: 14px 0 4px;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+  }
+  .hdialog ul {
+    margin: 0;
+    padding-left: 18px;
+  }
+  .hdialog li {
+    margin: 2px 0;
+  }
+  .more {
+    margin: 12px 0 0;
+    font-size: 12px;
   }
 </style>

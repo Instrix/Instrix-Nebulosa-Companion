@@ -831,6 +831,8 @@
   }
   // the serial monitor: its messages become markers on the logger, and (when
   // logging to a file) a sidecar <log>.serial.csv next to it
+  const BAUDS = [300, 1200, 2400, 4800, 9600, 14400, 19200, 28800, 38400, 57600, 76800, 115200, 230400, 250000, 460800, 500000, 921600, 1000000, 1500000, 2000000, 3000000];
+  let baudCustom = $state(false);
   let serialCfg = $state<SerialConfig>(loadSerialCfg());
   function loadSerialCfg(): SerialConfig {
     try {
@@ -1003,6 +1005,20 @@
     await activeLink?.clearSession();
     lv = { follow: true, last: 0, t0: 0, t1: 0 };
   }
+
+  /** what the log holds: interval statistics, or every sample as measured */
+  function setLogData(d: 'summary' | 'raw') {
+    out.cfg.data = d;
+    if (d !== 'raw') return;
+    // samples are 0.5 µs apart at 2 MS/s: time needs 0.1 µs; counts are per interval
+    for (const f of out.cfg.fields) {
+      if (f.what === 'time' && out.cfg.time !== 'iso' && f.scale === 1) f.decimals = Math.max(f.decimals, 7);
+      if (f.what === 'count') f.what = 'range';
+    }
+  }
+
+  /** rough size of an every-sample log: 4 bytes a sample natively, ~11 characters a column as text */
+  const rawBytesPerS = $derived(rateHz * (out.kind === 'native' ? 4 : out.kind === 'hdf5' ? 4 * out.cfg.fields.length : 11 * out.cfg.fields.length));
 
   async function startLog() {
     if (out.kind !== 'native') return startExportLog();
@@ -1841,6 +1857,10 @@
       store.attach(link);
       setLink(link);
       info = await d.info();
+      // a device left streaming (the app closed or the cable pulled while it ran)
+      // keeps sending: put it in a known, stopped state; Start runs it
+      if (!link.playback) await d.stop().catch(() => undefined);
+      streaming = false;
       clearData();
       await applyDecimation();
     } catch (e) {
@@ -1888,7 +1908,9 @@
 
   async function disconnect() {
     const d = dev;
+    const wasStreaming = streaming;
     reset();
+    if (d && wasStreaming && !d.link.playback) await d.stop().catch(() => undefined);
     if (d) await d.link.close().catch(() => undefined);
   }
 
@@ -2278,6 +2300,17 @@
       {/if}
       {#if isNative}
         {#if !logging?.active && !exporting}
+          <div class="seg wide" data-tour="log-mode">
+            <button class:on={out.cfg.data === 'summary'} onclick={() => setLogData('summary')} title="One row per interval: min, max, mean and σ of the samples in it">
+              Per {fmtTime(logInterval)} (stats)
+            </button>
+            <button class:on={out.cfg.data === 'raw'} onclick={() => setLogData('raw')} title="Every sample at the full rate, as measured: no averaging">
+              Every sample
+            </button>
+          </div>
+          {#if out.cfg.data === 'raw'}
+            <small class="muted">Every sample at {fmtRate(rateHz)}, no averaging: ~{fmtBytesSize(rawBytesPerS)}/s, {fmtBytesSize(rawBytesPerS * 3600)}/h.</small>
+          {/if}
           <button class="primary" onclick={startLog} disabled={!dev || !!dev.link.playback || (out.kind !== 'native' && !out.cfg.fields.length)}>
             ● Start logging to file
           </button>
@@ -2331,8 +2364,22 @@
         </div>
       {/if}
       <div class="mon-grid">
-        <label>Baud <input type="number" list="baud-presets" bind:value={serialCfg.baud} disabled={monitor.open} />
-          <datalist id="baud-presets">{#each [9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600] as b (b)}<option value={b}></option>{/each}</datalist>
+        <label>Baud
+          <select
+            value={baudCustom || !BAUDS.includes(serialCfg.baud) ? 'custom' : String(serialCfg.baud)}
+            onchange={(e) => {
+              const v = (e.currentTarget as HTMLSelectElement).value;
+              baudCustom = v === 'custom';
+              if (!baudCustom) serialCfg.baud = Number(v);
+            }}
+            disabled={monitor.open}
+          >
+            {#each BAUDS as b (b)}<option value={String(b)}>{b.toLocaleString()}</option>{/each}
+            <option value="custom">Custom…</option>
+          </select>
+          {#if baudCustom || !BAUDS.includes(serialCfg.baud)}
+            <input type="number" min="50" step="1" bind:value={serialCfg.baud} disabled={monitor.open} title="Any rate the adapter supports" />
+          {/if}
         </label>
         <label>Data <select bind:value={serialCfg.dataBits} disabled={monitor.open}>{#each [5, 6, 7, 8] as b (b)}<option value={b}>{b}</option>{/each}</select></label>
         <label>Parity <select bind:value={serialCfg.parity} disabled={monitor.open}><option value="none">none</option><option value="even">even</option><option value="odd">odd</option></select></label>
@@ -3378,6 +3425,12 @@
     .seg button.on {
       background: var(--accent);
       color: #fff;
+    }
+    .seg.wide {
+      display: flex;
+    }
+    .seg.wide button {
+      flex: 1;
     }
     .error {
       color: var(--danger);
