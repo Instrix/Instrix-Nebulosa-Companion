@@ -52,6 +52,8 @@
   import Showcases from './lib/Showcases.svelte';
   import SideChannel from './lib/SideChannel.svelte';
   import SectionNav from './lib/panels/SectionNav.svelte';
+  import ConfigDialog from './lib/ConfigDialog.svelte';
+  import { CONFIG_VERSION, SECTION_IDS, listConfigs, defaultConfigName, asConfig, type Config, type SectionId } from './lib/config';
 
   import { SerialMonitor, defaultSerialConfig, type SerialConfig } from './lib/serialMonitor.svelte';
   import type { Showcase, ShowcaseCtx } from './lib/showcases';
@@ -426,6 +428,7 @@
       { label: 'Getting started', hint: '?', run: () => openHelp('start') },
       { label: 'Walkthrough', run: startTour },
       { label: 'Tutorials and showcases…', run: () => (showcasesOpen = true) },
+      { label: 'Configurations…', run: () => (configOpen = true) },
       { label: 'Keys and mouse', run: () => openHelp('keys') },
       { label: 'Troubleshooting', run: () => openHelp('trouble') },
       { sep: true },
@@ -733,6 +736,93 @@
   ];
   // only the sections actually in the sidebar for this mode (the logger ones show in Logger)
   const navSections = $derived(appMode === 'logger' ? [...SCOPE_SECTIONS, ...LOGGER_SECTIONS] : SCOPE_SECTIONS);
+
+  // ---- saved configurations (profiles) -----------------------------------
+  let configOpen = $state(false);
+  const SECTION_KEYS = ['device', 'board', 'acquisition', 'trigger', 'display', 'math', 'calibration', 'logger', 'monitor', 'output'];
+
+  function sectionOpenStates(): Record<string, boolean> {
+    const o: Record<string, boolean> = {};
+    for (const id of SECTION_KEYS) {
+      const v = localStorage.getItem(`nebulosa.section.${id}`);
+      if (v === '0' || v === '1') o[id] = v === '1';
+    }
+    return o;
+  }
+
+  /** the current settings as a named config */
+  function gatherConfig(name: string): Config {
+    return {
+      v: CONFIG_VERSION,
+      name,
+      saved: Date.now(),
+      sections: {
+        view: { appMode, meterScope, divIndex: view.divIndex, live: view.live },
+        display: {
+          trace: { ...trace },
+          shown: { ...shown },
+          axes: Object.fromEntries(SIGNALS.map((s) => [s, { auto: axes[s].auto, log: axes[s].log }])),
+        },
+        acquisition: { source, log2n, decimMode, rangeAuto, rangeManual, rangeMin, rangeMax, bufferMB },
+        trigger: trig.dump(),
+        logger: { logInterval, out: $state.snapshot(out) },
+        serial: $state.snapshot(serialCfg),
+        sidechannel: JSON.parse(localStorage.getItem('nebulosa.sca') ?? 'null') ?? undefined,
+        layout: { leftW, rightW, listH, uiScale: uiScale.value, theme: uiTheme.value, sections: sectionOpenStates() },
+      },
+    };
+  }
+
+  /** apply a config, all of it or only the picked sections */
+  function applyConfig(cfg: Config, pick?: Set<SectionId>) {
+    const sec = cfg.sections as Record<SectionId, Record<string, unknown>>;
+    const want = (id: SectionId) => sec[id] != null && (!pick || pick.has(id));
+    if (want('view')) {
+      const v = sec.view;
+      if (typeof v.appMode === 'string') setAppMode(v.appMode as typeof appMode);
+      if (typeof v.meterScope === 'string') meterScope = v.meterScope as MeterScope;
+      if (typeof v.divIndex === 'number') view.divIndex = v.divIndex;
+      view.live = !!v.live;
+    }
+    if (want('display')) {
+      const v = sec.display;
+      if (v.trace) Object.assign(trace, v.trace);
+      if (v.shown) Object.assign(shown, v.shown);
+      if (v.axes) for (const si of SIGNALS) { const a = (v.axes as Record<string, { auto: boolean; log: boolean }>)[si]; if (a) { axes[si].auto = !!a.auto; axes[si].log = !!a.log; } }
+    }
+    if (want('acquisition')) {
+      const v = sec.acquisition;
+      if (typeof v.source === 'number') source = v.source;
+      if (typeof v.log2n === 'number') log2n = v.log2n;
+      if (typeof v.decimMode === 'number') decimMode = v.decimMode;
+      if (typeof v.rangeAuto === 'boolean') rangeAuto = v.rangeAuto;
+      if (typeof v.rangeManual === 'number') rangeManual = v.rangeManual;
+      if (typeof v.rangeMin === 'number') rangeMin = v.rangeMin;
+      if (typeof v.rangeMax === 'number') rangeMax = v.rangeMax;
+      if (typeof v.bufferMB === 'number' && v.bufferMB !== bufferMB) { bufferMB = v.bufferMB; if (dev) applyBuffer(); }
+    }
+    if (want('trigger')) trig.restore(sec.trigger);
+    if (want('logger')) {
+      const v = sec.logger;
+      if (typeof v.logInterval === 'number' && LOG_INTERVALS.includes(v.logInterval)) logInterval = v.logInterval;
+      if (v.out) out = v.out as OutputCfg;
+    }
+    if (want('serial')) Object.assign(serialCfg, sec.serial);
+    if (want('sidechannel')) { try { localStorage.setItem('nebulosa.sca', JSON.stringify(sec.sidechannel)); } catch { /* ignore */ } }
+    if (want('layout')) {
+      const v = sec.layout;
+      if (typeof v.leftW === 'number') { leftW = v.leftW; save('nebulosa.leftW', leftW); }
+      if (typeof v.rightW === 'number') { rightW = v.rightW; save('nebulosa.rightW', rightW); }
+      if (typeof v.listH === 'number') listH = v.listH;
+      if (typeof v.uiScale === 'number' && canScale) setScale(v.uiScale);
+      if (typeof v.theme === 'string') setTheme(v.theme as 'system' | 'dark' | 'light');
+      const so = v.sections as Record<string, boolean> | undefined;
+      if (so) for (const [id, open] of Object.entries(so)) {
+        try { localStorage.setItem(`nebulosa.section.${id}`, open ? '1' : '0'); } catch { /* ignore */ }
+        if (open) dispatchEvent(new CustomEvent('nebulosa:open-section', { detail: id }));
+      }
+    }
+  }
   // the serial monitor: its messages become markers on the logger, and (when
   // logging to a file) a sidecar <log>.serial.csv next to it
   let serialCfg = $state<SerialConfig>(loadSerialCfg());
@@ -1364,6 +1454,8 @@
 
   function scaleMenu(e: MouseEvent) {
     openMenu(e, [
+      { label: 'Configurations…', run: () => (configOpen = true) },
+      { sep: true },
       { head: canScale ? 'UI scale' : "UI scale: the browser's zoom" },
       ...SCALES.map((v) => ({
         label: `${Math.round(v * 100)} %`,
@@ -1837,6 +1929,15 @@
 
   onMount(() => {
     restoreScale();
+    // a default configuration applied on boot (not during screenshot runs)
+    if (!demoRequested) {
+      const def = defaultConfigName();
+      const c = def ? listConfigs()[def] : null;
+      if (c) {
+        const cfg = asConfig(c);
+        if (cfg) applyConfig(cfg);
+      }
+    }
     scan();
     refreshRecordings();
     // drag a recording / log onto the window to open it (desktop app)
@@ -1916,6 +2017,10 @@
 
 {#if touring}
   <Tour steps={TOUR} connected={!!dev} ondemo={startDemo} onclose={() => (touring = false)} />
+{/if}
+
+{#if configOpen}
+  <ConfigDialog gather={gatherConfig} onapply={applyConfig} onclose={() => (configOpen = false)} />
 {/if}
 
 {#if showcasesOpen}

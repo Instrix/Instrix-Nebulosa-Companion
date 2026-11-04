@@ -102,6 +102,18 @@ export class TriggerState {
     }
   }
 
+  /** the full settings (including mode / log) for a saved config */
+  dump(): Record<string, unknown> {
+    const keys = [...SAVED, 'mode', 'log'] as const;
+    return Object.fromEntries(keys.map((k) => [k, this[k as keyof this]]));
+  }
+
+  /** apply settings from a config (only keys of a matching type) */
+  restore(v: Record<string, unknown>) {
+    const keys = [...SAVED, 'mode', 'log'];
+    for (const k of keys) if (k in v && typeof v[k] === typeof (this as Record<string, unknown>)[k]) (this as Record<string, unknown>)[k] = v[k];
+  }
+
   /** Saves the settings (call from an effect: it reads them all). */
   save() {
     const v = Object.fromEntries(SAVED.map((k) => [k, this[k]]));
