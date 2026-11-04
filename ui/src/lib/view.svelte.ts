@@ -32,6 +32,8 @@ export interface Marker {
   t0: number;
   /** s; null for a single marker */
   t1: number | null;
+  /** a name the user gave it, else the default Mn / Dn */
+  name?: string;
 }
 
 export const MARKER_COLORS = ['#ff4fd8', '#7cf05a', '#5ab4ff', '#ffb547', '#c792ff', '#ff6b6b'];
@@ -41,7 +43,7 @@ export function markerColor(m: Marker) {
 }
 
 export function markerName(m: Marker) {
-  return `${m.t1 == null ? 'M' : 'D'}${m.id}`;
+  return m.name?.trim() || `${m.t1 == null ? 'M' : 'D'}${m.id}`;
 }
 
 export class View {
@@ -93,6 +95,21 @@ export class View {
     this.markers = [];
     this.active = null;
     this.nextId = 1;
+  }
+
+  /** rename a marker (empty clears the custom name) */
+  setName(id: number, name: string) {
+    const m = this.markers.find((x) => x.id === id);
+    if (m) {
+      m.name = name.trim() || undefined;
+      this.markers = [...this.markers];
+    }
+  }
+
+  /** put back a set of markers (undo a clear) */
+  restore(markers: Marker[]) {
+    this.markers = markers.map((m) => ({ ...m }));
+    this.nextId = Math.max(0, ...markers.map((m) => m.id)) + 1;
   }
 
   /**

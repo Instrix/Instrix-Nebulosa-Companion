@@ -72,14 +72,14 @@
   let streaming = $state(false);
 
   // ---- acquisition --------------------------------------------------------
-  let source = $state<number>(SRC.STUB_RANDOM);
+  let source = $state<number>(stored('nebulosa.source', SRC.STUB_RANDOM));
   let log2n = $state(4);
   let decimMode = $state(0);
   let rateHz = $state(0);
-  let rangeAuto = $state(true);
-  let rangeManual = $state(0);
-  let rangeMin = $state(0);
-  let rangeMax = $state(5);
+  let rangeAuto = $state(stored('nebulosa.rangeAuto', 1) === 1);
+  let rangeManual = $state(stored('nebulosa.rangeManual', 0));
+  let rangeMin = $state(stored('nebulosa.rangeMin', 0));
+  let rangeMax = $state(stored('nebulosa.rangeMax', 5));
 
   // ---- data and view ------------------------------------------------------
   const store = new SampleStore();
@@ -105,11 +105,33 @@
   const available = $derived(SIGNALS.filter((s) => s !== 'm' || mathInfo.on));
   let trace = $state<TraceCfg>({ mean: true, range: true, sigma: false });
   const signals = $derived(available.filter((s) => shown[s]));
-  let axes = $state<Record<Signal, AxisCfg>>({
-    i: { auto: true, min: 0, max: 0.1, log: false },
-    v: { auto: true, min: 0, max: 5, log: false },
-    p: { auto: true, min: 0, max: 0.5, log: false },
-    m: { auto: true, min: 0, max: 1, log: false },
+  let axes = $state<Record<Signal, AxisCfg>>(loadAxes());
+  function loadAxes(): Record<Signal, AxisCfg> {
+    const base: Record<Signal, AxisCfg> = {
+      i: { auto: true, min: 0, max: 0.1, log: false },
+      v: { auto: true, min: 0, max: 5, log: false },
+      p: { auto: true, min: 0, max: 0.5, log: false },
+      m: { auto: true, min: 0, max: 1, log: false },
+    };
+    try {
+      const v = JSON.parse(localStorage.getItem('nebulosa.axes') ?? 'null');
+      if (v) for (const s of SIGNALS) if (v[s]) Object.assign(base[s], { auto: !!v[s].auto, log: !!v[s].log });
+    } catch {
+      /* storage unavailable */
+    }
+    return base;
+  }
+  // keep the per-signal log / fixed choice across sessions (not the dynamic min/max)
+  $effect(() => {
+    const flags = Object.fromEntries(SIGNALS.map((s) => [s, { auto: axes[s].auto, log: axes[s].log }]));
+    save('nebulosa.axes', flags);
+  });
+  $effect(() => save('nebulosa.source', source));
+  $effect(() => {
+    save('nebulosa.rangeAuto', rangeAuto ? 1 : 0);
+    save('nebulosa.rangeManual', rangeManual);
+    save('nebulosa.rangeMin', rangeMin);
+    save('nebulosa.rangeMax', rangeMax);
   });
 
   // ---- meter --------------------------------------------------------------
@@ -128,6 +150,20 @@
   let recFiles = $state<native.RecFile[]>([]);
   let recDir = $state('');
   let note = $state('');
+  let noteAction = $state<{ label: string; run: () => void } | null>(null);
+  let noteHistory = $state<{ text: string; wall: number }[]>([]);
+  let noteHistoryOpen = $state(false);
+  /** show a transient note, with an optional action button and a kept history */
+  function toast(text: string, action?: { label: string; run: () => void }) {
+    noteAction = action ?? null;
+    note = text; // the $effect records it in the history
+  }
+  // route plain note assignments to the history too
+  $effect(() => {
+    if (note && (!noteHistory.length || noteHistory[noteHistory.length - 1].text !== note)) {
+      noteHistory = [...noteHistory.slice(-49), { text: note, wall: Date.now() }];
+    }
+  });
   /** a recording open for playback: its header */
   let playback = $state<Record<string, unknown> | null>(null);
   let fitPending = false;
@@ -1385,6 +1421,39 @@
   }
 
   /** fits the screen to a marker: a dual one fills ~80 % of it, a single one is centred */
+  /** clear the markers, with an Undo toast */
+  function clearMarkersUndoable() {
+    if (!view.markers.length) return;
+    const snapshot = view.markers.map((m) => ({ ...m }));
+    view.clearMarkers();
+    toast(`Cleared ${snapshot.length} marker${snapshot.length > 1 ? 's' : ''}`, { label: 'Undo', run: () => view.restore(snapshot) });
+  }
+
+  function renameMarker(id: number) {
+    const m = view.markers.find((x) => x.id === id);
+    if (!m) return;
+    const name = prompt('Marker name (blank to reset):', m.name ?? '');
+    if (name != null) view.setName(id, name);
+  }
+
+  /** a marker's measurements as tab-separated text, to the clipboard */
+  async function copyMarker(id: number) {
+    const row = markerRows.find((r) => r.id === id);
+    if (!row) return;
+    const cols = [markerName({ id, t0: row.t0, t1: row.dt == null ? null : row.t0 + row.dt })];
+    if (row.dt != null) cols.push(`Δt ${fmtTime(row.dt)}`);
+    for (const s of SIGNALS) {
+      const c = row.ch[s];
+      if (c) cols.push(`${SIGNAL_INFO[s].name} ${fmtSI(c.mean, SIGNAL_INFO[s].unit, 5)}${row.dt != null && isFinite(c.integral) ? ` ∫ ${fmtSI(c.integral, SIGNAL_INFO[s].integral ?? '', 4)}` : ''}`);
+    }
+    try {
+      await navigator.clipboard.writeText(cols.join('\t'));
+      toast('Marker values copied');
+    } catch {
+      toast('Could not copy');
+    }
+  }
+
   function zoomToMarker(id: number) {
     const m = view.markers.find((x) => x.id === id);
     if (!m) return;
@@ -1423,6 +1492,8 @@
             ...(isNative ? [{ label: 'Export samples to CSV…', run: () => exportMarker(id) }] : []),
           ]
         : []),
+      { label: 'Rename…', run: () => renameMarker(id) },
+      { label: 'Copy values', run: () => copyMarker(id) },
       { label: 'Delete', hint: 'Del', danger: true, run: () => view.remove(id) },
     ];
   }
@@ -1431,7 +1502,7 @@
     const n = view.markers.length;
     const duals = view.markers.filter((m) => m.t1 != null).length;
     return [
-      { label: `Delete all markers${n ? ` (${n})` : ''}`, danger: true, disabled: !n, run: () => view.clearMarkers() },
+      { label: `Delete all markers${n ? ` (${n})` : ''}`, danger: true, disabled: !n, run: clearMarkersUndoable },
       ...(duals && duals < n
         ? [
             { label: `Delete the dual markers (${duals})`, danger: true, run: () => view.markers.filter((m) => m.t1 != null).forEach((m) => view.remove(m.id)) },
@@ -1768,6 +1839,20 @@
     restoreScale();
     scan();
     refreshRecordings();
+    // drag a recording / log onto the window to open it (desktop app)
+    let dropOff: (() => void) | undefined;
+    if (isNative) {
+      import('@tauri-apps/api/webview').then(({ getCurrentWebview }) => {
+        getCurrentWebview()
+          .onDragDropEvent((e) => {
+            if (e.payload.type !== 'drop') return;
+            const path = e.payload.paths.find((p) => /\.(nbrec|nblog)$/i.test(p));
+            if (path) openRecording(path);
+          })
+          .then((un) => (dropOff = un))
+          .catch(() => undefined);
+      });
+    }
     const t = setInterval(refreshMeter, 250);
     const wd = setInterval(watchdog, 2000);
     // the first run: the walkthrough (not in demo / screenshot mode)
@@ -1812,6 +1897,7 @@
     return () => {
       clearInterval(t);
       clearInterval(wd);
+      dropOff?.();
       dev?.link.close();
     };
   });
@@ -2165,7 +2251,20 @@
       <p class="error">{error}</p>
     {/if}
     {#if note}
-      <p class="note small">{note} <button class="ghost small" onclick={() => (note = '')}>✕</button></p>
+      <p class="note small">
+        {note}
+        {#if noteAction}<button class="ghost small undo" onclick={() => { noteAction!.run(); note = ''; noteAction = null; }}>{noteAction.label}</button>{/if}
+        <button class="ghost small" onclick={() => (noteHistoryOpen = !noteHistoryOpen)} title="Recent messages">🕐</button>
+        <button class="ghost small" onclick={() => { note = ''; noteAction = null; }}>✕</button>
+      </p>
+      {#if noteHistoryOpen}
+        <div class="note-history">
+          {#each noteHistory.slice(-12).reverse() as h (h.wall)}
+            <div><span class="muted">{new Date(h.wall).toLocaleTimeString()}</span> {h.text}</div>
+          {/each}
+          {#if !noteHistory.length}<div class="muted">No messages yet.</div>{/if}
+        </div>
+      {/if}
     {/if}
   </aside>
 
@@ -2223,7 +2322,7 @@
         <button class="ghost small" onclick={addSingleMarker} disabled={!hasData} title="Single marker (M, or double-click a plot)">+ Marker</button>
         <button class="ghost small" onclick={addDualMarker} disabled={!hasData} title="Dual marker (D, or drag across a plot)">+ Dual</button>
         {#if view.markers.length}
-          <button class="ghost small" onclick={() => view.clearMarkers()} title="Remove all markers">Clear</button>
+          <button class="ghost small" onclick={clearMarkersUndoable} title="Remove all markers">Clear</button>
         {/if}
       </div>
       <div class="tdiv">
@@ -2295,7 +2394,7 @@
         ondelete={(id) => view.remove(id)}
         onzoom={zoomToMarker}
         onanalyze={analyzeMarker}
-        onclear={() => view.clearMarkers()}
+        onclear={clearMarkersUndoable}
         onmenu={markerListMenu}
       />
       {/if}
@@ -2849,6 +2948,22 @@
   }
   .mon-msg.tx span {
     color: var(--muted);
+  }
+  .note-history {
+    margin: 2px 0 6px;
+    padding: 6px 8px;
+    border: 1px solid var(--border);
+    border-radius: var(--r-sm);
+    background: var(--bg);
+    font-size: 11px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    max-height: 160px;
+    overflow-y: auto;
+  }
+  .note .undo {
+    color: var(--accent);
   }
   .note {
     color: var(--ok);

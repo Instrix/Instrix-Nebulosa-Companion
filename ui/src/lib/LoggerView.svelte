@@ -238,6 +238,36 @@
     ctx.restore();
   }
 
+  /** jump the view to a clock time (HH:MM[:SS]) or a duration into the session (1m30s, 90s, 2:05) */
+  function jumpTo(text: string) {
+    const s = session;
+    if (!s.has_data) return;
+    const v = text.trim();
+    if (!v) return;
+    let target: number | null = null;
+    // HH:MM:SS (three parts) is a wall clock time today
+    const hms = v.match(/^(\d{1,2}):(\d{2}):(\d{2})$/);
+    if (hms && Number(hms[1]) <= 23) {
+      const d = new Date();
+      d.setHours(Number(hms[1]), Number(hms[2]), Number(hms[3]), 0);
+      const w = d.getTime() / 1000 - wallOffset;
+      if (w >= s.t_start && w <= s.t_end) target = w;
+    }
+    if (target == null) {
+      // a duration into the session: 1h, 1m30s, 90s, or M:SS
+      let secs = NaN;
+      const mmss = v.match(/^(\d+):(\d{2})$/);
+      const dur = v.match(/^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+(?:\.\d+)?)s?)?$/i);
+      if (mmss) secs = Number(mmss[1]) * 60 + Number(mmss[2]);
+      else if (dur && (dur[1] || dur[2] || dur[3])) secs = Number(dur[1] ?? 0) * 3600 + Number(dur[2] ?? 0) * 60 + Number(dur[3] ?? 0);
+      if (isFinite(secs)) target = s.t_start + secs;
+    }
+    if (target == null || !isFinite(target)) return;
+    const cur = lv.follow ? (lv.last > 0 ? lv.last : s.t_end - s.t_start) : Math.max(1e-3, lv.t1 - lv.t0);
+    const t = Math.max(s.t_start, Math.min(s.t_end, target));
+    lv = { follow: false, last: lv.last, t0: t - cur / 2, t1: t + cur / 2 };
+  }
+
   function build() {
     for (const p of plots) p.u.destroy();
     plots = [];
@@ -484,6 +514,12 @@
     {#if session.has_data}
       <span class="mono muted">since {fmtClock(session.t_start)}</span>
     {/if}
+    <input
+      class="goto mono"
+      placeholder="go to…"
+      title="Jump to a clock time (HH:MM:SS) or a time into the session (e.g. 1m30s)"
+      onkeydown={(e) => e.key === 'Enter' && jumpTo((e.currentTarget as HTMLInputElement).value)}
+    />
     <button class="ghost small reset" onclick={() => onreset?.()} title="Plots back as they first were: equal heights, axes on auto, all of the session, following">Reset view</button>
     <span class="hint muted">line: average · band: min–max · wheel: zoom (in to single samples on recent data) · shift+wheel: pan · drag: zoom in · double-click: all · click: open in scope</span>
   </div>
@@ -601,6 +637,11 @@
   .hint {
     margin-left: auto;
     font-size: 11px;
+  }
+  .goto {
+    width: 72px;
+    padding: 2px 6px;
+    font-size: 12px;
   }
   .plots {
     position: relative;
