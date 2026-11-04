@@ -5,6 +5,7 @@
   import { fmtRate } from '../si';
   import { siInput } from '../siInput';
   import { fmtTime } from '../view.svelte';
+  import Section from './Section.svelte';
 
   let {
     available,
@@ -33,8 +34,7 @@
   } = $props();
 </script>
 
-<section>
-  <h2>Signals</h2>
+<Section id="display" title="Display" summary={signals.map((s) => SIGNAL_INFO[s].sym).join(' ') || 'nothing shown'}>
   <div class="chips">
     {#each available as s (s)}
       <label class="chip" style="--c: var({SIGNAL_INFO[s].color})">
@@ -76,4 +76,4 @@
     </select>
     <small class="muted">every sample: {fmtTime(bufferS)} at {fmtRate(rateHz || 2e6)}</small>
   </label>
-</section>
+</Section>

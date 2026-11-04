@@ -37,6 +37,7 @@
     onopen,
     intervals = [],
     oninterval,
+    onreset,
   }: {
     store: SampleStore;
     /** the session log's state (reactive) */
@@ -52,6 +53,8 @@
     /** the log intervals to choose from, and a choice (it starts the session log over) */
     intervals?: number[];
     oninterval?: (s: number) => void;
+    /** the Reset view button */
+    onreset?: () => void;
   } = $props();
 
   const MIN_FRAME_MS = 200;
@@ -115,6 +118,11 @@
   function equalize() {
     weights = { i: 1, v: 1, p: 1, m: 1 };
     save(WEIGHTS_KEY, weights);
+  }
+
+  /** the plots at equal heights again */
+  export function resetLayout() {
+    equalize();
   }
 
   /** the time each block on screen averages */
@@ -415,6 +423,7 @@
     {#if session.has_data}
       <span class="mono muted">since {fmtClock(session.t_start)}</span>
     {/if}
+    <button class="ghost small reset" onclick={() => onreset?.()} title="Plots back as they first were: equal heights, axes on auto, all of the session, following">Reset view</button>
     <span class="hint muted">line: average · band: min–max · wheel: zoom (in to single samples on recent data) · shift+wheel: pan · drag: zoom in · double-click: all · click: open in scope</span>
   </div>
   <!-- svelte-ignore a11y_no_static_element_interactions -->

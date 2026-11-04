@@ -1,6 +1,7 @@
 <script lang="ts">
   // The math channel: an expression of I, V, P, t computed on every sample, its name and unit.
   import { mathInfo } from '../Scope.svelte';
+  import Section from './Section.svelte';
 
   export interface MathDraft {
     name: string;
@@ -36,9 +37,7 @@
   }
 </script>
 
-<section>
-  <details open={mathInfo.on}>
-    <summary><h2>Math channel</h2></summary>
+<Section id="math" title="Math channel" open={false} summary={mathInfo.on ? `${mathInfo.name} = ${draft.expr}` : 'off'}>
     <div class="cal">
       <label>
         Example
@@ -62,5 +61,4 @@
       {#if error}<p class="error small">{error}</p>{/if}
       <p class="muted small">Computed on every sample, as the 4th signal: plots, stats, markers, triggers, analysis and CSV.</p>
     </div>
-  </details>
-</section>
+</Section>

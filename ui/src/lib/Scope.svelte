@@ -135,6 +135,11 @@
     save(WEIGHTS_KEY, weights);
   }
 
+  /** the plots at equal heights again */
+  export function resetLayout() {
+    equalize();
+  }
+
   // every plot follows its own host's size (rows change size without the scope doing so)
   const ro =
     typeof ResizeObserver === 'undefined'

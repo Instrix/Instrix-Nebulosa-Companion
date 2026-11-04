@@ -7,6 +7,7 @@
   import type { Device } from '../device';
   import { hex } from '../nbp';
   import { fmtBytes } from '../si';
+  import Section from './Section.svelte';
 
   let {
     dev,
@@ -173,8 +174,12 @@
 </script>
 
 {#if !unsupported}
-  <section class="board" data-tour="board">
-    <h2>Board</h2>
+  <Section
+    id="board"
+    title="Board"
+    tour="board"
+    summary={!board ? '' : `front end ${supplies === 2 ? 'on' : supplies === 1 ? 'half on' : 'off'}${clockOff != null && Math.abs(clockOff) >= 3 ? ' · clock off' : ''}`}
+  >
     {#if !board}
       <small class="muted">Asking the board…</small>
     {:else}
@@ -228,8 +233,8 @@
       </div>
       <label class="check small"><input type="checkbox" checked={autoSync} onchange={(e) => setAuto((e.currentTarget as HTMLInputElement).checked)} /> Sync the clock on connect</label>
 
-      <details>
-        <summary><h2>Power and board</h2></summary>
+      <details class="more">
+        <summary>Power input, supplies, status</summary>
         <div class="more">
           {#if board.usb_c && pdos.length}
             <label>
@@ -262,7 +267,7 @@
       </details>
     {/if}
     {#if error}<p class="error small">{error}</p>{/if}
-  </section>
+  </Section>
 {/if}
 
 {#if showTests && board}

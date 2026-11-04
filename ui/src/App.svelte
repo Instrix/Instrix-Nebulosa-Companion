@@ -39,6 +39,7 @@
   import ConnectPanel from './lib/panels/ConnectPanel.svelte';
   import MathPanel from './lib/panels/MathPanel.svelte';
   import BoardPanel from './lib/panels/BoardPanel.svelte';
+  import Section from './lib/panels/Section.svelte';
   import Help, { type HelpTab } from './lib/Help.svelte';
   import Tour, { markTourSeen, tourSeen, type TourStep } from './lib/Tour.svelte';
   import { SCALES, canScale, restoreScale, setScale, setTheme, stepScale, uiScale, uiTheme } from './lib/uiScale.svelte';
@@ -125,6 +126,7 @@
   let playback = $state<Record<string, unknown> | null>(null);
   let fitPending = false;
   let scope = $state<Scope>();
+  let logger = $state<LoggerView>();
 
   async function refreshRecordings() {
     if (!isNative) return;
@@ -517,44 +519,55 @@
     error = '';
     const t1 = store.tEnd;
     const t0 = Math.max(store.tStart, t1 - 4);
-    const st = await store.stats(t0, t1);
+    // the levels from short averages (4000 columns over 4 s: ~1 ms each), so a
+    // noise spike can't pull the trigger level away from the signal
+    const L0 = await store.lod(t0, t1, 4000);
+    const levels = (s: Signal) => {
+      let lo = Infinity, hi = -Infinity, sum = 0, n = 0;
+      for (const a of L0.ch[s].avg) {
+        if (a == null) continue;
+        if (a < lo) lo = a;
+        if (a > hi) hi = a;
+        sum += a;
+        n++;
+      }
+      return { lo, hi, mean: n ? sum / n : 0, n };
+    };
     // the most active: largest swing for its level (power follows current)
     const score = (s: Signal) => {
-      const m = st[s];
-      return m.n ? m.pp / Math.max(Math.abs(m.mean), m.pp * 0.01, 1e-12) : 0;
+      const m = levels(s);
+      return m.n ? (m.hi - m.lo) / Math.max(Math.abs(m.mean), (m.hi - m.lo) * 0.01, 1e-12) : 0;
     };
     const src: Signal = score('v') > 1.5 * score('i') ? 'v' : 'i';
-    const m = st[src];
-    for (const s of SIGNALS) axes[s].auto = true;
-    if (!m.n || m.pp < Math.abs(m.mean) * 0.02) {
+    const m = levels(src);
+    for (const s of SIGNALS) (axes[s].auto = true), (axes[s].log = false);
+    view.live = true;
+    if (!m.n || m.hi - m.lo < Math.max(Math.abs(m.mean) * 0.02, 1e-12)) {
       // flat: nothing to trigger on
       trig.mode = 'roll';
       view.divIndex = TIME_DIVS.indexOf(0.1);
-      view.live = true;
-      note = 'Autoset: no activity to trigger on; rolling.';
+      autosetMsg('No activity to trigger on: rolling at 100 ms/div');
       return;
     }
-    const level = (m.min + m.max) / 2;
-    const hyst = (m.max - m.min) * 0.1;
+    const level = (m.lo + m.hi) / 2;
+    const hyst = (m.hi - m.lo) * 0.1;
 
-    /** median interval between rising crossings over [a, b] */
+    /** median interval between rising crossings of the level over [a, b] (on short averages) */
     async function period(a: number, b: number): Promise<number | null> {
       const L = await store.lod(a, b, 8000);
       const c = L.ch[src];
       let armed = false;
       const ups: number[] = [];
       for (let k = 0; k < L.t.length; k++) {
-        const lo = c.min[k], hi = c.max[k];
-        if (lo == null || hi == null) {
+        const v = c.avg[k];
+        if (v == null) {
           armed = false; // a gap
           continue;
         }
-        // armed by a column wholly below (a column holding a falling edge has
-        // lows and highs too: it mustn't count as a rising one)
-        if (armed && hi >= level) {
+        if (armed && v >= level) {
           ups.push(L.t[k]);
           armed = false;
-        } else if (hi < level - hyst) armed = true;
+        } else if (v < level - hyst) armed = true;
       }
       if (ups.length < 3) return null;
       const d = ups.slice(1).map((t, k) => t - ups[k]).sort((x, y) => x - y);
@@ -581,7 +594,29 @@
     trig.position = 0.3;
     trig.mode = 'auto';
     view.live = true;
-    note = `Autoset: ${SIGNAL_INFO[src].name.toLowerCase()} ↑ at ${fmtSI(level, SIGNAL_INFO[src].unit, 3)}, period ${p >= 4 ? '–' : fmtTime(p)}, ${fmtTime(TIME_DIVS[k])}/div`;
+    autosetMsg(`${SIGNAL_INFO[src].name} ↑ at ${fmtSI(level, SIGNAL_INFO[src].unit, 3)} · period ${p >= 4 ? '–' : fmtTime(p)} · ${fmtTime(TIME_DIVS[k])}/div`);
+  }
+
+  /** what Autoset did, next to its button for a few seconds */
+  let autosetNote = $state('');
+  let autosetTimer: ReturnType<typeof setTimeout> | undefined;
+  function autosetMsg(m: string) {
+    autosetNote = m;
+    clearTimeout(autosetTimer);
+    autosetTimer = setTimeout(() => (autosetNote = ''), 6000);
+  }
+
+  /** the plots as they first were: equal heights, axes on auto, mean and min–max, 100 ms/div, live */
+  function resetView() {
+    trace = { mean: true, range: true, sigma: false };
+    for (const s of SIGNALS) (axes[s].auto = true), (axes[s].log = false);
+    scope?.resetLayout();
+    logger?.resetLayout();
+    if (appMode === 'logger') lv = { follow: true, last: 0, t0: 0, t1: 0 };
+    else {
+      view.divIndex = TIME_DIVS.indexOf(0.1);
+      view.live = true;
+    }
   }
 
   // ---- scope / logger ------------------------------------------------------------
@@ -616,6 +651,7 @@
     view.end = t + view.windowS / 2;
   }
 
+  const SOURCE_NAME: Record<number, string> = { [SRC.STUB_RANDOM]: 'Stub: random', [SRC.STUB_PATTERN]: 'Stub: pattern', [SRC.AD7387]: 'ADC' };
   const LOG_INTERVALS = [0.001, 0.01, 0.1, 1, 10];
   let logInterval = $state(stored('nebulosa.logInterval', 0.1, (v) => LOG_INTERVALS.includes(v)));
   let logging = $state<Meta['logging'] | null>(null);
@@ -1138,6 +1174,7 @@
       { label: 'Zoom in here', hint: '+', disabled: view.divIndex === 0, run: () => (holdAt(at), view.zoom(store, -1, at.t)) },
       { label: 'Zoom out', hint: '−', disabled: view.divIndex === TIME_DIVS.length - 1, run: () => view.zoom(store, 1, at.t) },
       { label: 'Autoset', disabled: !hasData, run: autoset },
+      { label: 'Reset view', run: resetView },
     );
     if (at.sig) {
       const sig = at.sig, ax = axes[sig], range = at.range;
@@ -1579,8 +1616,17 @@
         <button onclick={fitAll}>Show all</button>
       </section>
     {:else if info}
-      <section data-tour="device">
-        <h2>Device</h2>
+      <!-- always in reach: start / stop, and what is streaming -->
+      <div class="runbar">
+        {#if streaming}
+          <button class="danger" onclick={stop}>■ Stop</button>
+        {:else}
+          <button class="primary" onclick={start}>▶ Start</button>
+        {/if}
+        <span class="muted small">{SOURCE_NAME[source] ?? ''} · {fmtRate(rateHz)}</span>
+      </div>
+
+      <Section id="device" title="Device" tour="device" open={false} summary="{info.link_name} · firmware {info.fw_version_str}">
         <dl>
           <dt>Firmware</dt><dd>{info.fw_version_str} <small class="muted">{info.build}</small></dd>
           <dt>FPGA</dt>
@@ -1596,14 +1642,13 @@
         {#if info.caps & CAP.BOARD}
           <button class="ghost small" onclick={() => (updating = true)} title="Firmware and gateware">Software update…</button>
         {/if}
-      </section>
+      </Section>
 
       {#if info.caps & CAP.BOARD}
         <BoardPanel {dev} {streaming} bind:board onstop={stop} onstart={start} onnote={(m) => (note = m)} />
       {/if}
 
-      <section data-tour="acquisition">
-        <h2>Acquisition</h2>
+      <Section id="acquisition" title="Acquisition" tour="acquisition" summary="{SOURCE_NAME[source] ?? ''} · {fmtRate(rateHz)}{decimMode === 1 && log2n ? ' subsampled' : ''}">
         <label>
           Source
           <select bind:value={source} disabled={streaming}>
@@ -1636,28 +1681,18 @@
             <label>Range <input type="number" min="0" max="5" bind:value={rangeManual} disabled={streaming} /></label>
           {/if}
         {/if}
-        <div class="row">
-          {#if streaming}
-            <button class="danger" onclick={stop}>Stop</button>
-          {:else}
-            <button class="primary" onclick={start}>Start</button>
-          {/if}
-        </div>
-      </section>
+        {#if streaming}<small class="muted">Source and range change while stopped.</small>{/if}
+      </Section>
     {/if}
 
     {#if appMode === 'logger'}
-    <section data-tour="logger-panel">
-      <h2>Logger</h2>
-      <label>
-        Interval
+    <Section id="logger" title="Logger" tour="logger-panel" summary={logging?.active || exporting ? '● logging to file' : `${fmtTime(logInterval)} intervals`}>
+      <label title="Per interval: min, max, mean and σ of every signal. In memory it stays bounded: older intervals merge 10×, then 100×.">
+        Interval <span class="muted small">· ~{fmtBytesSize(sess.bytes)} in memory</span>
         <select value={logInterval} onchange={(e) => changeLogInterval(Number((e.currentTarget as HTMLSelectElement).value))}>
           {#each LOG_INTERVALS as iv (iv)}<option value={iv}>{fmtTime(iv)}</option>{/each}
         </select>
       </label>
-      <small class="muted">
-        Per interval: min, max, mean, σ of every signal. In memory: bounded (older intervals merge 10×, then 100×), ~{fmtBytesSize(sess.bytes)} now.
-      </small>
       {#if logging?.active || exporting}
         <button class="danger" onclick={() => stopLog()}>■ Stop logging</button>
         <dl>
@@ -1669,8 +1704,20 @@
           {#if diskFree != null}<dt>Disk free</dt><dd>{fmtBytesSize(diskFree)}</dd>{/if}
         </dl>
       {/if}
-      <details class="out" open={!logging?.active && !exporting}>
-        <summary><h2>Output</h2></summary>
+      {#if isNative}
+        {#if !logging?.active && !exporting}
+          <button class="primary" onclick={startLog} disabled={!dev || !!dev.link.playback || (out.kind !== 'native' && !out.cfg.fields.length)}>
+            ● Start logging to file
+          </button>
+          <small class="muted">To ~/Documents/Nebulosa, as set in File output. Stops cleanly if the disk runs low.</small>
+        {/if}
+      {:else}
+        <small class="muted">Files need the desktop app; File output below previews what would be written.</small>
+      {/if}
+      <button class="ghost" onclick={newSession} disabled={!sess.has_data}>New session</button>
+    </Section>
+
+    <Section id="output" title="File output" open={false} summary="{out.kind === 'native' ? 'Nebulosa log' : out.cfg.format.type.toUpperCase()} · {out.cfg.data === 'raw' ? 'every sample' : 'per interval'}">
         <ExportEditor
           bind:out
           link={activeLink}
@@ -1688,22 +1735,9 @@
             </select>
           </label>
         {/if}
-      </details>
-      {#if isNative}
-        {#if !logging?.active && !exporting}
-          <button class="primary" onclick={startLog} disabled={!dev || !!dev.link.playback || (out.kind !== 'native' && !out.cfg.fields.length)}>
-            ● Start logging to file
-          </button>
-          <small class="muted">To ~/Documents/Nebulosa. Stops cleanly when the disk runs low.</small>
-        {/if}
-      {:else}
-        <small class="muted">Writing files needs the desktop app; here the session stays in memory (bounded). The preview shows what would be written.</small>
-      {/if}
-      <button class="ghost" onclick={newSession} disabled={!sess.has_data}>New session</button>
-    </section>
+    </Section>
     {:else}
-    <div data-tour="trigger"><TriggerPanel {trig} {available} onlevel50={level50} onarm={() => trig.rearm(store, view)} /></div>
-
+      <TriggerPanel {trig} {available} onlevel50={level50} onarm={() => trig.rearm(store, view)} />
     {/if}
 
     <SignalsPanel {available} {signals} bind:shown bind:trace bind:axes bind:bufferMB bufferChoices={BUFFER_CHOICES} {bufferS} {rateHz} onbuffer={applyBuffer} />
@@ -1723,7 +1757,7 @@
   <main bind:this={mainEl}>
     {#if appMode === 'logger'}
       <div class="logger-wrap">
-        <LoggerView {store} session={sess} {signals} {axes} {trace} {wallOffset} bind:lv onopen={openInScope} intervals={LOG_INTERVALS} oninterval={changeLogInterval} />
+        <LoggerView bind:this={logger} {store} session={sess} {signals} {axes} {trace} {wallOffset} bind:lv onopen={openInScope} intervals={LOG_INTERVALS} oninterval={changeLogInterval} onreset={resetView} />
       </div>
     {:else}
     <div class="strip" data-tour="strip">
@@ -1741,6 +1775,8 @@
         </span>
       {/if}
       <button class="small autoset" onclick={autoset} disabled={!hasData} title="Trigger, time/div and axes from the signal (like a scope's Autoset)">Autoset</button>
+      <button class="ghost small" onclick={resetView} title="Plots back as they first were: equal heights, axes on auto, mean and min–max, 100 ms/div, live">Reset view</button>
+      {#if autosetNote}<span class="autoset-note" role="status">{autosetNote}</span>{/if}
       <div class="tdiv">
         <button class="ghost small" onclick={() => view.zoom(store, -1)} disabled={view.divIndex === 0} title="Faster (+, wheel)">−</button>
         <span class="mono">{fmtTime(view.timeDiv)}/div</span>
@@ -2064,6 +2100,18 @@
     border-color: var(--danger);
     color: #fff;
   }
+  .autoset-note {
+    font-size: 12px;
+    padding: 2px 8px;
+    border: 1px solid var(--accent);
+    border-radius: var(--r-sm);
+    color: var(--text);
+    background: color-mix(in srgb, var(--accent) 15%, transparent);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 420px;
+  }
   .autoset {
     font-weight: 600;
     border-color: var(--accent);
@@ -2257,6 +2305,22 @@
   }
   .muted {
     color: var(--muted);
+  }
+  .runbar {
+    position: sticky;
+    top: -8px;
+    z-index: 4;
+    margin: -8px -16px 0;
+    padding: 10px 16px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .runbar button {
+    flex: none;
+    min-width: 96px;
   }
   /* the sidebar's panels (components too): shared look */
   aside :global {

@@ -2,6 +2,7 @@
   // Codes to units: each current range's full scale, the voltage's scale and offset.
   import type { Calibration } from '../nbp';
   import { siInput } from '../siInput';
+  import Section from './Section.svelte';
 
   let {
     cal = $bindable(),
@@ -20,9 +21,7 @@
   const calNote = $derived(note);
 </script>
 
-<section>
-  <details>
-    <summary><h2>Calibration</h2></summary>
+<Section id="calibration" title="Calibration" open={false}>
     <div class="cal">
       <p class="muted small">Firmware scaling by default. I = code × full scale / 16384; V = code × scale + offset.</p>
       {#each Array.from({ length: ranges }, (_, r) => r) as r (r)}
@@ -45,5 +44,4 @@
       </div>
       {#if calNote}<p class="muted small">{calNote}</p>{/if}
     </div>
-  </details>
-</section>
+</Section>

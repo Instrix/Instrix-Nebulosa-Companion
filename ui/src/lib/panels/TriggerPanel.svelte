@@ -3,6 +3,7 @@
   import type { Signal } from '../nbp';
   import { SIGNAL_INFO } from '../Scope.svelte';
   import { siInput } from '../siInput';
+  import Section from './Section.svelte';
   import { KIND_LABEL, type KindType, type TrigMode, type TriggerState } from '../trigger.svelte';
 
   let {
@@ -29,8 +30,7 @@
   }
 </script>
 
-<section>
-  <h2>Trigger</h2>
+<Section id="trigger" title="Trigger" tour="trigger" summary={{ roll: 'Roll', auto: 'Auto', normal: 'Normal', single: 'Single' }[trig.mode] + (trig.detecting ? ` · ${SIGNAL_INFO[trig.source].sym} ${KIND_LABEL[trig.kind] ?? trig.kind}` : '')}>
   <div class="seg wide" role="group" aria-label="Display mode">
     {#each [['roll', 'Roll'], ['auto', 'Auto'], ['normal', 'Normal'], ['single', 'Single']] as [m, label] (m)}
       <button class:on={trig.mode === m} onclick={() => setMode(m as TrigMode)}>{label}</button>
@@ -153,4 +153,4 @@
       <button class="primary" onclick={onarm}>Arm</button>
     {/if}
   {/if}
-</section>
+</Section>
