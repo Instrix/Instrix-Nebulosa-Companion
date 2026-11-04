@@ -24,6 +24,7 @@
     onclose: () => void;
   } = $props();
 
+  const LISTS = new Set(['DL', 'UL', 'OL', 'TABLE', 'TBODY']);
   const GAP = 64; // between the snapshot and the descriptions: room for the arrows
   const CARD_W = 300;
 
@@ -79,19 +80,21 @@
     snapRoot = copy;
   }
 
-  /** an option's element in the copy: "$selector", "~contained text", or a label's start */
+  /** an option's element in the copy: "$selector", "=exact text", "~contained text", or a label's start */
   function find(needle: string): HTMLElement | null {
     if (!snapRoot) return null;
     if (needle.startsWith('$')) return snapRoot.querySelector<HTMLElement>(needle.slice(1));
     const contains = needle.startsWith('~');
-    const n = (contains ? needle.slice(1) : needle).toLowerCase();
+    const exact = needle.startsWith('=');
+    const n = (contains || exact ? needle.slice(1) : needle).toLowerCase();
     const body = snapRoot.querySelector<HTMLElement>('.body') ?? snapRoot;
     // in document order a parent comes first: the first match small enough to be
     // one control (not a whole group) is the outermost such element
     for (const el of body.querySelectorAll<HTMLElement>('*')) {
-      if (el.tagName === 'OPTION' || el.closest('option')) continue;
+      // an option is in its select; a list holds several rows (its row is the option)
+      if (el.tagName === 'OPTION' || el.closest('option') || LISTS.has(el.tagName)) continue;
       const t = (el.textContent ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
-      if (!(contains ? t.includes(n) : t.startsWith(n))) continue;
+      if (!(exact ? t === n : contains ? t.includes(n) : t.startsWith(n))) continue;
       const r = el.getBoundingClientRect();
       if (r.width && r.height && r.height <= 96) return el;
     }
@@ -107,11 +110,16 @@
       for (const n of needles) {
         const el = find(n);
         if (!el) continue;
-        const r = el.getBoundingClientRect();
-        x0 = Math.min(x0, r.left);
-        y0 = Math.min(y0, r.top);
-        x1 = Math.max(x1, r.right);
-        y1 = Math.max(y1, r.bottom);
+        // a term in a list: the row, its value with it
+        const els = [el];
+        if (el.tagName === 'DT' && el.nextElementSibling?.tagName === 'DD') els.push(el.nextElementSibling as HTMLElement);
+        for (const e of els) {
+          const r = e.getBoundingClientRect();
+          x0 = Math.min(x0, r.left);
+          y0 = Math.min(y0, r.top);
+          x1 = Math.max(x1, r.right);
+          y1 = Math.max(y1, r.bottom);
+        }
       }
       if (x0 === Infinity) return null;
       return { x: x0 - s.left - 3, y: y0 - s.top - 3, w: x1 - x0 + 6, h: y1 - y0 + 6 };
@@ -124,17 +132,19 @@
     const bottom = { l: 0, r: 0 };
     for (const k of order) {
       const b = boxes[k];
-      const want = b ? b.y + b.h / 2 - 16 - (narrow(b) ? 40 : 0) : Math.min(bottom.l, bottom.r);
+      const want = b ? b.y + b.h / 2 - 16 - (fromAbove(b) ? 40 : 0) : Math.min(bottom.l, bottom.r);
       // a narrow target (a button in a row) goes to its nearer side; the rest
       // to whichever side has room closest to it
+      // a small control at an edge: that side, the arrow straight in; else
+      // whichever side has room nearest to it
       const side: 'l' | 'r' =
-        b && narrow(b)
-          ? b.x + b.w / 2 < SNAP_X + snapW / 2
-            ? 'l'
-            : 'r'
-          : Math.max(want, bottom.r) <= Math.max(want, bottom.l)
+        b && narrow(b) && atEdge(b, 'l')
+          ? 'l'
+          : b && narrow(b) && atEdge(b, 'r')
             ? 'r'
-            : 'l';
+            : Math.max(want, bottom.r) <= Math.max(want, bottom.l)
+              ? 'r'
+              : 'l';
       const top = Math.max(want, bottom[side]);
       t[k] = top;
       sd[k] = side;
@@ -164,7 +174,12 @@
     return { destroy: () => ro.disconnect() };
   }
 
-  const narrow = (b: { w: number }) => b.w < snapW * 0.6;
+  type Box = { x: number; y: number; w: number; h: number };
+  const narrow = (b: Box) => b.w < snapW * 0.6;
+  /** nothing between the box and that side of the snapshot: an arrow can come straight in */
+  const atEdge = (b: Box, side: 'l' | 'r') => (side === 'l' ? b.x - SNAP_X : SNAP_X + snapW - (b.x + b.w)) < 16;
+  /** a small control mid-row: the arrow comes from above, not across its neighbours */
+  const fromAbove = (b: Box) => narrow(b) && !atEdge(b, 'l') && !atEdge(b, 'r');
 
   /** the arrow from description k to its box: from the card's edge facing the snapshot */
   function arrow(k: number) {
@@ -176,8 +191,8 @@
     const y1 = Math.min(Math.max(mid, top + 14), top + h - 14);
     const left = sides[k] === 'l';
     const x1 = left ? CARD_W : rightX;
-    if (narrow(b)) {
-      // in from above: a side arrow would cross the buttons next to it
+    if (fromAbove(b)) {
+      // in from above: a side arrow would cross the controls next to it
       const x2 = b.x + b.w / 2;
       const y2 = b.y - 2;
       const dx = Math.max(20, Math.abs(x1 - x2) * 0.5) * (left ? 1 : -1);
@@ -343,11 +358,13 @@
   }
   .snap {
     position: absolute;
-    top: 0;
-    padding: 8px 10px;
-    border: 1px dashed var(--border);
+    top: 8px;
+    /* the section's own width: a frame outside it, not padding inside */
+    outline: 1px dashed var(--border);
+    outline-offset: 7px;
     border-radius: var(--r);
     background: var(--bg);
+    box-shadow: 0 0 0 7px var(--bg);
     pointer-events: none;
     user-select: none;
     box-sizing: border-box;

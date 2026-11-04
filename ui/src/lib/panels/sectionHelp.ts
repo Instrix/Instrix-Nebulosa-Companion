@@ -36,10 +36,10 @@ export const SECTION_HELP: Record<string, SectionHelp> = {
   board: {
     intro: "The board's own state: power input, the isolated supplies of the measurement side, clock and self-test.",
     items: [
-      { name: 'USB-C / PD', text: 'Power negotiated with the supply. PD errors mean the supply could not give what was asked.', at: '~USB-C' },
+      { name: 'USB-C / PD', text: 'Power negotiated with the supply. PD errors mean the supply could not give what was asked.', at: 'USB-C' },
       { name: 'Analog front end', text: 'The isolated supplies H and L. Off: no measurement, the plots read zero.', at: 'Analog front end' },
-      { name: 'Clock / Sync clock', text: "The board's RTC. Sync sets it to this computer's time, which file timestamps use.", at: 'Sync clock' },
-      { name: 'Self-test', text: 'Checks crystals, supplies, flash, SD card, screen, FPGA and Ethernet. Run again after a fix.', at: 'Self-test' },
+      { name: 'Clock / Sync clock', text: "The Clock row: the board's RTC against this computer. Sync clock sets it to this computer's time, which file timestamps use.", at: '=Sync clock' },
+      { name: 'Self-test', text: 'Checks crystals, supplies, flash, SD card, screen, FPGA and Ethernet. Run again after a fix.', at: '=Self-test' },
     ],
   },
   acquisition: {
@@ -57,7 +57,7 @@ export const SECTION_HELP: Record<string, SectionHelp> = {
     items: [
       { name: 'Signals', text: 'Current I, voltage V, power P and the math channel M. Each gets its own plot.', at: '$.chips' },
       { name: 'Trace', text: 'Each pixel covers many samples: the line is their mean, the bands their min–max and ±1σ. Toggle each part.', at: 'Trace' },
-      { name: 'Auto / Fixed', text: 'Auto fits the y axis to the data; Fixed keeps the Min and Max you type.', at: '~axis' },
+      { name: 'Auto / Fixed', text: 'Auto fits the y axis to the data; Fixed keeps the Min and Max you type.', at: ['$.axis:has(button[title="Logarithmic scale"]) .seg button:nth-child(2)', '$.axis:has(button[title="Logarithmic scale"]) .seg button:nth-child(3)'] },
       { name: 'Log', text: 'Logarithmic y axis: sleep currents and active bursts on one plot.', at: '$button[title="Logarithmic scale"]' },
     ],
     tips: ['Wheel: time per division; Shift + wheel pans. Space: Live / Hold.', 'Drag across a plot for a dual marker; Ctrl + drag zooms in on the span; double-click for a single marker.'],
@@ -106,8 +106,8 @@ export const SECTION_HELP: Record<string, SectionHelp> = {
     intro: 'Turns ADC codes into amps and volts. The firmware scaling is used by default.',
     items: [
       { name: 'Scale / offset', text: 'I = code × full scale / 16384; V = code × scale + offset.', at: ['Range 0', 'Voltage offset'] },
-      { name: 'Apply', text: 'Uses your values from now on; plots and files take them.', at: 'Apply' },
-      { name: 'Firmware defaults', text: 'Back to the scaling the board reports.', at: 'Firmware defaults' },
+      { name: 'Apply', text: 'Uses your values from now on; plots and files take them.', at: '=Apply' },
+      { name: 'Firmware defaults', text: 'Back to the scaling the board reports.', at: '=Firmware defaults' },
     ],
     tips: ['Measure a known load and supply, then adjust until the readings match.'],
   },

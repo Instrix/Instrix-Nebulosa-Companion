@@ -743,7 +743,7 @@
       view.divIndex,
       store.tStart,
       markersKey(),
-      `${annotations.length}`,
+      `${annotations.length}:${annotations[annotations.length - 1]?.wall}`,
       signals.map((s) => `${axes[s].auto},${axes[s].min},${axes[s].max},${axes[s].log}`).join(';'),
       `${trace.mean}${trace.range}${trace.sigma}`,
       `${trig.mode},${trig.log},${trig.source},${trig.levels().join()},${trig.shown},${trig.logVersion}`,

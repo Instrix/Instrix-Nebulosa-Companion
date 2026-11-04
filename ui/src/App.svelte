@@ -944,7 +944,7 @@
   }
   /** the serial messages captured during this log, as a sidecar next to it */
   async function writeSerialSidecar(logFile?: string) {
-    const msgs = monitor.annotations.slice(monitorLogStart);
+    const msgs = monitor.since(monitorLogStart);
     if (!isNative || !logFile || !msgs.length) return;
     const head = 'unix_time_s,fpga_time_s,wall_clock,kind,message\n';
     const body = msgs
@@ -1029,7 +1029,7 @@
     error = '';
     try {
       save('nebulosa.rawCapGB', rawCapGB);
-      monitorLogStart = monitor.annotations.length;
+      monitorLogStart = monitor.total;
       logPath = await native.startLogging({
         app: 'Nebulosa Companion',
         created: new Date().toISOString(),
@@ -1414,8 +1414,30 @@
 
   let meterBusy = false;
 
+  /** what the meter's last answers were for: the same again needs no new queries */
+  let meterKey = '';
+
+  /** the meter's inputs: the span shown and the data in it (a held span's data only changes when the buffer drops its start) */
+  function meterInputs() {
+    const marks = view.markers.map((m) => `${m.id}:${m.t0}:${m.t1}`).join(',');
+    if (meterScope === 'run') return `run|${streamId}|${runMoments?.i.n}|${marks}|${store.version}`;
+    if (appMode === 'logger') {
+      const [a, b] = loggerSpan();
+      return `log|${a}|${b}|${store.session.version}|${marks}|${store.version}`;
+    }
+    const sp = meterScope === 'selection' && view.selection ? view.selection : view.span(store);
+    const data = view.live || store.tStart > sp[0] ? store.version : 'held';
+    // and at least every 2 s anyway (calibration, math: things not in this key)
+    return `${meterScope}|${appMode}|${sp[0]}|${sp[1]}|${data}|${marks}|${Math.floor(Date.now() / 2000)}`;
+  }
+
   async function refreshMeter() {
     if (hold || meterBusy) return;
+    const key = meterInputs();
+    if (key === meterKey) {
+      updateAccumView();
+      return;
+    }
     meterBusy = true;
     try {
       if (meterScope === 'run') {
@@ -1441,13 +1463,8 @@
           };
         }),
       );
-      accumView = accum
-        ? {
-            charge: accum.charge - accumBase.charge,
-            energy: accum.energy - accumBase.energy,
-            seconds: accum.seconds - accumBase.seconds,
-          }
-        : null;
+      updateAccumView();
+      meterKey = key;
     } catch (e) {
       console.warn('meter', e);
     } finally {
@@ -1455,8 +1472,19 @@
     }
   }
 
+  function updateAccumView() {
+    accumView = accum
+      ? {
+          charge: accum.charge - accumBase.charge,
+          energy: accum.energy - accumBase.energy,
+          seconds: accum.seconds - accumBase.seconds,
+        }
+      : null;
+  }
+
   function clearAccum() {
     if (accum) accumBase = { ...accum };
+    meterKey = '';
     refreshMeter();
   }
 
@@ -2435,7 +2463,7 @@
       {/if}
       {#if monitor.annotations.length}
         <div class="mon-list">
-          {#each monitor.annotations.slice(-200).reverse() as a (a.wall)}
+          {#each monitor.annotations.slice(-200).reverse() as a (a)}
             <div class="mon-msg" class:trig={a.kind === 'trigger'} class:tx={a.kind === 'tx'}>{#if serialCfg.timestamps}<button class="mon-jump" onclick={() => openInScope(a.t)} title="Open this moment in the scope">{new Date(a.wall ?? 0).toLocaleTimeString()}</button>{/if} <span>{monitorHex ? toHexLine(a.text) : a.text}</span></div>
           {/each}
         </div>
@@ -2461,7 +2489,7 @@
       </p>
       {#if noteHistoryOpen}
         <div class="note-history">
-          {#each noteHistory.slice(-12).reverse() as h (h.wall)}
+          {#each noteHistory.slice(-12).reverse() as h (h)}
             <div><span class="muted">{new Date(h.wall).toLocaleTimeString()}</span> {h.text}</div>
           {/each}
           {#if !noteHistory.length}<div class="muted">No messages yet.</div>{/if}

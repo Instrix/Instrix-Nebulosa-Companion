@@ -51,7 +51,7 @@
     {#if onclear}<button class="ghost small" onclick={onclear} disabled={!messages.length}>Clear</button>{/if}
   </div>
   <div class="rows">
-    {#each shown as m (m.wall + m.text)}
+    {#each shown as m (m)}
       <button class="row" class:trig={m.kind === 'trigger'} class:tx={m.kind === 'tx'} onclick={() => onjump(m.t)} title="{new Date(m.wall ?? 0).toLocaleTimeString()} — show this moment">
         <span class="t">{when(m)}</span>
         <span class="k">{m.kind === 'trigger' ? '●' : m.kind === 'tx' ? '»' : ''}</span>

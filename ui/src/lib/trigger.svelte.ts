@@ -85,6 +85,8 @@ export class TriggerState {
   /** the event log (oldest first); not deeply reactive: `logVersion` says when it changed */
   events: TrigEvent[] = [];
   logVersion = $state(0);
+  /** pulse widths of `events`, kept as they arrive (the summary reads these, not every event) */
+  widths = { n: 0, sum: 0, min: Infinity, max: -Infinity };
   private nextSeq = 0;
   private fetching = false;
 
@@ -160,6 +162,7 @@ export class TriggerState {
   /** New settings went to the core: its log starts over, so does ours. */
   resetLog() {
     this.events = [];
+    this.countWidths();
     this.nextSeq = 0;
     this.logVersion++;
   }
@@ -167,6 +170,7 @@ export class TriggerState {
   async clearLog(link: Link | null) {
     await link?.clearEvents();
     this.events = [];
+    this.countWidths();
     this.logVersion++;
   }
 
@@ -178,7 +182,10 @@ export class TriggerState {
       const page = await link.events(this.nextSeq, PAGE);
       if (page.length) {
         this.events.push(...page);
-        if (this.events.length > MAX_EVENTS) this.events.splice(0, this.events.length - MAX_EVENTS);
+        if (this.events.length > MAX_EVENTS) {
+          this.events.splice(0, this.events.length - MAX_EVENTS);
+          this.countWidths(); // a min or max may have gone: count again (once per page, at the cap)
+        } else this.countWidths(page);
         this.nextSeq = page[page.length - 1].seq + 1;
         this.logVersion++;
       } else {
@@ -190,6 +197,22 @@ export class TriggerState {
     } finally {
       this.fetching = false;
     }
+  }
+
+  /** adds `list` to the width totals; without it, counts all `events` again */
+  private countWidths(list?: TrigEvent[]) {
+    const w = this.widths;
+    if (!list) {
+      Object.assign(w, { n: 0, sum: 0, min: Infinity, max: -Infinity });
+      list = this.events;
+    }
+    for (const e of list)
+      if (e.width != null && isFinite(e.width)) {
+        w.n++;
+        w.sum += e.width;
+        if (e.width < w.min) w.min = e.width;
+        if (e.width > w.max) w.max = e.width;
+      }
   }
 
   /** New settings: only triggers found with them count; the screen stays where it is. */

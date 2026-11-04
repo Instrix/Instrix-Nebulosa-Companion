@@ -94,16 +94,20 @@ export function decodeLod(f: Float64Array): Lod {
   out.t = Array.from(t);
   out.n = Array.from(n);
   const nul = (x: number) => (Number.isFinite(x) ? x : null);
+  // every frame, for every plot: arrays sized once, filled by index (no growing)
   SIGNALS.forEach((s, ci) => {
     const [mn, mx, avg, sd] = [col(2 + ci * 4), col(3 + ci * 4), col(4 + ci * 4), col(5 + ci * 4)];
-    const c = out.ch[s];
+    const min: Col = new Array(rows), max: Col = new Array(rows), mean: Col = new Array(rows);
+    const lo: Col = new Array(rows), hi: Col = new Array(rows);
     for (let k = 0; k < rows; k++) {
-      c.min.push(nul(mn[k]));
-      c.max.push(nul(mx[k]));
-      c.avg.push(nul(avg[k]));
-      c.sdLo.push(nul(avg[k] - sd[k]));
-      c.sdHi.push(nul(avg[k] + sd[k]));
+      const a = avg[k], d = sd[k];
+      min[k] = nul(mn[k]);
+      max[k] = nul(mx[k]);
+      mean[k] = nul(a);
+      lo[k] = nul(a - d);
+      hi[k] = nul(a + d);
     }
+    out.ch[s] = { min, max, avg: mean, sdLo: lo, sdHi: hi };
   });
   for (let k = 0; k < rows; k++) if (n[k] === 0) out.gaps.push(t[k]);
   return out;

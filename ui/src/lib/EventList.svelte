@@ -43,14 +43,7 @@
     const ev = trig.events;
     if (!ev.length) return null;
     const span = ev[ev.length - 1].t - ev[0].t;
-    let n = 0, sum = 0, lo = Infinity, hi = -Infinity;
-    for (const e of ev)
-      if (e.width != null && isFinite(e.width)) {
-        n++;
-        sum += e.width;
-        lo = Math.min(lo, e.width);
-        hi = Math.max(hi, e.width);
-      }
+    const { n, sum, min: lo, max: hi } = trig.widths;
     return {
       count: ev.length,
       rate: ev.length > 1 && span > 0 ? (ev.length - 1) / span : NaN,

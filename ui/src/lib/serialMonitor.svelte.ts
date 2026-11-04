@@ -137,7 +137,19 @@ interface WebPort {
 }
 
 export class SerialMonitor {
-  annotations = $state<Annotation[]>([]);
+  /**
+   * The messages, oldest first. A plain array appended in place (a chatty
+   * port adds hundreds a second: no copy, no deep proxy per message);
+   * `version` tells readers it changed, and reading `annotations` tracks it.
+   */
+  private list: Annotation[] = [];
+  version = $state(0);
+  /** messages added since the monitor was made: a position that survives trimming */
+  total = 0;
+  get annotations(): Annotation[] {
+    void this.version;
+    return this.list;
+  }
   handle = $state.raw<MonitorHandle | null>(null);
   error = $state('');
   /** how many received lines have matched the trigger */
@@ -229,12 +241,23 @@ export class SerialMonitor {
   }
 
   private push(a: Annotation) {
-    this.annotations = [...this.annotations.slice(-(this.cap - 1)), a];
+    this.list.push(a);
+    // trimmed in batches: one splice every cap / 4 messages, not one per message
+    if (this.list.length > this.cap + (this.cap >> 2)) this.list.splice(0, this.list.length - this.cap);
+    this.total++;
+    this.version++;
+  }
+
+  /** the messages added after `total` was `mark` (those still held) */
+  since(mark: number): Annotation[] {
+    const n = Math.min(this.total - mark, this.list.length);
+    return n > 0 ? this.list.slice(-n) : [];
   }
 
   clear() {
-    this.annotations = [];
+    this.list = [];
     this.matches = 0;
+    this.version++;
   }
 
   async disconnect() {

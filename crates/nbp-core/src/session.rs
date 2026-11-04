@@ -123,11 +123,206 @@ fn merge3(a: &mut Moments3, b: &Moments3) {
     }
 }
 
-/// A tier: entries, plus the one being merged from the tier below.
+/// A tier: entries, plus the one being merged from the tier below, and
+/// summaries of runs of its entries so a query over a long span doesn't
+/// read every entry.
 #[derive(Default)]
 struct Tier {
     entries: VecDeque<LogEntry>,
     building: Option<(LogEntry, usize)>,
+    /// index (since the tier began) of `entries[0]`
+    base: u64,
+    /// `BLOCK_SIZES[k]` entries per block of `levels[k]`
+    levels: [Level; BLOCK_LEVELS],
+    /// each entry starts after the one before: ranges can be searched
+    /// (false after the clock went back: queries read every entry)
+    sorted: bool,
+    /// time of the newest entry pushed (for `sorted`)
+    last_t0: f64,
+}
+
+/// Summaries of runs of a tier's entries: 16, 256, 4096, 65 536 of them.
+const BLOCK_LEVELS: usize = 4;
+const BLOCK_SIZES: [u64; BLOCK_LEVELS] = [16, 256, 4096, 65_536];
+
+#[derive(Default)]
+struct Level {
+    /// complete blocks, oldest first; a block starts at a multiple of its size
+    blocks: VecDeque<Block>,
+    /// the block being filled
+    cur: Option<Block>,
+}
+
+/// Several consecutive entries merged: what a query needs of them.
+#[derive(Debug, Clone, Copy)]
+struct Block {
+    /// index of its first entry in the tier
+    start: u64,
+    /// entries in it
+    count: u64,
+    m: Moments3,
+    /// Σ mean(I)·dur, Σ mean(P)·dur
+    charge: f64,
+    energy: f64,
+    /// the first entry's time and duration, the last's
+    t0: f64,
+    first_dur: f64,
+    t_last: f64,
+    last_dur: f64,
+    /// a gap between two of its entries (lod draws gaps: it can't merge this block)
+    gap: bool,
+}
+
+/// A gap in the log: more than 1.5 entries' time with nothing (as the lod draws it).
+fn is_gap(prev_end: f64, prev_dur: f64, t0: f64, dur: f64, interval: f64) -> bool {
+    t0 - prev_end > 1.5 * prev_dur.max(dur) && t0 - prev_end > 1.5 * interval
+}
+
+impl Block {
+    fn of(e: &LogEntry, start: u64) -> Block {
+        let m = e.moments3();
+        Block {
+            start,
+            count: 1,
+            charge: m.i.mean * e.dur,
+            energy: m.p.mean * e.dur,
+            m,
+            t0: e.t0,
+            first_dur: e.dur,
+            t_last: e.t0,
+            last_dur: e.dur,
+            gap: false,
+        }
+    }
+
+    fn end(&self) -> f64 {
+        self.t_last + self.last_dur
+    }
+
+    /// `o` follows this block
+    fn append(&mut self, o: &Block, interval: f64) {
+        self.gap |= o.gap || is_gap(self.end(), self.last_dur, o.t0, o.first_dur, interval);
+        merge3(&mut self.m, &o.m);
+        self.count += o.count;
+        self.charge += o.charge;
+        self.energy += o.energy;
+        self.t_last = o.t_last;
+        self.last_dur = o.last_dur;
+    }
+}
+
+/// What a range walk hands out: an entry, or a block of them.
+enum Item<'a> {
+    Entry(&'a LogEntry),
+    Block(&'a Block),
+}
+
+impl Item<'_> {
+    fn t0(&self) -> f64 {
+        match self {
+            Item::Entry(e) => e.t0,
+            Item::Block(b) => b.t0,
+        }
+    }
+    fn first_dur(&self) -> f64 {
+        match self {
+            Item::Entry(e) => e.dur,
+            Item::Block(b) => b.first_dur,
+        }
+    }
+    /// the last entry's time and duration
+    fn last(&self) -> (f64, f64) {
+        match self {
+            Item::Entry(e) => (e.t0, e.dur),
+            Item::Block(b) => (b.t_last, b.last_dur),
+        }
+    }
+    fn count(&self) -> u64 {
+        match self {
+            Item::Entry(_) => 1,
+            Item::Block(b) => b.count,
+        }
+    }
+}
+
+impl Tier {
+    fn new() -> Tier {
+        Tier { sorted: true, last_t0: f64::NEG_INFINITY, ..Default::default() }
+    }
+
+    fn push(&mut self, e: LogEntry, interval: f64) {
+        if e.t0 < self.last_t0 {
+            self.sorted = false;
+        }
+        self.last_t0 = e.t0;
+        let idx = self.base + self.entries.len() as u64;
+        self.entries.push_back(e);
+        // into the block being filled at each level; a full one goes up a level
+        let mut done = Some(Block::of(&e, idx));
+        for (k, l) in self.levels.iter_mut().enumerate() {
+            let Some(b) = done.take() else { break };
+            match &mut l.cur {
+                Some(c) => c.append(&b, interval),
+                None => l.cur = Some(b),
+            }
+            if l.cur.as_ref().is_some_and(|c| c.count == BLOCK_SIZES[k]) {
+                let c = l.cur.take().unwrap();
+                l.blocks.push_back(c);
+                done = Some(c);
+            }
+        }
+    }
+
+    fn pop_front(&mut self) -> Option<LogEntry> {
+        let e = self.entries.pop_front()?;
+        self.base += 1;
+        // a block missing its first entries can't stand for them any more
+        for l in &mut self.levels {
+            while l.blocks.front().is_some_and(|b| b.start < self.base) {
+                l.blocks.pop_front();
+            }
+        }
+        Some(e)
+    }
+
+    /// the complete block of `level` starting at entry `i`, if there is one
+    fn block_at(&self, level: usize, i: u64) -> Option<&Block> {
+        let bl = &self.levels[level].blocks;
+        let first = bl.front()?.start;
+        if i < first {
+            return None;
+        }
+        let b = bl.get(((i - first) / BLOCK_SIZES[level]) as usize)?;
+        (b.start == i).then_some(b)
+    }
+
+    /// The entries overlapping [t0, t1], oldest first, as the largest blocks
+    /// that `usable` accepts and entries where none is.
+    fn walk<'a>(&'a self, t0: f64, t1: f64, usable: &impl Fn(&Block) -> bool, f: &mut impl FnMut(Item<'a>)) {
+        if !self.sorted {
+            for e in self.entries.iter().filter(|e| !(e.t0 + e.dur < t0 || e.t0 > t1)) {
+                f(Item::Entry(e));
+            }
+            return;
+        }
+        let lo = self.entries.partition_point(|e| e.t0 + e.dur < t0);
+        let hi = self.entries.partition_point(|e| e.t0 <= t1);
+        let (mut i, end) = (self.base + lo as u64, self.base + hi.max(lo) as u64);
+        'next: while i < end {
+            for k in (0..BLOCK_LEVELS).rev() {
+                let n = BLOCK_SIZES[k];
+                if i % n == 0 && i + n <= end {
+                    if let Some(b) = self.block_at(k, i).filter(|b| usable(b)) {
+                        f(Item::Block(b));
+                        i += n;
+                        continue 'next;
+                    }
+                }
+            }
+            f(Item::Entry(&self.entries[(i - self.base) as usize]));
+            i += 1;
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize)]
@@ -151,6 +346,8 @@ pub struct SessionLog {
     mid: Tier,
     coarse: Tier,
     fine_cap: usize,
+    /// mid entries before merging into coarse
+    mid_cap: usize,
     /// fine entries not yet taken for the log file
     pending: Vec<LogEntry>,
     version: u64,
@@ -167,10 +364,11 @@ impl SessionLog {
         Self {
             interval: interval.max(1e-4),
             cur: None,
-            fine: Tier::default(),
-            mid: Tier::default(),
-            coarse: Tier::default(),
+            fine: Tier::new(),
+            mid: Tier::new(),
+            coarse: Tier::new(),
             fine_cap,
+            mid_cap: MID_CAP,
             pending: Vec::new(),
             version: 0,
             total: 0,
@@ -209,31 +407,47 @@ impl SessionLog {
     }
 
     fn push_fine(&mut self, e: LogEntry) {
-        self.fine.entries.push_back(e);
+        let iv = self.interval;
+        self.fine.push(e, iv);
         self.total += 1;
         self.version += 1;
         while self.fine.entries.len() > self.fine_cap {
-            let old = self.fine.entries.pop_front().unwrap();
-            Self::fold(&mut self.mid, old);
+            let old = self.fine.pop_front().unwrap();
+            Self::fold(&mut self.mid, old, iv);
         }
-        while self.mid.entries.len() > MID_CAP {
-            let old = self.mid.entries.pop_front().unwrap();
-            Self::fold(&mut self.coarse, old);
+        while self.mid.entries.len() > self.mid_cap {
+            let old = self.mid.pop_front().unwrap();
+            Self::fold(&mut self.coarse, old, iv);
         }
     }
 
-    /// An entry leaving the tier below, merged MERGE at a time into `t`.
-    fn fold(t: &mut Tier, e: LogEntry) {
+    /// An entry leaving the tier below, merged MERGE at a time into `t`
+    /// (`interval`: the log's, which gaps are measured against).
+    fn fold(t: &mut Tier, e: LogEntry, interval: f64) {
         match &mut t.building {
             Some((b, k)) => {
                 b.merge(&e);
                 *k += 1;
                 if *k == MERGE {
-                    t.entries.push_back(t.building.take().unwrap().0);
+                    let done = t.building.take().unwrap().0;
+                    t.push(done, interval);
                 }
             }
             None => t.building = Some((e, 1)),
         }
+    }
+
+    /// Everything overlapping [t0, t1], oldest first: each tier's entries (as
+    /// blocks where `usable` takes them) and the entries being merged.
+    fn walk<'a>(&'a self, t0: f64, t1: f64, usable: impl Fn(&Block) -> bool, mut f: impl FnMut(Item<'a>)) {
+        let overlaps = |e: &LogEntry| !(e.t0 + e.dur < t0 || e.t0 > t1);
+        for t in [&self.coarse, &self.mid] {
+            t.walk(t0, t1, &usable, &mut f);
+            if let Some((e, _)) = t.building.as_ref().filter(|(e, _)| overlaps(e)) {
+                f(Item::Entry(e));
+            }
+        }
+        self.fine.walk(t0, t1, &usable, &mut f);
     }
 
     /// The newest `n` fine entries (oldest first).
@@ -277,27 +491,107 @@ impl SessionLog {
     /// Statistics and integrals over the entries overlapping [t0, t1] (whole entries).
     pub fn stats(&self, t0: f64, t1: f64) -> crate::buffer::SpanStats {
         let mut out = crate::buffer::SpanStats { t0: f64::NAN, t1: f64::NAN, ..Default::default() };
-        for e in self.all() {
-            if e.t0 + e.dur < t0 || e.t0 > t1 || e.n() == 0 {
-                continue;
+        self.walk(t0, t1, |_| true, |it| {
+            let (start, end) = match it {
+                Item::Entry(e) => {
+                    if e.n() == 0 {
+                        return;
+                    }
+                    let m = e.moments3();
+                    out.charge += m.i.mean * e.dur;
+                    out.energy += m.p.mean * e.dur;
+                    merge3(&mut out.m, &m);
+                    (e.t0, e.t0 + e.dur)
+                }
+                Item::Block(b) => {
+                    out.charge += b.charge;
+                    out.energy += b.energy;
+                    merge3(&mut out.m, &b.m);
+                    (b.t0, b.end())
+                }
+            };
+            if !(start >= out.t0) {
+                out.t0 = start;
             }
-            let m = e.moments3();
-            out.charge += m.i.mean * e.dur;
-            out.energy += m.p.mean * e.dur;
-            merge3(&mut out.m, &m);
-            if !(e.t0 >= out.t0) {
-                out.t0 = e.t0;
+            if !(end <= out.t1) {
+                out.t1 = end;
             }
-            if !(e.t0 + e.dur <= out.t1) {
-                out.t1 = e.t0 + e.dur;
-            }
-        }
+        });
         out
     }
 
     /// [t0, t1] in `bins` columns, in the sample buffer's flat lod layout
     /// (rows: t, n, then i, v, p, m each min, max, mean, σ; n = 0 a gap).
     pub fn lod(&self, t0: f64, t1: f64, bins: usize) -> Vec<f64> {
+        use crate::buffer::{LOD_COLS, LOD_LAYOUT};
+        let bins = bins.max(1);
+        let w = (t1 - t0) / bins as f64;
+        let mut rows: Vec<[f64; LOD_COLS]> = Vec::new();
+        let mut cur: Option<(usize, f64, Moments3)> = None;
+        let mut prev_end: Option<(f64, f64)> = None; // end, entry length
+        let emit = |rows: &mut Vec<[f64; LOD_COLS]>, t: f64, m: &Moments3| {
+            let c = |q: &Moments| if q.n > 0 { [q.min, q.max, q.mean, q.std()] } else { [f64::NAN; 4] };
+            let (a, b, p, mm) = (c(&m.i), c(&m.v), c(&m.p), c(&m.m));
+            rows.push([
+                t, m.n() as f64, a[0], a[1], a[2], a[3], b[0], b[1], b[2], b[3], p[0], p[1], p[2], p[3], mm[0], mm[1], mm[2], mm[3],
+            ]);
+        };
+        let mut shown = 0usize;
+        let bin_of = |t: f64| ((t - t0) / w).floor().max(0.0) as usize;
+        // a block stands for its entries when they all fall in one column with no gap
+        let usable = |b: &Block| !b.gap && bin_of(b.t0) == bin_of(b.t_last);
+        self.walk(t0, t1, usable, |it| {
+            if let Item::Entry(e) = it {
+                if e.n() == 0 {
+                    return;
+                }
+            }
+            shown += it.count() as usize;
+            if let Some((end, len)) = prev_end {
+                if is_gap(end, len, it.t0(), it.first_dur(), self.interval) {
+                    if let Some((_, t, m)) = cur.take() {
+                        emit(&mut rows, t, &m);
+                    }
+                    let mut g = [f64::NAN; LOD_COLS];
+                    g[0] = end;
+                    g[1] = 0.0;
+                    rows.push(g);
+                }
+            }
+            let (tl, dl) = it.last();
+            prev_end = Some((tl + dl, dl));
+            let bin = bin_of(it.t0());
+            let m = match &it {
+                Item::Entry(e) => e.moments3(),
+                Item::Block(b) => b.m,
+            };
+            match &mut cur {
+                Some((b, _, acc)) if *b == bin => merge3(acc, &m),
+                _ => {
+                    if let Some((_, t, m0)) = cur.take() {
+                        emit(&mut rows, t, &m0);
+                    }
+                    cur = Some((bin, it.t0(), m));
+                }
+            }
+        });
+        if let Some((_, t, m)) = cur.take() {
+            emit(&mut rows, t, &m);
+        }
+        let n = rows.len();
+        let mut out = Vec::with_capacity(4 + n * LOD_COLS);
+        // "raw": fewer entries than columns, each its own row
+        out.extend_from_slice(&[LOD_LAYOUT, n as f64, LOD_COLS as f64, (shown <= bins) as u8 as f64]);
+        for col in 0..LOD_COLS {
+            out.extend(rows.iter().map(|r| r[col]));
+        }
+        out
+    }
+
+    /// The full scan `lod` replaced: the tests' reference.
+    /// (rows: t, n, then i, v, p, m each min, max, mean, σ; n = 0 a gap).
+    #[cfg(test)]
+    fn lod_scan(&self, t0: f64, t1: f64, bins: usize) -> Vec<f64> {
         use crate::buffer::{LOD_COLS, LOD_LAYOUT};
         let bins = bins.max(1);
         let w = (t1 - t0) / bins as f64;
@@ -526,5 +820,97 @@ mod tests {
         assert_eq!(f.entries[3], s.fine.entries[3]);
         let cut = LogFile::parse(&file[..file.len() - 200]).unwrap();
         assert!(cut.truncated && cut.entries.len() < 50);
+    }
+
+    /// the full scans these replaced: the reference
+    fn stats_scan(s: &SessionLog, t0: f64, t1: f64) -> crate::buffer::SpanStats {
+        let mut out = crate::buffer::SpanStats { t0: f64::NAN, t1: f64::NAN, ..Default::default() };
+        for e in s.all() {
+            if e.t0 + e.dur < t0 || e.t0 > t1 || e.n() == 0 {
+                continue;
+            }
+            let m = e.moments3();
+            out.charge += m.i.mean * e.dur;
+            out.energy += m.p.mean * e.dur;
+            merge3(&mut out.m, &m);
+            if !(e.t0 >= out.t0) {
+                out.t0 = e.t0;
+            }
+            if !(e.t0 + e.dur <= out.t1) {
+                out.t1 = e.t0 + e.dur;
+            }
+        }
+        out
+    }
+
+    fn close(a: f64, b: f64) -> bool {
+        a == b || (a.is_nan() && b.is_nan()) || (a - b).abs() <= 1e-9 * a.abs().max(b.abs()).max(1e-12)
+    }
+
+    /// a log with gaps, uneven entries and all three tiers in use
+    fn gappy() -> SessionLog {
+        let mut s = SessionLog::with_cap(0.1, 30_000);
+        s.mid_cap = 20_000;
+        let mut t = 0.0;
+        let mut x: u64 = 12345;
+        for k in 0..400_000u64 {
+            x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let r = (x >> 33) as f64 / (1u64 << 31) as f64;
+            // now and then a pause in the stream
+            if k % 7919 == 0 {
+                t += 5.0 + 50.0 * r;
+            }
+            let n = 64 * (1 + (k % 3));
+            let mut m = Moments3::default();
+            for j in 0..4 {
+                m.add(0.001 + r * 0.01 + j as f64 * 1e-4, 3.3 - r * 0.1, f64::NAN);
+            }
+            s.add(t, n as f64 * 5e-7, &m);
+            t += 0.1;
+        }
+        s.close();
+        assert!(s.mid.entries.len() > 0 && s.coarse.entries.len() > 0, "all tiers in use");
+        s
+    }
+
+    #[test]
+    fn blocks_give_the_same_answers_as_a_full_scan() {
+        let s = gappy();
+        let (a, b) = (s.all().next().unwrap().t0, s.fine.entries.back().unwrap().t0 + 1.0);
+        for (t0, t1) in [(a, b), (a - 10.0, b + 10.0), (b - 61.0, b), (a + 1234.5, a + 9876.5), (b - 3000.0, b - 2999.0), (b + 5.0, b + 6.0)] {
+            let (f, r) = (s.stats(t0, t1), stats_scan(&s, t0, t1));
+            assert!(close(f.charge, r.charge) && close(f.energy, r.energy), "integrals {t0}..{t1}");
+            assert!(close(f.t0, r.t0) && close(f.t1, r.t1), "span {t0}..{t1}");
+            for (x, y) in [(&f.m.i, &r.m.i), (&f.m.v, &r.m.v), (&f.m.p, &r.m.p)] {
+                assert_eq!(x.n, y.n);
+                assert!(close(x.mean, y.mean) && close(x.min, y.min) && close(x.max, y.max), "moments {t0}..{t1}: {x:?} vs {y:?}");
+                assert!((x.m2 - y.m2).abs() <= 1e-6 * y.m2.abs().max(1e-18), "m2 {t0}..{t1}");
+            }
+            for bins in [1, 37, 800, 5000] {
+                let (l, r) = (s.lod(t0, t1, bins), s.lod_scan(t0, t1, bins));
+                assert_eq!(l.len(), r.len(), "lod rows {t0}..{t1} / {bins}");
+                for (k, (x, y)) in l.iter().zip(&r).enumerate() {
+                    assert!(close(*x, *y) || (x - y).abs() < 1e-9, "lod {t0}..{t1} / {bins} at {k}: {x} vs {y}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_clock_going_back_still_answers() {
+        let mut s = SessionLog::with_cap(0.1, 1000);
+        let mut m = Moments3::default();
+        m.add(0.002, 3.3, f64::NAN);
+        for k in 0..500 {
+            s.add(k as f64 * 0.1, 0.05, &m);
+        }
+        for k in 0..500 {
+            s.add(k as f64 * 0.1 + 0.01, 0.05, &m); // restarted at 0
+        }
+        s.close();
+        let (f, r) = (s.stats(0.0, 100.0), stats_scan(&s, 0.0, 100.0));
+        assert_eq!(f.m.i.n, r.m.i.n);
+        let (l, r) = (s.lod(0.0, 100.0, 50), s.lod_scan(0.0, 100.0, 50));
+        assert!(l.len() == r.len() && l.iter().zip(&r).all(|(x, y)| close(*x, *y)));
     }
 }
