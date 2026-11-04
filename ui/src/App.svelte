@@ -2112,6 +2112,7 @@
         {/if}
       {/if}
       <button class="ghost" onclick={() => (showcasesOpen = true)} title="Tutorials and showcases: hands-on lessons and real measurements on the demo device" data-tour="showcases">Learn</button>
+      <button class="ghost side-btn" onclick={() => (configOpen = true)} title="Configurations: save, load and apply setting profiles" aria-label="Configurations">⚙</button>
       <button class="ghost side-btn" onclick={(e) => scaleMenu(e)} title="Appearance: UI scale (Ctrl + / −), theme" aria-label="UI scale"
         >Aa{#if canScale && uiScale.value !== 1}<small class="scale-pct">{Math.round(uiScale.value * 100)}%</small>{/if}</button
       >
