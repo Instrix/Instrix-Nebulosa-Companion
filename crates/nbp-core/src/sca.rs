@@ -422,6 +422,90 @@ impl Campaign {
         }
     }
 
+    /// The campaign as a flat binary (.nbsca) that `from_raw` reads back: a
+    /// magic, the config, dt, the shifts, the raw traces and the per-trace
+    /// metadata. Little-endian throughout.
+    pub fn export_raw(&self) -> Vec<u8> {
+        let n = self.len();
+        let l = self.cfg.samples;
+        let mut o = Vec::with_capacity(32 + n * l * 4);
+        o.extend_from_slice(b"NBSCA1\0\0");
+        o.push(match self.cfg.source {
+            Source::I => 0,
+            Source::V => 1,
+            Source::P => 2,
+            Source::M => 3,
+        });
+        o.extend_from_slice(&(l as u32).to_le_bytes());
+        o.extend_from_slice(&(n as u32).to_le_bytes());
+        o.extend_from_slice(&self.dt.to_le_bytes());
+        for &sh in &self.shifts {
+            o.extend_from_slice(&sh.to_le_bytes());
+        }
+        for &x in &self.data {
+            o.extend_from_slice(&x.to_le_bytes());
+        }
+        for m in &self.meta {
+            o.push(m.group);
+            o.extend_from_slice(&m.width.to_le_bytes());
+            o.extend_from_slice(&(m.input.len() as u16).to_le_bytes());
+            o.extend_from_slice(&m.input);
+            o.extend_from_slice(&(m.output.len() as u16).to_le_bytes());
+            o.extend_from_slice(&m.output);
+        }
+        o
+    }
+
+    /// Rebuild a campaign from `export_raw` bytes.
+    pub fn from_raw(b: &[u8]) -> std::result::Result<Self, String> {
+        let bad = || "not a Nebulosa side-channel file".to_string();
+        if b.len() < 24 || &b[..8] != b"NBSCA1\0\0" {
+            return Err(bad());
+        }
+        let source = match b[8] {
+            0 => Source::I,
+            1 => Source::V,
+            2 => Source::P,
+            _ => Source::M,
+        };
+        let u32at = |o: usize| u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]) as usize;
+        let l = u32at(9);
+        let n = u32at(13);
+        let dt = f64::from_le_bytes(b[17..25].try_into().map_err(|_| bad())?);
+        let mut p = 25;
+        let need = |p: usize, k: usize| if p + k <= b.len() { Ok(()) } else { Err(bad()) };
+        need(p, n * 4 + n * l * 4)?;
+        let mut shifts = Vec::with_capacity(n);
+        for _ in 0..n {
+            shifts.push(i32::from_le_bytes([b[p], b[p + 1], b[p + 2], b[p + 3]]));
+            p += 4;
+        }
+        let mut data = Vec::with_capacity(n * l);
+        for _ in 0..n * l {
+            data.push(f32::from_le_bytes([b[p], b[p + 1], b[p + 2], b[p + 3]]));
+            p += 4;
+        }
+        let mut meta = Vec::with_capacity(n);
+        for _ in 0..n {
+            need(p, 11)?;
+            let group = b[p];
+            let width = f64::from_le_bytes(b[p + 1..p + 9].try_into().map_err(|_| bad())?);
+            p += 9;
+            let il = u16::from_le_bytes([b[p], b[p + 1]]) as usize;
+            p += 2;
+            need(p, il + 2)?;
+            let input = b[p..p + il].to_vec();
+            p += il;
+            let ol = u16::from_le_bytes([b[p], b[p + 1]]) as usize;
+            p += 2;
+            need(p, ol)?;
+            let output = b[p..p + ol].to_vec();
+            p += ol;
+            meta.push(TraceMeta { input, output, group, width });
+        }
+        Ok(Self { cfg: Config { samples: l, source }, dt, data, shifts, meta })
+    }
+
     /// The campaign as an .npz (stored, no compression): traces.npy (aligned,
     /// float32 n × samples), textin.npy / textout.npy (uint8 n × the longest,
     /// zero-padded), group.npy (uint8), width.npy (float64), meta.json.
@@ -677,6 +761,22 @@ mod tests {
         let Result::TTest { max_abs, at, n0, n1, .. } = c.query(&Request::TTest) else { panic!() };
         assert_eq!((n0, n1, at), (20, 20, 10));
         assert!(max_abs > 4.5);
+    }
+
+    #[test]
+    fn raw_roundtrip() {
+        let c = campaign(&[pulse(5, 16), pulse(9, 16)], &[0, 1]);
+        let bytes = c.export_raw();
+        let c2 = Campaign::from_raw(&bytes).unwrap();
+        assert_eq!(c2.len(), 2);
+        assert_eq!(c2.cfg.samples, 16);
+        assert_eq!(c2.meta[1].group, 1);
+        // the data survives
+        let o1 = c.query(&Request::Overview { show: 0 });
+        let o2 = c2.query(&Request::Overview { show: 0 });
+        let (Result::Overview { mean: m1, .. }, Result::Overview { mean: m2, .. }) = (o1, o2) else { panic!() };
+        assert_eq!(m1, m2);
+        assert!(Campaign::from_raw(b"nope").is_err());
     }
 
     #[test]

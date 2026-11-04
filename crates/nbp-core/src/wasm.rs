@@ -209,6 +209,17 @@ impl Campaign {
         self.0.export_npz()
     }
 
+    /// the campaign as a flat .nbsca binary
+    pub fn export_raw(&self) -> Vec<u8> {
+        self.0.export_raw()
+    }
+
+    /// replace this campaign with one loaded from .nbsca bytes
+    pub fn load_raw(&mut self, bytes: &[u8]) -> Result<(), JsValue> {
+        self.0 = crate::sca::Campaign::from_raw(bytes).map_err(|e| JsValue::from_str(&e))?;
+        Ok(())
+    }
+
     /// [sca::TraceMeta] for every trace
     pub fn meta(&self) -> JsValue {
         to_js(&self.0.meta())

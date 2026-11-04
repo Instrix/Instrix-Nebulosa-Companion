@@ -32,6 +32,8 @@ const nativeSca: ScaEngine = {
   query: (req) => invoke<ScaResult>('sca_query', { req }),
   exportNpz: async () => new Uint8Array(await invoke<ArrayBuffer>('sca_export')),
   meta: () => invoke<TraceMeta[]>('sca_meta'),
+  save: async () => new Uint8Array(await invoke<ArrayBuffer>('sca_save')),
+  load: (bytes) => invoke<ScaInfo>('sca_load', { bytes: Array.from(bytes) }),
 };
 
 class NativeLink implements Link {

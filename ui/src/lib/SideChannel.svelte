@@ -97,10 +97,27 @@
 
   // ---- capture ------------------------------------------------------------
   type PlanKind = 'aes-random' | 'aes-tvla' | 'password';
-  let planKind = $state<PlanKind>('aes-tvla');
-  let traces = $state(200);
-  let sampleLen = $state(2000);
-  let level = $state(0.004);
+  function loadCfg() {
+    try {
+      const v = JSON.parse(localStorage.getItem('nebulosa.sca') ?? 'null');
+      if (v) return v;
+    } catch {
+      /* ignore */
+    }
+    return {};
+  }
+  const saved = loadCfg();
+  let planKind = $state<PlanKind>(saved.planKind ?? 'aes-tvla');
+  let traces = $state<number>(saved.traces ?? 200);
+  let sampleLen = $state<number>(saved.sampleLen ?? 2000);
+  let level = $state<number>(saved.level ?? 0.004);
+  $effect(() => {
+    try {
+      localStorage.setItem('nebulosa.sca', JSON.stringify({ planKind, traces, sampleLen, level }));
+    } catch {
+      /* ignore */
+    }
+  });
   let capturing = $state(false);
   let stopFlag = false;
   let progress = $state(0);
@@ -489,6 +506,50 @@
     }
   }
 
+  async function saveCampaign() {
+    if (!link || !info?.n) return;
+    try {
+      const bytes = await link.sca.save();
+      const name = `nebulosa-campaign-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}.nbsca`;
+      if (isNative) {
+        const native = await import('./native');
+        const path = await native.pickSave(name, 'Side-channel campaign', 'nbsca');
+        if (!path) return;
+        await native.saveBytes(path, bytes);
+        onnote(`Saved ${info.n} traces`);
+      } else {
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(new Blob([bytes as BlobPart], { type: 'application/octet-stream' }));
+        a.download = name;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+      }
+    } catch (e) {
+      onnote(String(e));
+    }
+  }
+
+  let loadInput = $state<HTMLInputElement>();
+  async function loadCampaign(e: Event) {
+    const file = (e.target as HTMLInputElement).files?.[0];
+    if (!file || !link) return;
+    try {
+      const buf = new Uint8Array(await file.arrayBuffer());
+      const i = await link.sca.load(buf);
+      info = i;
+      alignInfo = null;
+      recovered = Array(16).fill(null);
+      recoveredCorr = Array(16).fill(0);
+      cpa = null;
+      view = 'traces';
+      await refresh();
+      onnote(`Loaded ${i?.n ?? 0} traces`);
+    } catch (err) {
+      onnote(String(err));
+    }
+    (e.target as HTMLInputElement).value = '';
+  }
+
   const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => drawChart()) : null;
   $effect(() => {
     if (chartEl && ro) ro.observe(chartEl);
@@ -609,6 +670,18 @@
           key: <b>{recoveredHex}</b>{#if keyComplete}{knownKey ? (keyCorrect ? ' ✓ recovered' : ' ✗ wrong') : ' (done)'}{/if}
         </span>
       </div>
+      <div class="cpa-bytes" aria-hidden="true">
+        {#each recovered as b, i (i)}
+          <span
+            class="cell"
+            class:done={b != null}
+            class:good={b != null && (!knownKey || b === knownKey[i])}
+            class:bad={b != null && knownKey && b !== knownKey[i]}
+            class:cur={cpaBusy && i === cpaByte}
+            title={b != null ? `byte ${i}: 0x${hex2(b)} (r ${recoveredCorr[i].toFixed(2)})` : `byte ${i}`}
+          >{b != null ? hex2(b) : i}</span>
+        {/each}
+      </div>
       <div class="chart" bind:this={chartEl}>
         {#if !cpa}
           <div class="empty">
@@ -620,9 +693,16 @@
       </div>
     {:else if view === 'export'}
       <div class="export">
-        <p>Save the campaign as a NumPy <code>.npz</code>: <code>traces</code> (float32, aligned), <code>textin</code>, <code>textout</code>, <code>group</code>, <code>width</code>, <code>meta.json</code>.</p>
-        <p class="muted">Load it in Python (<code>numpy.load</code>), ChipWhisperer’s analyzer, Lascar or SCAred for CPA / DPA and deeper work.</p>
-        <button class="primary" onclick={exportNpz} disabled={!info?.n}>Save {info?.n ?? 0} traces…</button>
+        <h4>Save the campaign</h4>
+        <p class="muted">A Nebulosa <code>.nbsca</code> keeps the whole campaign (traces, inputs, outputs, alignment) to reload here later, so you don’t recapture.</p>
+        <div class="export-row">
+          <button class="primary" onclick={saveCampaign} disabled={!info?.n}>Save campaign…</button>
+          <button class="small" onclick={() => loadInput?.click()}>Load campaign…</button>
+          <input type="file" accept=".nbsca" bind:this={loadInput} onchange={loadCampaign} hidden />
+        </div>
+        <h4>Export for other tools</h4>
+        <p class="muted">A NumPy <code>.npz</code> (<code>traces</code> float32 aligned, <code>textin</code>, <code>textout</code>, <code>group</code>, <code>width</code>, <code>meta.json</code>) for Python (<code>numpy.load</code>), ChipWhisperer’s analyzer, Lascar or SCAred.</p>
+        <button class="small" onclick={exportNpz} disabled={!info?.n}>Export {info?.n ?? 0} traces as .npz…</button>
       </div>
     {:else}
       <div class="chart" bind:this={chartEl}>
@@ -801,6 +881,47 @@
   .cpa-bar input {
     width: 48px;
     padding: 2px 4px;
+  }
+.cpa-bytes {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 3px;
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--border);
+  }
+  .cpa-bytes .cell {
+    min-width: 20px;
+    text-align: center;
+    padding: 1px 3px;
+    border-radius: var(--r-sm);
+    font: 11px ui-monospace, monospace;
+    color: var(--muted);
+    background: var(--bg);
+    border: 1px solid var(--border);
+  }
+  .cpa-bytes .cell.done {
+    color: var(--text);
+  }
+  .cpa-bytes .cell.good {
+    border-color: var(--ok);
+    color: var(--ok);
+  }
+  .cpa-bytes .cell.bad {
+    border-color: var(--danger);
+    color: var(--danger);
+  }
+  .cpa-bytes .cell.cur {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent);
+  }
+  .export-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+  .export h4 {
+    margin: 4px 0 0;
+    font-size: 13px;
   }
   .keyout {
     font: 12px ui-monospace, monospace;

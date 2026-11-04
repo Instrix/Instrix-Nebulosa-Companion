@@ -418,6 +418,24 @@ async fn sca_export(state: State<'_, AppState>) -> Result<Response, String> {
         .map_err(|e| e.to_string())?
 }
 
+/// The campaign as a flat .nbsca binary (save/reload).
+#[tauri::command]
+async fn sca_save(state: State<'_, AppState>) -> Result<Response, String> {
+    let sca = state.sca.clone();
+    tokio::task::spawn_blocking(move || sca.lock().unwrap().as_ref().map(|c| Response::new(c.export_raw())).ok_or("no campaign".to_string()))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Load a campaign from .nbsca bytes; returns its info.
+#[tauri::command]
+async fn sca_load(state: State<'_, AppState>, bytes: Vec<u8>) -> Result<nbp_core::sca::Info, String> {
+    let c = nbp_core::sca::Campaign::from_raw(&bytes)?;
+    let info = c.info();
+    *state.sca.lock().unwrap() = Some(c);
+    Ok(info)
+}
+
 /// Trigger events with seq ≥ since, at most max.
 #[tauri::command]
 async fn query_events(state: State<'_, AppState>, since: u64, max: usize) -> Result<Vec<nbp_core::trigger::Event>, String> {
@@ -463,7 +481,7 @@ pub fn run() {
             query_value, recordings_dir, list_recordings, start_recording, stop_recording, open_recording, export_csv,
             count_samples, save_bytes, query_events, clear_events, analyze, set_math, start_logging, stop_logging, set_log_interval, clear_session, session_lod, session_stats,
             disk_status, open_log, start_export, stop_export, export_preview, sca_new, sca_add, sca_info, sca_align,
-            sca_clear_align, sca_query, sca_export, sca_meta, serial::serial_list, serial::serial_open, serial::serial_write, serial::serial_signals, serial::serial_close
+            sca_clear_align, sca_query, sca_export, sca_save, sca_load, sca_meta, serial::serial_list, serial::serial_open, serial::serial_write, serial::serial_signals, serial::serial_close
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

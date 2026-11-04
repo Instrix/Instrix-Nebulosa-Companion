@@ -19,6 +19,9 @@ export interface ScaEngine {
   exportNpz(): Promise<Uint8Array>;
   /** the per-trace metadata (inputs, outputs, groups, widths) */
   meta(): Promise<TraceMeta[]>;
+  /** the campaign as a flat .nbsca binary, and loading one back */
+  save(): Promise<Uint8Array>;
+  load(bytes: Uint8Array): Promise<ScaInfo | null>;
 }
 
 let campaign: core.Campaign | null = null;
@@ -55,6 +58,15 @@ export function wasmEngine(pipeline: () => core.Pipeline): ScaEngine {
     },
     async meta() {
       return campaign ? (campaign.meta() as TraceMeta[]) : [];
+    },
+    async save() {
+      return need().export_raw();
+    },
+    async load(bytes) {
+      campaign?.free();
+      campaign = new core.Campaign({ samples: 2, source: 'i' } as ScaConfig);
+      campaign.load_raw(bytes);
+      return campaign.info() as ScaInfo;
     },
   };
 }
