@@ -29,6 +29,11 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "publisher": "INSTRIX",
+    "category": "DeveloperTool",
+    "shortDescription": "Companion app for the INSTRIX Nebulosa power profiler",
+    "longDescription": "Scope, logger, analysis, serial monitor and side-channel tools for the INSTRIX Nebulosa power profiler (USB and Ethernet), with a built-in demo device.",
+    "copyright": "© INSTRIX",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -41,7 +46,16 @@
         "files": {
           "/usr/lib/udev/rules.d/99-nebulosa.rules": "../udev/99-nebulosa.rules"
         }
+      },
+      "rpm": {
+        "files": {
+          "/usr/lib/udev/rules.d/99-nebulosa.rules": "../udev/99-nebulosa.rules"
+        }
       }
+    },
+    "macOS": {
+      "signingIdentity": "-",
+      "minimumSystemVersion": "10.15"
     }
   }
 }

@@ -1,0 +1,126 @@
+# Builds every package of the app, on the three desktop platforms, and uploads
+# them as artifacts named packages-<os>. Called by ci.yml (main / manual runs)
+# and release.yml (tags); can also be run on its own from the Actions tab.
+#
+#   Linux    .deb, .rpm, .AppImage                      (x86_64)
+#   Windows  NSIS setup .exe, .msi, portable .exe (zip)  (x64)
+#   macOS    .dmg, .app (zip)                            (universal: Apple silicon + Intel)
+#
+# Builds are unsigned (macOS gets an ad-hoc signature): Windows SmartScreen and
+# macOS Gatekeeper warn on first launch. See the end of this file for signing.
+name: Packages
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  package:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            bundles: deb,rpm,appimage
+            rust-targets: wasm32-unknown-unknown
+            artifact: packages-linux
+          - name: Windows
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bundles: nsis,msi
+            rust-targets: wasm32-unknown-unknown
+            artifact: packages-windows
+          - name: macOS
+            os: macos-latest
+            target: universal-apple-darwin
+            bundles: app,dmg
+            rust-targets: wasm32-unknown-unknown,aarch64-apple-darwin,x86_64-apple-darwin
+            artifact: packages-macos
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: System libraries (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev libayatana-appindicator3-dev \
+            librsvg2-dev libudev-dev patchelf xdg-utils file
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-targets }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+
+      # beforeBuildCommand builds the core to WASM and the UI first
+      - name: Build
+        run: npx tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+
+      - name: Collect the packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          VER=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          B=target/${{ matrix.target }}/release/bundle
+          OUT=packages
+          mkdir -p "$OUT"
+          N=nebulosa-companion_${VER}
+          case "${{ runner.os }}" in
+            Linux)
+              cp $B/deb/*.deb           "$OUT/${N}_amd64.deb"
+              cp $B/rpm/*.rpm           "$OUT/${N}_x86_64.rpm"
+              cp $B/appimage/*.AppImage "$OUT/${N}_amd64.AppImage"
+              ;;
+            Windows)
+              cp $B/nsis/*-setup.exe    "$OUT/${N}_x64-setup.exe"
+              cp $B/msi/*.msi           "$OUT/${N}_x64.msi"
+              # portable: the bare executable, no installer (needs the WebView2
+              # runtime, which Windows 10 and 11 already have)
+              mkdir -p portable
+              cp target/${{ matrix.target }}/release/nebulosa-companion.exe "portable/Nebulosa Companion.exe"
+              printf '%s\r\n' \
+                "Nebulosa Companion ${VER} - portable" \
+                "" \
+                "Run 'Nebulosa Companion.exe' from any folder; nothing is installed." \
+                "It needs the Microsoft Edge WebView2 runtime (included in Windows 10 and 11):" \
+                "https://developer.microsoft.com/microsoft-edge/webview2/" \
+                "Settings are kept in %LOCALAPPDATA%\\com.instrix.nebulosa.companion." \
+                > portable/README.txt
+              (cd portable && 7z a -tzip "../$OUT/${N}_x64-portable.zip" "Nebulosa Companion.exe" README.txt)
+              ;;
+            macOS)
+              cp $B/dmg/*.dmg "$OUT/${N}_universal.dmg"
+              ditto -c -k --keepParent "$B/macos/Nebulosa Companion.app" "$OUT/${N}_universal.app.zip"
+              ;;
+          esac
+          ls -la "$OUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: packages/*
+          if-no-files-found: error
+
+# Signing, when certificates are available (add them as repository secrets and
+# pass them to the Build step's env):
+#   macOS    APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY,
+#            and for notarization APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID
+#            (remove bundle.macOS.signingIdentity "-" from tauri.conf.json)
+#   Windows  bundle.windows.certificateThumbprint / signCommand in tauri.conf.json

@@ -49,13 +49,34 @@ npm install
 ```sh
 npm run dev        # desktop app (USB, Ethernet, discovery)
 npm run web        # browser build at http://localhost:5173 (Chrome / Edge: WebUSB)
-npm run build      # desktop installers (src-tauri/target/release/bundle)
+npm run build      # desktop installers (target/release/bundle)
 npm run build:ui   # static browser build in dist/
 npm test           # nbp-core unit tests
 ```
 
 Without hardware: run the debugger's simulator
 (`../Instrix-Nebulosa-Debugger/build/nebulosa-sim`) and connect to `127.0.0.1`.
+
+## Packages and releases
+
+GitHub Actions builds every package (`.github/workflows/packages.yml`):
+
+| Platform | Packages |
+|:--|:--|
+| Linux (x86_64) | `.deb`, `.rpm` (both install the udev rule), `.AppImage` |
+| Windows (x64) | NSIS installer `-setup.exe`, `.msi`, portable `.exe` (zip, needs WebView2) |
+| macOS (universal) | `.dmg`, `.app` (zip) |
+
+- **CI** (`ci.yml`): tests on every push and pull request; on `main` and manual runs also
+  the packages, as build artifacts.
+- **Release** (`release.yml`): push a tag matching the version in `src-tauri/tauri.conf.json`
+  (`git tag v0.2.0 && git push origin v0.2.0`); it builds everything and opens a **draft**
+  GitHub Release with the packages and `SHA256SUMS.txt`. Review it, then publish.
+- Builds are unsigned (macOS gets an ad-hoc signature), so Windows SmartScreen and macOS
+  Gatekeeper warn on first launch. Signing hooks are noted at the end of `packages.yml`.
+
+Locally, one platform at a time: `npx tauri build --bundles deb,rpm,appimage` (Linux),
+`nsis,msi` (Windows), `app,dmg` (macOS); output in `target/release/bundle/`.
 
 ## Platform notes
 
