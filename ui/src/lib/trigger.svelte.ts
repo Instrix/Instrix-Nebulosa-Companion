@@ -47,7 +47,8 @@ export const EVENT_LABEL: Record<TrigEvent['what'], string> = {
 const SAVE_KEY = 'nebulosa.trigger';
 /** the settings kept across sessions */
 const SAVED = [
-  'mode', 'log', 'source', 'kind', 'slope', 'level', 'low', 'high', 'when', 'polarity', 'cond',
+  // 'mode' and 'log' are not kept: the app always starts in Roll (free-running)
+  'source', 'kind', 'slope', 'level', 'low', 'high', 'when', 'polarity', 'cond',
   'minWidth', 'maxWidth', 'timeout', 'hysteresis', 'holdoff', 'filter', 'position',
 ] as const;
 
