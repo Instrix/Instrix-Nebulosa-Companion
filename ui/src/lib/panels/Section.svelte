@@ -42,12 +42,26 @@
   }
   let open = $state(load());
   // the showcases open a section to show what's in it
+  function set(want: boolean) {
+    if (open === want) return;
+    open = want;
+    try {
+      localStorage.setItem(key(), want ? '1' : '0');
+    } catch {
+      /* storage unavailable */
+    }
+  }
   $effect(() => {
-    const f = (e: Event) => {
-      if ((e as CustomEvent<string>).detail === id && !open) toggle();
+    const openOne = (e: Event) => {
+      if ((e as CustomEvent<string>).detail === id) set(true);
     };
-    addEventListener('nebulosa:open-section', f);
-    return () => removeEventListener('nebulosa:open-section', f);
+    const all = (e: Event) => set(!!(e as CustomEvent<boolean>).detail);
+    addEventListener('nebulosa:open-section', openOne);
+    addEventListener('nebulosa:all-sections', all);
+    return () => {
+      removeEventListener('nebulosa:open-section', openOne);
+      removeEventListener('nebulosa:all-sections', all);
+    };
   });
   function toggle() {
     open = !open;
@@ -59,7 +73,7 @@
   }
 </script>
 
-<section class="sec" class:open data-tour={tour}>
+<section class="sec" class:open data-tour={tour} data-sec={id}>
   <div class="head">
     <button class="toggle" onclick={toggle} aria-expanded={open} title={open ? 'Fold' : 'Unfold'}>
       <span class="chev" aria-hidden="true">›</span>
@@ -78,6 +92,18 @@
 <style>
   .sec {
     gap: 0 !important;
+  }
+  .sec:global(.flash) {
+    animation: sec-flash 0.6s ease-out;
+    border-radius: var(--r-sm);
+  }
+  @keyframes sec-flash {
+    from {
+      background: color-mix(in srgb, var(--accent) 22%, transparent);
+    }
+    to {
+      background: transparent;
+    }
   }
   .head {
     display: flex;

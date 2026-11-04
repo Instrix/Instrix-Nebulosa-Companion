@@ -51,6 +51,7 @@
   import { drag, stored, store as save } from './lib/drag';
   import Showcases from './lib/Showcases.svelte';
   import SideChannel from './lib/SideChannel.svelte';
+  import SectionNav from './lib/panels/SectionNav.svelte';
 
   import { SerialMonitor, defaultSerialConfig, type SerialConfig } from './lib/serialMonitor.svelte';
   import type { Showcase, ShowcaseCtx } from './lib/showcases';
@@ -680,6 +681,22 @@
 
   const SOURCE_NAME: Record<number, string> = { [SRC.STUB_RANDOM]: 'Stub: random', [SRC.STUB_PATTERN]: 'Stub: pattern', [SRC.AD7387]: 'ADC' };
   const LOG_INTERVALS = [0.001, 0.01, 0.1, 1, 10];
+  const SCOPE_SECTIONS = [
+    { id: 'device', icon: 'device', title: 'Device' },
+    { id: 'board', icon: 'board', title: 'Board' },
+    { id: 'acquisition', icon: 'acquisition', title: 'Acquisition' },
+    { id: 'trigger', icon: 'trigger', title: 'Trigger' },
+    { id: 'display', icon: 'display', title: 'Display' },
+    { id: 'math', icon: 'math', title: 'Math channel' },
+    { id: 'calibration', icon: 'calibration', title: 'Calibration' },
+  ];
+  const LOGGER_SECTIONS = [
+    { id: 'logger', icon: 'logger', title: 'Logger' },
+    { id: 'monitor', icon: 'monitor', title: 'Serial monitor' },
+    { id: 'output', icon: 'output', title: 'File output' },
+  ];
+  // only the sections actually in the sidebar for this mode (the logger ones show in Logger)
+  const navSections = $derived(appMode === 'logger' ? [...SCOPE_SECTIONS, ...LOGGER_SECTIONS] : SCOPE_SECTIONS);
   // the serial monitor: its messages become markers on the logger, and (when
   // logging to a file) a sidecar <log>.serial.csv next to it
   let serialCfg = $state<SerialConfig>(loadSerialCfg());
@@ -1332,6 +1349,12 @@
   function onKey(e: KeyboardEvent) {
     // Ctrl / ⌘ + − 0: the UI scale (the browser zooms by itself)
     if (e.ctrlKey || e.metaKey) {
+      // Ctrl / ⌘ + 1 / 2 / 3: Scope / Logger / Side-channel
+      if (e.key === '1' || e.key === '2' || e.key === '3') {
+        setAppMode(e.key === '2' ? 'logger' : e.key === '3' ? 'sca' : 'scope');
+        e.preventDefault();
+        return;
+      }
       if (!canScale) return;
       if (e.key === '=' || e.key === '+') stepScale(1);
       else if (e.key === '-' || e.key === '_') stepScale(-1);
@@ -1937,6 +1960,8 @@
         {/if}
         <span class="muted small">{SOURCE_NAME[source] ?? ''} · {fmtRate(rateHz)}</span>
       </div>
+
+      <SectionNav items={navSections} />
 
       <Section id="device" icon="device" title="Device" tour="device" open={false} summary="{info.link_name} · firmware {info.fw_version_str}">
         <dl>

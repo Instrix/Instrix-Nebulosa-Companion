@@ -123,6 +123,7 @@
         ['Drag a divider', 'Resize panels and plots'],
         ['Double-click a divider', 'Reset its size'],
         ['Ctrl + / Ctrl − / Ctrl 0', 'UI scale: bigger / smaller / 100 %'],
+        ['Ctrl 1 / 2 / 3', 'Scope / Logger / Side-channel'],
         ['? or F1', 'Help'],
       ],
     ],
