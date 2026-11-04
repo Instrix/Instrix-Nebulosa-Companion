@@ -1,8 +1,10 @@
 <script lang="ts">
   // A section's "?": a live snapshot of the section (a copy of it as it is now,
-  // values included, not clickable) with each option boxed and numbered, and an
-  // arrow from its description to it. A copy rather than a picture: it always
-  // matches the app, the theme and the device connected.
+  // values included, not clickable) with each option boxed and numbered, and
+  // the numbered list of what they do beside it. Pointing at an item (or a box)
+  // lights the pair up and draws one leader between them; nothing else is drawn,
+  // so the picture stays clean however many options there are. A copy rather
+  // than a picture: it always matches the app, the theme and the device.
   import Icon from './Icon.svelte';
   import type { SectionHelp } from './sectionHelp';
 
@@ -24,24 +26,25 @@
     onclose: () => void;
   } = $props();
 
+  type Box = { x: number; y: number; w: number; h: number };
   const LISTS = new Set(['DL', 'UL', 'OL', 'TABLE', 'TBODY']);
-  const GAP = 64; // between the snapshot and the descriptions: room for the arrows
-  const CARD_W = 300;
+  const LIST_W = 400;
+  const GUTTER = 56;
 
-  let stage = $state<HTMLDivElement>();
+  /** the snapshot's frame (boxes are placed in it) and the whole body (the leader is drawn over it) */
+  let frame = $state<HTMLDivElement>();
+  let body = $state<HTMLDivElement>();
   let snapW = $state(320);
-  let boxes = $state<({ x: number; y: number; w: number; h: number } | null)[]>([]);
-  let tops = $state<number[]>([]);
-  /** which side of the snapshot each description is on */
-  let sides = $state<('l' | 'r')[]>([]);
-  /** the snapshot's left edge: left column, gap */
-  const SNAP_X = CARD_W + GAP;
-  const rightX = $derived(SNAP_X + snapW + GAP);
-  let stageH = $state(0);
+  let snapH = $state(0);
+  let boxes = $state<(Box | null)[]>([]);
+  /** the items in the order their options appear (the ones not showing last) */
+  let order = $state<number[]>([]);
   let hot = $state<number | null>(null);
   let ready = $state(false);
-  let cardEls: HTMLDivElement[] = $state([]);
+  let itemEls: HTMLElement[] = $state([]);
   let snapRoot: HTMLElement | null = null;
+  /** the leader for the item pointed at */
+  let leader = $state<{ d: string; w: number; h: number } | null>(null);
 
   /** the section copied, inside copies of its ancestors (scoped styles need them) */
   function buildSnapshot(host: HTMLElement) {
@@ -102,8 +105,8 @@
   }
 
   function measure() {
-    if (!stage || !snapRoot) return;
-    const s = stage.getBoundingClientRect();
+    if (!frame || !snapRoot) return;
+    const f = frame.getBoundingClientRect();
     boxes = help.items.map((it) => {
       const needles = it.at == null ? [] : Array.isArray(it.at) ? it.at : [it.at];
       let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
@@ -122,38 +125,79 @@
         }
       }
       if (x0 === Infinity) return null;
-      return { x: x0 - s.left - 3, y: y0 - s.top - 3, w: x1 - x0 + 6, h: y1 - y0 + 6 };
+      return { x: x0 - f.left - 3, y: y0 - f.top - 3, w: x1 - x0 + 6, h: y1 - y0 + 6 };
     });
-    // descriptions next to what they describe, in the order things appear, on
-    // whichever side lets each sit closest to its target
-    const order = help.items.map((_, k) => k).sort((a, b) => (boxes[a]?.y ?? 1e9) - (boxes[b]?.y ?? 1e9));
-    const t: number[] = [];
-    const sd: ('l' | 'r')[] = [];
-    const bottom = { l: 0, r: 0 };
-    for (const k of order) {
-      const b = boxes[k];
-      const want = b ? b.y + b.h / 2 - 16 - (fromAbove(b) ? 40 : 0) : Math.min(bottom.l, bottom.r);
-      // a narrow target (a button in a row) goes to its nearer side; the rest
-      // to whichever side has room closest to it
-      // a small control at an edge: that side, the arrow straight in; else
-      // whichever side has room nearest to it
-      const side: 'l' | 'r' =
-        b && narrow(b) && atEdge(b, 'l')
-          ? 'l'
-          : b && narrow(b) && atEdge(b, 'r')
-            ? 'r'
-            : Math.max(want, bottom.r) <= Math.max(want, bottom.l)
-              ? 'r'
-              : 'l';
-      const top = Math.max(want, bottom[side]);
-      t[k] = top;
-      sd[k] = side;
-      bottom[side] = top + (cardEls[k]?.offsetHeight ?? 60) + 8;
-    }
-    sides = sd;
-    tops = t;
-    stageH = Math.max(snapRoot.getBoundingClientRect().bottom - s.top, bottom.l, bottom.r);
+    order = help.items
+      .map((_, k) => k)
+      .sort((a, b) => (boxes[a]?.y ?? 1e9) - (boxes[b]?.y ?? 1e9) || (boxes[a]?.x ?? 0) - (boxes[b]?.x ?? 0));
+    snapH = snapRoot.getBoundingClientRect().bottom - f.top;
     ready = true;
+    drawLeader();
+  }
+
+  /** the number shown for item k: its place in the list */
+  const num = (k: number) => order.indexOf(k) + 1;
+
+  /**
+   * The one leader: from the item, across the gutter, into its box's side; for
+   * a control mid-row (others to its right), along the gap above the row and
+   * down into its top, so it doesn't cross the neighbours.
+   */
+  function drawLeader() {
+    const k = hot;
+    const b = k == null ? null : boxes[k];
+    const item = k == null ? null : itemEls[k];
+    if (!b || !item || !frame || !body) {
+      leader = null;
+      return;
+    }
+    const o = body.getBoundingClientRect();
+    const f = frame.getBoundingClientRect();
+    const r = item.getBoundingClientRect();
+    const fx = f.left - o.left;
+    const fy = f.top - o.top;
+    const x1 = r.left - o.left - 2;
+    const y1 = r.top - o.top + Math.min(16, r.height / 2);
+    const lane = fx + snapW + GUTTER / 2;
+    const bx = fx + b.x;
+    const by = fy + b.y;
+    const midRow = b.w < snapW * 0.6 && snapW - (b.x + b.w) > 16;
+    let pts: [number, number][];
+    if (midRow) {
+      const gy = by - 5;
+      const cx = bx + b.w / 2;
+      pts = [[x1, y1], [lane, y1], [lane, gy], [cx, gy], [cx, by - 1]];
+    } else {
+      const y2 = by + b.h / 2;
+      pts = Math.abs(y1 - y2) < 2 ? [[x1, y2], [bx + b.w + 2, y2]] : [[x1, y1], [lane, y1], [lane, y2], [bx + b.w + 2, y2]];
+    }
+    leader = { d: poly(pts), w: o.width, h: o.height };
+  }
+
+  $effect(() => {
+    void hot;
+    drawLeader();
+  });
+
+  /** a polyline with its corners rounded */
+  function poly(pts: [number, number][], rad = 8): string {
+    let d = `M ${pts[0][0]} ${pts[0][1]}`;
+    for (let i = 1; i < pts.length - 1; i++) {
+      const [px, py] = pts[i - 1];
+      const [cx, cy] = pts[i];
+      const [nx, ny] = pts[i + 1];
+      const lin = Math.hypot(cx - px, cy - py);
+      const lout = Math.hypot(nx - cx, ny - cy);
+      const r = Math.min(rad, lin / 2, lout / 2);
+      if (!(r > 0.5)) {
+        d += ` L ${cx} ${cy}`;
+        continue;
+      }
+      d += ` L ${cx - ((cx - px) / lin) * r} ${cy - ((cy - py) / lin) * r}`;
+      d += ` Q ${cx} ${cy} ${cx + ((nx - cx) / lout) * r} ${cy + ((ny - cy) / lout) * r}`;
+    }
+    const [lx, ly] = pts[pts.length - 1];
+    return d + ` L ${lx} ${ly}`;
   }
 
   function snapshot(host: HTMLElement) {
@@ -163,45 +207,17 @@
     requestAnimationFrame(() => {
       buildSnapshot(host);
       dispatchEvent(new CustomEvent('nebulosa:help-preview', { detail: null }));
-      // after layout (twice: the cards' heights settle once their width is set)
-      requestAnimationFrame(() => {
-        measure();
-        requestAnimationFrame(measure);
-      });
+      requestAnimationFrame(measure);
     });
     const ro = new ResizeObserver(() => measure());
     ro.observe(host);
     return { destroy: () => ro.disconnect() };
   }
 
-  type Box = { x: number; y: number; w: number; h: number };
-  const narrow = (b: Box) => b.w < snapW * 0.6;
-  /** nothing between the box and that side of the snapshot: an arrow can come straight in */
-  const atEdge = (b: Box, side: 'l' | 'r') => (side === 'l' ? b.x - SNAP_X : SNAP_X + snapW - (b.x + b.w)) < 16;
-  /** a small control mid-row: the arrow comes from above, not across its neighbours */
-  const fromAbove = (b: Box) => narrow(b) && !atEdge(b, 'l') && !atEdge(b, 'r');
-
-  /** the arrow from description k to its box: from the card's edge facing the snapshot */
-  function arrow(k: number) {
-    const b = boxes[k];
-    if (!b) return '';
-    const top = tops[k] ?? 0;
-    const h = cardEls[k]?.offsetHeight ?? 40;
-    const mid = b.y + b.h / 2;
-    const y1 = Math.min(Math.max(mid, top + 14), top + h - 14);
-    const left = sides[k] === 'l';
-    const x1 = left ? CARD_W : rightX;
-    if (fromAbove(b)) {
-      // in from above: a side arrow would cross the controls next to it
-      const x2 = b.x + b.w / 2;
-      const y2 = b.y - 2;
-      const dx = Math.max(20, Math.abs(x1 - x2) * 0.5) * (left ? 1 : -1);
-      return `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2} ${y2 - 36}, ${x2} ${y2}`;
-    }
-    const x2 = left ? b.x - 2 : b.x + b.w + 2;
-    const y2 = mid;
-    const dx = Math.max(20, Math.abs(x1 - x2) * 0.45) * (left ? 1 : -1);
-    return `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`;
+  /** point at item k (from its box: bring its description into view) */
+  function point(k: number | null, reveal = false) {
+    hot = k;
+    if (reveal && k != null) itemEls[k]?.scrollIntoView({ block: 'nearest' });
   }
 
   function portal(node: HTMLElement) {
@@ -214,6 +230,16 @@
       e.stopPropagation();
       e.preventDefault();
       onclose();
+      return;
+    }
+    // ↑ / ↓: through the items in order
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      e.stopPropagation();
+      const i = hot == null ? -1 : order.indexOf(hot);
+      const n = order.length;
+      const j = e.key === 'ArrowDown' ? (i + 1) % n : (i - 1 + n) % n;
+      point(order[j], true);
     }
   }
 </script>
@@ -228,7 +254,7 @@
     role="dialog"
     aria-label="Help: {title}"
     tabindex="-1"
-    style="width: min({snapW + 2 * (GAP + CARD_W) + 56}px, 96vw)"
+    style="width: min({snapW + GUTTER + LIST_W + 48}px, 96vw)"
     onclick={(e) => e.stopPropagation()}
   >
     <header>
@@ -239,64 +265,76 @@
     </header>
     <p class="intro">{help.intro}</p>
 
-    <div class="scroll">
-      <div class="stage" bind:this={stage} style="height: {stageH}px; width: {snapW + 2 * (GAP + CARD_W)}px" class:ready>
-        <div class="snap" style="left: {SNAP_X}px; width: {snapW}px" inert use:snapshot></div>
-
-        {#each boxes as b, k (k)}
-          {#if b}
-            <div class="box" class:hot={hot === k} class:l={sides[k] === 'l'} style="left: {b.x}px; top: {b.y}px; width: {b.w}px; height: {b.h}px">
-              <span class="num">{k + 1}</span>
-            </div>
-          {/if}
-        {/each}
-
-        <svg class="arrows" width={rightX} height={stageH} aria-hidden="true">
-          <defs>
-            <marker id="sh-head" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-              <path d="M 0 0 L 10 5 L 0 10 z" fill="context-stroke" />
-            </marker>
-          </defs>
-          {#each boxes as b, k (k)}
-            {#if b}
-              <path d={arrow(k)} class:hot={hot === k} marker-end="url(#sh-head)" />
-            {/if}
-          {/each}
-        </svg>
-
-        {#each help.items as it, k (it.name)}
-          <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <div
-            class="card"
-            class:hot={hot === k}
-            class:loose={!boxes[k]}
-            class:l={sides[k] === 'l'}
-            bind:this={cardEls[k]}
-            style="left: {sides[k] === 'l' ? 0 : rightX}px; top: {tops[k] ?? 0}px; width: {CARD_W}px"
-            onmouseenter={() => (hot = k)}
-            onmouseleave={() => (hot = null)}
-          >
-            <span class="num">{k + 1}</span>
-            <div>
-              <b>{it.name}</b>
-              <p>{it.text}</p>
-              {#if it.list}
-                <dl class="sub">
-                  {#each it.list as [k, v] (k)}<dt>{k}</dt><dd>{v}</dd>{/each}
-                </dl>
+    <div class="scroll" onscroll={drawLeader}>
+      <div class="hbody" class:ready class:pointing={hot != null} bind:this={body} style="grid-template-columns: {snapW}px {GUTTER}px minmax(240px, {LIST_W}px)">
+        <div class="snapcol">
+          <div class="frame" bind:this={frame} style="width: {snapW}px; height: {snapH}px">
+            <div class="snap" inert use:snapshot></div>
+            {#each boxes as b, k (k)}
+              {#if b}
+                <!-- svelte-ignore a11y_no_static_element_interactions -->
+                <div
+                  class="box"
+                  class:hot={hot === k}
+                  style="left: {b.x}px; top: {b.y}px; width: {b.w}px; height: {b.h}px"
+                  onmouseenter={() => point(k, true)}
+                  onmouseleave={() => point(null)}
+                >
+                  <span class="num">{num(k)}</span>
+                </div>
               {/if}
-            </div>
+            {/each}
           </div>
-        {/each}
+        </div>
+
+        <ol class="list" style="grid-column: 3">
+          {#each order as k (k)}
+            {@const it = help.items[k]}
+            <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+            <li
+              class:hot={hot === k}
+              class:loose={!boxes[k]}
+              bind:this={itemEls[k]}
+              tabindex="0"
+              onmouseenter={() => point(k)}
+              onmouseleave={() => point(null)}
+              onfocus={() => point(k)}
+              title={boxes[k] ? '' : 'Not showing with the current settings'}
+            >
+              <span class="num">{boxes[k] ? num(k) : '–'}</span>
+              <div>
+                <b>{it.name}</b>
+                <p>{it.text}</p>
+                {#if it.list}
+                  <dl class="sub">
+                    {#each it.list as [t, v] (t)}<dt>{t}</dt><dd>{v}</dd>{/each}
+                  </dl>
+                {/if}
+              </div>
+            </li>
+          {/each}
+        </ol>
+
+        {#if leader}
+          <svg class="leader" width={leader.w} height={leader.h} aria-hidden="true">
+            <defs>
+              <marker id="sh-head" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+                <path d="M 0 1 L 9 5 L 0 9 z" fill="context-stroke" />
+              </marker>
+            </defs>
+            <path d={leader.d} marker-end="url(#sh-head)" />
+            <circle cx={leader.d.split(' ')[1]} cy={leader.d.split(' ')[2]} r="3" />
+          </svg>
+        {/if}
       </div>
 
       {#if help.tips?.length}
         <h4>How to use</h4>
-        <ul>
+        <ul class="tips">
           {#each help.tips as t (t)}<li>{t}</li>{/each}
         </ul>
       {/if}
-      <p class="more muted">Unnumbered options aren't showing right now (they appear with other settings). More in Help (? or F1) and the user manual.</p>
+      <p class="more muted">Point at an item, or use ↑ ↓, to see where it is. Items marked – aren't showing with the current settings. More in Help (? or F1) and the user manual.</p>
     </div>
   </div>
 </div>
@@ -342,23 +380,29 @@
     margin: 6px 0 12px;
   }
   .scroll {
-    overflow-y: auto;
-    overflow-x: auto;
-    scrollbar-gutter: stable;
+    overflow: auto;
     min-height: 0;
-    padding-right: 4px;
+    padding: 8px 4px 0 8px;
   }
-  .stage {
+  .hbody {
     position: relative;
+    display: grid;
+    align-items: start;
     opacity: 0;
     transition: opacity 0.15s;
   }
-  .stage.ready {
+  .hbody.ready {
     opacity: 1;
   }
+  /* the snapshot stays in view while a long list scrolls */
+  .snapcol {
+    position: sticky;
+    top: 0;
+  }
+  .frame {
+    position: relative;
+  }
   .snap {
-    position: absolute;
-    top: 8px;
     /* the section's own width: a frame outside it, not padding inside */
     outline: 1px dashed var(--border);
     outline-offset: 7px;
@@ -367,90 +411,79 @@
     box-shadow: 0 0 0 7px var(--bg);
     pointer-events: none;
     user-select: none;
-    box-sizing: border-box;
   }
   .box {
     position: absolute;
-    border: 2px solid var(--accent);
+    border: 1.5px solid color-mix(in srgb, var(--accent) 75%, transparent);
     border-radius: 5px;
-    background: color-mix(in srgb, var(--accent) 8%, transparent);
-    pointer-events: none;
-    transition: background 0.12s, box-shadow 0.12s;
+    background: color-mix(in srgb, var(--accent) 6%, transparent);
+    cursor: help;
+    transition: opacity 0.12s, background 0.12s, box-shadow 0.12s;
+  }
+  .pointing .box:not(.hot) {
+    opacity: 0.3;
   }
   .box.hot {
-    background: color-mix(in srgb, var(--accent) 22%, transparent);
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent);
-  }
-  .box .num {
-    position: absolute;
-    right: -9px;
-    top: -9px;
-  }
-  .box.l .num {
-    right: auto;
-    left: -9px;
+    border-color: var(--accent);
+    border-width: 2px;
+    background: color-mix(in srgb, var(--accent) 16%, transparent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 30%, transparent);
   }
   .num {
     display: inline-grid;
     place-items: center;
     flex: none;
-    width: 18px;
+    min-width: 18px;
     height: 18px;
-    border-radius: 50%;
+    padding: 0 4px;
+    border-radius: 9px;
     background: var(--accent);
     color: #fff;
     font-size: 11px;
     font-weight: 700;
     line-height: 1;
   }
-  .arrows {
+  /* on the box: its top-right corner, clear of the labels (they start at the left) */
+  .box .num {
     position: absolute;
-    left: 0;
-    top: 0;
-    overflow: visible;
-    pointer-events: none;
+    right: -8px;
+    top: -9px;
+    box-shadow: 0 0 0 2px var(--panel);
   }
-  .arrows path {
-    fill: none;
-    stroke: var(--accent);
-    stroke-width: 1.5;
-    opacity: 0.7;
-  }
-  .arrows path.hot {
-    stroke-width: 2.5;
-    opacity: 1;
-  }
-  .card {
-    position: absolute;
+  .list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
     display: flex;
-    gap: 8px;
-    padding: 6px 8px;
-    border: 1px solid var(--border);
-    border-left: 3px solid var(--accent);
+    flex-direction: column;
+    gap: 2px;
+  }
+  .list li {
+    display: flex;
+    gap: 10px;
+    padding: 7px 10px;
     border-radius: var(--r);
-    background: var(--panel);
-    box-sizing: border-box;
-    transition: border-color 0.12s, background 0.12s;
+    border-left: 3px solid transparent;
+    cursor: default;
+    outline: none;
+    transition: background 0.12s, border-color 0.12s;
   }
-  .card.hot {
-    border-color: var(--accent);
-    background: color-mix(in srgb, var(--accent) 7%, var(--panel));
+  .list li:hover,
+  .list li.hot {
+    background: color-mix(in srgb, var(--accent) 10%, var(--panel));
+    border-left-color: var(--accent);
   }
-  .card.l {
-    border-left: 1px solid var(--border);
-    border-right: 3px solid var(--accent);
+  .list li.loose .num {
+    background: var(--border);
+    color: var(--muted);
   }
-  .card.loose {
-    border-left-color: var(--border);
-    border-right-color: var(--border);
+  .list li.loose b {
+    color: var(--muted);
   }
-  .card.loose .num {
-    background: var(--muted);
-  }
-  .card b {
+  .list b {
     font-size: 13px;
   }
-  .card p {
+  .list p {
     margin: 2px 0 0;
     color: var(--muted);
     font-size: 12px;
@@ -464,11 +497,26 @@
   }
   .sub dt {
     font-weight: 600;
-    color: var(--text);
   }
   .sub dd {
     margin: 0;
     color: var(--muted);
+  }
+  .leader {
+    position: absolute;
+    left: 0;
+    top: 0;
+    overflow: visible;
+    pointer-events: none;
+  }
+  .leader path {
+    fill: none;
+    stroke: var(--accent);
+    stroke-width: 2;
+    stroke-linejoin: round;
+  }
+  .leader circle {
+    fill: var(--accent);
   }
   h4 {
     margin: 16px 0 4px;
@@ -477,11 +525,11 @@
     letter-spacing: 0.04em;
     color: var(--muted);
   }
-  ul {
+  .tips {
     margin: 0;
     padding-left: 18px;
   }
-  li {
+  .tips li {
     margin: 2px 0;
   }
   .more {
