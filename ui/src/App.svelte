@@ -697,10 +697,56 @@
   /** messages captured since this log started, for the sidecar at stop */
   let monitorLogStart = 0;
   let sendText = $state('');
+  let monitorHex = $state(false);
+  let sendHistory = $state<string[]>([]);
+  let histIdx = -1;
   async function monitorSend() {
     if (!sendText) return;
     await monitor.send(sendText);
+    sendHistory = [...sendHistory.filter((h) => h !== sendText), sendText].slice(-50);
+    histIdx = -1;
     sendText = '';
+  }
+  function sendKey(e: KeyboardEvent) {
+    if (e.key === 'Enter') return monitorSend();
+    if (e.key === 'ArrowUp' && sendHistory.length) {
+      e.preventDefault();
+      histIdx = histIdx < 0 ? sendHistory.length - 1 : Math.max(0, histIdx - 1);
+      sendText = sendHistory[histIdx];
+    } else if (e.key === 'ArrowDown' && histIdx >= 0) {
+      e.preventDefault();
+      histIdx = histIdx + 1 >= sendHistory.length ? -1 : histIdx + 1;
+      sendText = histIdx < 0 ? '' : sendHistory[histIdx];
+    }
+  }
+  /** each message's text as hex of its bytes (the hex view) */
+  function toHexLine(t: string) {
+    return [...new TextEncoder().encode(t)].map((b) => b.toString(16).padStart(2, '0')).join(' ');
+  }
+  /** save the captured messages now (independent of a file log) */
+  async function saveMessages() {
+    const msgs = monitor.annotations;
+    if (!msgs.length) return;
+    const head = 'unix_time_s,fpga_time_s,wall_clock,kind,message\n';
+    const body = msgs.map((a) => `${((a.wall ?? 0) / 1000).toFixed(3)},${a.t.toFixed(6)},${new Date(a.wall ?? 0).toISOString()},${a.kind ?? 'rx'},${csvField(a.text)}`).join('\n');
+    const bytes = new TextEncoder().encode(head + body + '\n');
+    const name = `nebulosa-serial-${stamp()}.csv`;
+    try {
+      if (isNative) {
+        const path = await native.pickSave(`${recDir || '.'}/${name}`, 'CSV', 'csv');
+        if (!path) return;
+        await native.saveBytes(path, bytes);
+        note = `Saved ${msgs.length} messages`;
+      } else {
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(new Blob([bytes], { type: 'text/csv' }));
+        a.download = name;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+      }
+    } catch (e) {
+      note = String(e);
+    }
   }
   // a synthetic serial feed for the simultaneous-serial showcase (no real port)
   let demoFeed: ReturnType<typeof setInterval> | undefined;
@@ -1987,7 +2033,7 @@
 
       {#if monitor.open}
         <div class="mon-send">
-          <input placeholder="Send…" bind:value={sendText} onkeydown={(e) => e.key === 'Enter' && monitorSend()} />
+          <input placeholder="Send… (↑ history)" bind:value={sendText} onkeydown={sendKey} />
           <select bind:value={serialCfg.txNewline} title="Line ending appended to what you send"><option value="none">—</option><option value="lf">\n</option><option value="cr">\r</option><option value="crlf">\r\n</option></select>
           <button class="small" onclick={monitorSend} disabled={!sendText}>Send</button>
         </div>
@@ -2010,11 +2056,16 @@
 
       {#if monitor.annotations.length}
         <div class="mon-list">
-          {#each monitor.annotations.slice(-120).reverse() as a (a.wall)}
-            <div class="mon-msg" class:trig={a.kind === 'trigger'} class:tx={a.kind === 'tx'}><button class="mon-jump" onclick={() => openInScope(a.t)} title="Open this moment in the scope">{new Date(a.wall ?? 0).toLocaleTimeString()}</button> <span>{a.text}</span></div>
+          {#each monitor.annotations.slice(-200).reverse() as a (a.wall)}
+            <div class="mon-msg" class:trig={a.kind === 'trigger'} class:tx={a.kind === 'tx'}><button class="mon-jump" onclick={() => openInScope(a.t)} title="Open this moment in the scope">{new Date(a.wall ?? 0).toLocaleTimeString()}</button> <span>{monitorHex ? toHexLine(a.text) : a.text}</span></div>
           {/each}
         </div>
-        <button class="ghost small" onclick={() => monitor.clear()}>Clear messages</button>
+        <div class="mon-row">
+          <label class="mon-chk"><input type="checkbox" bind:checked={monitorHex} /> Hex</label>
+          <span class="spacer"></span>
+          <button class="ghost small" onclick={saveMessages}>Save…</button>
+          <button class="ghost small" onclick={() => monitor.clear()}>Clear</button>
+        </div>
       {/if}
     </Section>
 
@@ -2619,9 +2670,13 @@
   .wrap {
     word-break: break-all;
   }
-.mon-row {
+  .mon-row {
     display: flex;
     gap: 6px;
+    align-items: center;
+  }
+  .mon-row .spacer {
+    flex: 1;
   }
   .mon-row select {
     flex: 1;

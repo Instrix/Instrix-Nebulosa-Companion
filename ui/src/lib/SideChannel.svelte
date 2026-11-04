@@ -40,13 +40,26 @@
     onnote: (m: string) => void;
   } = $props();
 
-  type View = 'traces' | 'ttest' | 'timing' | 'export';
+  type View = 'traces' | 'ttest' | 'timing' | 'cpa' | 'export';
   let view = $state<View>('traces');
+
+  // CPA: a key-byte attack and a full-key recovery
+  let cpaByte = $state(0);
+  let cpa = $state.raw<Extract<ScaResult, { kind: 'cpa' }> | null>(null);
+  let cpaBusy = $state(false);
+  /** recovered key bytes (null until found); best corr per byte */
+  let recovered = $state<(number | null)[]>(Array(16).fill(null));
+  let recoveredCorr = $state<number[]>(Array(16).fill(0));
+  let recoverAll = $state(false);
 
   // ---- target -------------------------------------------------------------
   let target = $state.raw<Target | null>(null);
   let targetKind = $state<'demo' | 'serial'>('demo');
   let keyHex = $state('2b7e151628aed2a6abf7158809cf4f3c');
+  /** the demo target's key is known, so matches can be checked */
+  const knownKey = $derived(targetKind === 'demo' && demo ? keyOrDefault(keyHex) : null);
+  const knownByte = (b: number) => (knownKey && b < knownKey.length ? knownKey[b] : 256);
+  const hex2 = (v: number) => v.toString(16).padStart(2, '0');
   let password = $state('nebulosa');
   let ports = $state<{ path: string; label: string }[]>([]);
   let portPath = $state('');
@@ -202,7 +215,7 @@
       return;
     }
     try {
-      if (view === 'timing') result = null;
+      if (view === 'timing' || view === 'cpa') result = null;
       else result = await link.sca.query(view === 'ttest' ? { kind: 'ttest' } : { kind: 'overview', show: 20 });
     } catch (e) {
       onnote(String(e));
@@ -229,6 +242,7 @@
     const W = chartEl.clientWidth;
     const H = chartEl.clientHeight;
     if (view === 'timing') return drawTiming(W, H);
+    if (view === 'cpa') return drawCpa(W, H);
     if (!r || r.kind === 'empty') return;
 
     if (r.kind === 'overview') {
@@ -329,9 +343,93 @@
     );
   }
 
+  /** the 256 correlations, best in red; a line per guess */
+  function drawCpa(W: number, H: number) {
+    if (!cpa || !chartEl) return;
+    const x = cpa.corr.map((_, i) => i);
+    const best = cpa.best;
+    const col = cpa.correct === false ? css('--danger') : css('--accent');
+    // the best guess as a second series, so it draws on top in a bold colour
+    const bestSeries = cpa.corr.map((c, i) => (i === best ? c : null));
+    chart = new uPlot(
+      {
+        width: W,
+        height: H,
+        legend: { show: false },
+        cursor: { points: { show: false } },
+        scales: { x: { time: false }, y: { range: (_u, _lo, hi) => [0, Math.max(0.2, (hi ?? 0.2) * 1.1)] } },
+        series: [
+          {},
+          { stroke: css('--muted') + '99', width: 1, points: { show: false }, paths: uPlot.paths.bars!({ size: [0.9] }) },
+          { stroke: col, fill: col, width: 1, points: { show: true, size: 7 }, paths: uPlot.paths.bars!({ size: [1] }) },
+        ],
+        axes: [
+          { stroke: css('--muted'), grid: { show: false }, ticks: { show: false }, values: (_u, v) => v.map((i) => (i % 32 === 0 ? '0x' + (i & 0xff).toString(16).padStart(2, '0') : '')) },
+          { stroke: css('--muted'), grid: { stroke: css('--grid') }, size: 56, values: (_u, v) => v.map((y) => y.toFixed(2)) },
+        ],
+      },
+      [x, cpa.corr, bestSeries],
+      chartEl,
+    );
+  }
+
   $effect(() => {
     if (view === 'timing') loadTiming().then(() => drawChart());
   });
+
+  // ---- CPA ----------------------------------------------------------------
+  async function runCpaByte(b: number): Promise<Extract<ScaResult, { kind: 'cpa' }> | null> {
+    if (!link || !info?.n) return null;
+    const r = await link.sca.query({ kind: 'cpa', byte: b, known: knownByte(b) });
+    if (r.kind !== 'cpa') {
+      onnote(r.kind === 'empty' ? r.reason : 'CPA failed');
+      return null;
+    }
+    return r;
+  }
+
+  async function runCpa() {
+    cpaBusy = true;
+    try {
+      const r = await runCpaByte(cpaByte);
+      if (r) {
+        cpa = r;
+        recovered[r.byte] = r.best;
+        recoveredCorr[r.byte] = r.best_corr;
+        recovered = [...recovered];
+        recoveredCorr = [...recoveredCorr];
+      }
+      drawChart();
+    } finally {
+      cpaBusy = false;
+    }
+  }
+
+  async function recoverKey() {
+    cpaBusy = true;
+    recoverAll = true;
+    try {
+      for (let b = 0; b < 16; b++) {
+        cpaByte = b;
+        const r = await runCpaByte(b);
+        if (!r) break;
+        cpa = r;
+        recovered[b] = r.best;
+        recoveredCorr[b] = r.best_corr;
+        recovered = [...recovered];
+        recoveredCorr = [...recoveredCorr];
+        drawChart();
+        await new Promise((res) => setTimeout(res, 0));
+      }
+    } finally {
+      cpaBusy = false;
+      recoverAll = false;
+    }
+  }
+
+  const recoveredHex = $derived(recovered.map((b) => (b == null ? '··' : hex2(b))).join(' '));
+  const keyComplete = $derived(recovered.every((b) => b != null));
+  const keyCorrect = $derived(knownKey && keyComplete && recovered.every((b, i) => b === knownKey[i]));
 
   // ---- export -------------------------------------------------------------
   async function exportNpz() {
@@ -452,7 +550,7 @@
 
   <main>
     <div class="tabs">
-      {#each [['traces', 'Traces'], ['ttest', 'T-test (TVLA)'], ['timing', 'Timing'], ['export', 'Export']] as [k, label] (k)}
+      {#each [['traces', 'Traces'], ['ttest', 'T-test (TVLA)'], ['timing', 'Timing'], ['cpa', 'Correlation (CPA)'], ['export', 'Export']] as [k, label] (k)}
         <button class:on={view === k} onclick={() => (view = k as View)}>{label}</button>
       {/each}
       <span class="spacer"></span>
@@ -462,10 +560,31 @@
         <span class="readout">{result.n.toLocaleString()} traces</span>
       {:else if view === 'timing' && timing}
         <span class="readout leak">longest: “{timing.guesses[timing.best]}” at {fmtTime(timing.mean[timing.best])}</span>
+      {:else if view === 'cpa' && cpa}
+        <span class="readout" class:leak={cpa.correct !== false}>byte {cpa.byte}: <b>0x{hex2(cpa.best)}</b> · r {cpa.best_corr.toFixed(3)} (2nd {cpa.second.toFixed(3)}){cpa.correct != null ? (cpa.correct ? ' ✓' : ' ✗') : ''}</span>
       {/if}
     </div>
 
-    {#if view === 'export'}
+    {#if view === 'cpa'}
+      <div class="cpa-bar">
+        <label>Key byte <input type="number" min="0" max="15" bind:value={cpaByte} /></label>
+        <button class="small primary" onclick={runCpa} disabled={cpaBusy || !info?.n}>{cpaBusy && !recoverAll ? 'Working…' : 'Attack byte'}</button>
+        <button class="small" onclick={recoverKey} disabled={cpaBusy || !info?.n}>{recoverAll ? `Recovering… ${recovered.filter((b) => b != null).length}/16` : 'Recover key (16 bytes)'}</button>
+        <span class="spacer"></span>
+        <span class="keyout" class:ok={keyCorrect} class:bad={knownKey && keyComplete && !keyCorrect}>
+          key: <b>{recoveredHex}</b>{#if keyComplete}{knownKey ? (keyCorrect ? ' ✓ recovered' : ' ✗ wrong') : ' (done)'}{/if}
+        </span>
+      </div>
+      <div class="chart" bind:this={chartEl}>
+        {#if !cpa}
+          <div class="empty">
+            <p>Correlation power analysis.</p>
+            <p class="muted">Capture <b>AES — random plaintext</b> (so the inputs vary), then <b>Attack byte</b> or <b>Recover key</b>. For each of the 256 guesses of a key byte, it correlates the Hamming weight of the first-round S-box output with every sample; the highest correlation is the byte.</p>
+            <p class="muted small">The demo key is known, so a recovered byte is marked ✓ / ✗. On real traces nothing is known — the tallest bar, well clear of the rest, is the answer.</p>
+          </div>
+        {/if}
+      </div>
+    {:else if view === 'export'}
       <div class="export">
         <p>Save the campaign as a NumPy <code>.npz</code>: <code>traces</code> (float32, aligned), <code>textin</code>, <code>textout</code>, <code>group</code>, <code>width</code>, <code>meta.json</code>.</p>
         <p class="muted">Load it in Python (<code>numpy.load</code>), ChipWhisperer’s analyzer, Lascar or SCAred for CPA / DPA and deeper work.</p>
@@ -630,6 +749,40 @@
   .readout.leak {
     color: var(--danger);
     font-weight: 600;
+  }
+.cpa-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+  }
+  .cpa-bar label {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--muted);
+  }
+  .cpa-bar input {
+    width: 48px;
+    padding: 2px 4px;
+  }
+  .keyout {
+    font: 12px ui-monospace, monospace;
+    color: var(--muted);
+  }
+  .keyout b {
+    color: var(--text);
+    letter-spacing: 0.03em;
+  }
+  .keyout.ok,
+  .keyout.ok b {
+    color: var(--ok);
+  }
+  .keyout.bad,
+  .keyout.bad b {
+    color: var(--danger);
   }
   .chart {
     flex: 1;

@@ -244,11 +244,16 @@ export interface ScaInfo {
   source: Signal;
   aligned: boolean;
 }
-export type ScaRequest = { kind: 'overview'; show: number } | { kind: 'ttest' } | { kind: 'timing'; threshold: number };
+export type ScaRequest =
+  | { kind: 'overview'; show: number }
+  | { kind: 'ttest' }
+  | { kind: 'timing'; threshold: number }
+  | { kind: 'cpa'; byte: number; known: number };
 export type ScaResult =
   | { kind: 'overview'; n: number; dt: number; mean: number[]; std: number[]; traces: number[][] }
   | { kind: 'ttest'; dt: number; t: number[]; n0: number; n1: number; max_abs: number; at: number }
   | { kind: 'timing'; dt: number; durations: number[] }
+  | { kind: 'cpa'; byte: number; dt: number; corr: number[]; best: number; best_corr: number; at: number; second: number; correct: boolean | null }
   | { kind: 'empty'; reason: string };
 export interface AlignResult {
   shifts: number[];
