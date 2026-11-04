@@ -51,6 +51,7 @@
   import { drag, stored, store as save } from './lib/drag';
   import Showcases from './lib/Showcases.svelte';
   import SideChannel from './lib/SideChannel.svelte';
+
   import { SerialMonitor, defaultSerialConfig, type SerialConfig } from './lib/serialMonitor.svelte';
   import type { Showcase, ShowcaseCtx } from './lib/showcases';
 
@@ -633,6 +634,12 @@
 
   // the side-channel tab needs the demo playing its target (a leaky MCU); any
   // other tab goes back to the sensor load. A showcase sets its own scenario.
+  let sca = $state<SideChannel>();
+  /** wait for the Side-channel component to mount (the tab just opened) */
+  async function whenSca(): Promise<boolean> {
+    for (let k = 0; k < 40 && !sca; k++) await new Promise((r) => setTimeout(r, 25));
+    return !!sca;
+  }
   let scaScenarioSet = false;
   $effect(() => {
     const d = dev?.link;
@@ -1033,6 +1040,17 @@
       lv = { follow: true, last: 0, t0: 0, t1: 0 };
     },
     serialFeed: (on) => (on ? startDemoFeed() : stopDemoFeed()),
+    scaOpen: () => setAppMode('sca'),
+    scaCapture: async (plan, t, sLen) => {
+      if (await whenSca()) await sca!.scaCapture(plan, t, sLen);
+    },
+    scaView: (v) => sca?.scaSetView(v),
+    scaAlign: async (a, b) => {
+      if (await whenSca()) await sca!.scaAlign(a, b);
+    },
+    scaRecoverKey: async () => {
+      if (await whenSca()) await sca!.scaRecoverKey();
+    },
     look: {
       markers: () => view.markers,
       active: () => view.active,
@@ -1050,6 +1068,13 @@
       serialTriggerOn: () => serialCfg.trigger.on && !!serialCfg.trigger.pattern,
       serialMatches: () => monitor.matches,
       serialMsgs: () => monitor.annotations.length,
+      scaTraces: () => sca?.scaState().traces ?? 0,
+      scaView: () => sca?.scaState().view ?? 'traces',
+      scaCapturing: () => sca?.scaState().capturing ?? false,
+      scaTtestMax: () => sca?.scaState().ttestMax ?? 0,
+      scaAligned: () => sca?.scaState().aligned ?? false,
+      scaKeyDone: () => sca?.scaState().keyDone ?? false,
+      scaKeyCorrect: () => sca?.scaState().keyCorrect ?? false,
     },
   };
 
@@ -2110,6 +2135,7 @@
     {#if appMode === 'sca'}
       <div class="sca-wrap">
         <SideChannel
+          bind:this={sca}
           link={activeLink}
           demo={dev && dev.link instanceof DemoLink ? dev.link.target : null}
           {trig}

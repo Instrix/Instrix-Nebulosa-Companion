@@ -42,6 +42,12 @@ export interface ShowcaseCtx {
   newSession(): Promise<void>;
   /** a synthetic serial feed into the monitor (the simultaneous-serial demo) */
   serialFeed(on: boolean): void;
+  /** side-channel tab: open it, run a capture, switch view, align, recover the key */
+  scaOpen(): void;
+  scaCapture(plan: 'aes-tvla' | 'aes-random' | 'password', traces: number, samples: number): Promise<void>;
+  scaView(v: 'traces' | 'ttest' | 'timing' | 'cpa' | 'export'): void;
+  scaAlign(a?: number, b?: number): Promise<void>;
+  scaRecoverKey(): Promise<void>;
   /** reads the app (tutorials check what the reader did) */
   look: {
     markers(): readonly { id: number; t0: number; t1: number | null }[];
@@ -61,6 +67,13 @@ export interface ShowcaseCtx {
     serialTriggerOn(): boolean;
     serialMatches(): number;
     serialMsgs(): number;
+    scaTraces(): number;
+    scaView(): string;
+    scaCapturing(): boolean;
+    scaTtestMax(): number;
+    scaAligned(): boolean;
+    scaKeyDone(): boolean;
+    scaKeyCorrect(): boolean;
   };
 }
 
@@ -469,6 +482,50 @@ export const SHOWCASES: Showcase[] = [
         title: 'Saved with the log',
         body: 'When you log to a file (desktop app), the messages are written to a <code>.serial.csv</code> next to it — unix time, measurement time, and the text — so the two line up again later. Leaving stops the demo feed.',
         enter: () => c.openSection('logger'),
+      },
+    ],
+  },
+  {
+    id: 'aes',
+    title: 'Recover an AES key from power',
+    blurb: 'Watch the workbench capture power traces, flag the leak with a t-test, and pull the full AES-128 key out by correlation.',
+    features: ['Capture', 'T-test (TVLA)', 'CPA', 'Key recovery'],
+    scenario: 'target',
+    steps: (c) => [
+      {
+        title: 'Recover an AES key from power',
+        body: 'The demo device is a microcontroller whose current leaks as it runs AES. This showcase drives the <b>Side-channel</b> workbench for you: capture, detect the leak, recover the key. It works at 2 MS/s because the target is slow — real silicon must be clocked down to match.',
+        enter: async () => {
+          c.trigger({ mode: 'roll' });
+          c.scaOpen();
+          await c.scaCapture('aes-tvla', 300, 1200);
+          c.scaView('traces');
+        },
+      },
+      {
+        target: 'sca-views',
+        title: 'The traces',
+        body: 'Each operation is one trace, cut from the power at the trigger. The mean trace shows the 16 first-round S-box lookups; the ±σ band is wide across them because the power depends on the secret — the leak.',
+        enter: () => c.scaView('traces'),
+      },
+      {
+        target: 'sca-views',
+        title: 'A t-test proves the leak',
+        body: 'Welch’s t per sample between a fixed and a random plaintext: wherever |t| passes 4.5 the power is data-dependent. No key is needed to show a device leaks — this is the standard TVLA test.',
+        enter: () => c.scaView('ttest'),
+      },
+      {
+        target: 'sca-cpa',
+        title: 'Correlation recovers the key',
+        body: 'Now the attack. For each key byte, 256 guesses are correlated against the traces through a Hamming-weight model of the S-box; the right guess stands far above the rest. Here is the whole 16-byte key, recovered and checked against the demo’s.',
+        enter: async () => {
+          await c.scaRecoverKey();
+        },
+      },
+      {
+        target: 'sca-views',
+        title: 'Your turn',
+        body: 'Try fewer traces and watch the correlation shrink toward the noise, or <b>Align</b> before attacking. <b>Timing</b> breaks the demo’s password check, and <b>Export</b> hands the traces to ChipWhisperer, Lascar or SCAred. The hands-on <b>Break AES</b> tutorial walks you through it step by step.',
       },
     ],
   },

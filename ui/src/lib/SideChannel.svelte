@@ -6,7 +6,7 @@
   // and runs out of the box on the demo target (a simulated leaky AES).
   import uPlot from 'uplot';
   import 'uplot/dist/uPlot.min.css';
-  import { onDestroy } from 'svelte';
+  import { onDestroy, tick } from 'svelte';
   import type { Link } from './device';
   import { isNative } from './device';
   import type { AlignResult, ScaInfo, ScaResult, Signal } from './nbp';
@@ -431,6 +431,40 @@
   const keyComplete = $derived(recovered.every((b) => b != null));
   const keyCorrect = $derived(knownKey && keyComplete && recovered.every((b, i) => b === knownKey[i]));
 
+  // ---- driven by the Learn tutorials / showcases --------------------------
+  export async function scaCapture(plan: PlanKind, t: number, sLen: number) {
+    planKind = plan;
+    traces = t;
+    sampleLen = sLen;
+    await tick();
+    await capture();
+  }
+  export function scaSetView(v: View) {
+    view = v;
+  }
+  export async function scaAlign(a = 0, b = 400) {
+    alignFrom = a;
+    alignTo = b;
+    await align();
+  }
+  export async function scaRecoverKey() {
+    view = 'cpa';
+    await tick();
+    await recoverKey();
+  }
+  export function scaState() {
+    return {
+      traces: info?.n ?? 0,
+      view,
+      plan: planKind,
+      capturing,
+      ttestMax: result?.kind === 'ttest' ? result.max_abs : 0,
+      aligned: !!info?.aligned,
+      keyDone: keyComplete,
+      keyCorrect: !!keyCorrect,
+    };
+  }
+
   // ---- export -------------------------------------------------------------
   async function exportNpz() {
     if (!link || !info?.n) return;
@@ -503,7 +537,7 @@
       <p class="status" class:ok={target}>{target ? target.name : 'No target'}</p>
     </section>
 
-    <section>
+    <section data-tour="sca-capture">
       <h3>Capture</h3>
       <label>What
         <select bind:value={planKind}>
@@ -548,7 +582,7 @@
     {/if}
   </aside>
 
-  <main>
+  <main data-tour="sca-views">
     <div class="tabs">
       {#each [['traces', 'Traces'], ['ttest', 'T-test (TVLA)'], ['timing', 'Timing'], ['cpa', 'Correlation (CPA)'], ['export', 'Export']] as [k, label] (k)}
         <button class:on={view === k} onclick={() => (view = k as View)}>{label}</button>
@@ -566,7 +600,7 @@
     </div>
 
     {#if view === 'cpa'}
-      <div class="cpa-bar">
+      <div class="cpa-bar" data-tour="sca-cpa">
         <label>Key byte <input type="number" min="0" max="15" bind:value={cpaByte} /></label>
         <button class="small primary" onclick={runCpa} disabled={cpaBusy || !info?.n}>{cpaBusy && !recoverAll ? 'Working…' : 'Attack byte'}</button>
         <button class="small" onclick={recoverKey} disabled={cpaBusy || !info?.n}>{recoverAll ? `Recovering… ${recovered.filter((b) => b != null).length}/16` : 'Recover key (16 bytes)'}</button>

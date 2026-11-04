@@ -562,4 +562,58 @@ export const TUTORIALS: Showcase[] = [
       },
     ],
   },
+  {
+    kind: 'tutorial',
+    id: 't-sca',
+    title: 'Break AES with power analysis',
+    blurb: 'Capture power traces, see the leak (TVLA), then recover the whole AES key by correlation — on the demo target.',
+    features: ['Capture', 'T-test', 'CPA', 'Key recovery'],
+    scenario: 'target',
+    steps: (c) => [
+      {
+        title: 'Break AES with power analysis',
+        body: 'The demo device is now a microcontroller whose current leaks as it runs AES, like a real one. You will capture its power, confirm the leak, and recover the key — the <b>Side-channel</b> workbench, hands-on. (At 2 MS/s this works because the demo target is slow; real silicon must be clocked down too.)',
+        enter: () => {
+          c.trigger({ mode: 'roll' });
+          c.scaOpen();
+        },
+      },
+      {
+        target: 'sca-capture',
+        title: 'Capture traces',
+        body: 'Each <b>capture</b> runs the target many times and cuts the power around each operation into a trace. <b>AES — fixed vs random</b> sends a fixed plaintext half the time and a random one the rest (a TVLA split), which both detects the leak and, later, breaks the key.',
+        task: 'Press <b>● Capture</b> and wait for it to fill (a few seconds).',
+        done: () => c.look.scaTraces() > 0 && !c.look.scaCapturing(),
+      },
+      {
+        target: 'sca-views',
+        title: 'The traces',
+        body: 'The <b>Traces</b> view (open now) draws the mean and ±σ over all traces, with a few drawn. The bumps are the 16 S-box lookups of the first round; the spread across them is data-dependent — that is the leak.',
+      },
+      {
+        target: 'sca-views',
+        title: 'The t-test (TVLA)',
+        body: 'The <b>T-test</b> is Welch’s t per sample between the fixed and random groups. Where |t| passes <b>4.5</b> (the dashed lines) the power depends on the data — proof of a leak, no key needed. A clean target stays inside the lines.',
+        task: 'Open the <b>T-test (TVLA)</b> tab.',
+        done: () => c.look.scaView() === 'ttest',
+      },
+      {
+        target: 'sca-views',
+        title: 'Correlation attack',
+        body: 'The <b>Correlation (CPA)</b> view breaks the key. For each of the 256 guesses of a key byte, it correlates the Hamming weight of the first-round S-box output against every sample; the real byte correlates best. <b>Recover key</b> does all 16 in turn.',
+        task: 'Open the <b>Correlation (CPA)</b> tab, then press <b>Recover key</b>.',
+        done: () => c.look.scaKeyDone(),
+      },
+      {
+        target: 'sca-views',
+        title: 'The key falls out',
+        body: 'The bar chart shows one guess far above the rest — the key byte. The readout at the top is the recovered key; on the demo it is checked against the real one (✓). On real traces nothing is known: the tallest bar, well clear of the pack, is the answer.',
+      },
+      {
+        target: 'sca-views',
+        title: 'Take it further',
+        body: '<b>Align</b> lines traces up before the statistics (for jitter). <b>Timing</b> breaks a password that compares byte by byte. <b>Export</b> writes the campaign as a NumPy <code>.npz</code> for ChipWhisperer’s analyzer, Lascar or SCAred. For a real board, clock it slow and trigger on the operation.',
+      },
+    ],
+  },
 ];
