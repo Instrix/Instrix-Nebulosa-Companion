@@ -24,3 +24,4 @@ tokio = { version = "1", features = ["net", "time", "sync", "macros", "rt-multi-
 nusb = "0.1"
 futures-lite = "2"
 log = "0.4"
+serialport = { version = "4", default-features = false }

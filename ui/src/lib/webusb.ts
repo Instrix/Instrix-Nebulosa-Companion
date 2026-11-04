@@ -24,6 +24,7 @@ import {
   type TrigEvent,
   type TriggerCfg,
 } from './nbp';
+import { wasmEngine } from './sca';
 
 const FILTERS: USBDeviceFilter[] = [
   { vendorId: USB_VID, productId: USB_PID_HS },
@@ -37,6 +38,7 @@ export const webUsbAvailable = typeof navigator !== 'undefined' && 'usb' in navi
 
 class WebUsbLink implements Link {
   private pipeline = new core.Pipeline();
+  readonly sca = wasmEngine(() => this.pipeline);
   private seq = 0;
   private pending: { seq: number; resolve: (r: Reply) => void; reject: (e: Error) => void } | null = null;
   private outEp = 0;

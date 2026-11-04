@@ -17,6 +17,7 @@
     onopen,
     onopenfile,
     ondemo,
+    onshowcases,
   }: {
     candidates: Candidate[];
     scanning: boolean;
@@ -32,6 +33,8 @@
     onopenfile: () => void;
     /** the synthetic device: try the app without hardware */
     ondemo: () => void;
+    /** guided examples on the demo device */
+    onshowcases?: () => void;
   } = $props();
 
   let manualHost = $state('');
@@ -69,6 +72,9 @@
     <p class="warn small">This browser has no WebUSB. Use Chrome or Edge, or the desktop app.</p>
   {/if}
   <button class="ghost demo" onclick={ondemo} disabled={busy} title="A synthetic device: try every feature without hardware">Try the demo device</button>
+  {#if onshowcases}
+    <button class="ghost demo" onclick={onshowcases} disabled={busy} title="Hands-on tutorials and real measurements, on the demo device">Tutorials and showcases</button>
+  {/if}
 </section>
 {#if isNative}
   <section>

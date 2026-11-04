@@ -26,7 +26,7 @@ impl Extract {
     }
 
     #[inline]
-    fn value(&self, w: u32, src: Source) -> f64 {
+    pub(crate) fn value(&self, w: u32, src: Source) -> f64 {
         let (ic, vc, r, _) = unpack(w);
         let i = self.cal.current(ic, r);
         match src {

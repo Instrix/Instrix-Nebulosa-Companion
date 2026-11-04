@@ -1,5 +1,14 @@
 <script lang="ts" module>
   /** what the logger shows: following the whole session (or its last `last` s), or a fixed span */
+  export interface Annotation {
+    /** FPGA time, s */
+    t: number;
+    text: string;
+    /** unix ms, for the tooltip */
+    wall?: number;
+    /** received, sent, or a trigger match (sets the marker colour) */
+    kind?: 'rx' | 'tx' | 'trigger';
+  }
   export interface LogView {
     follow: boolean;
     /** follow: seconds back from the newest (0: the whole session) */
@@ -38,6 +47,7 @@
     intervals = [],
     oninterval,
     onreset,
+    annotations = [],
   }: {
     store: SampleStore;
     /** the session log's state (reactive) */
@@ -55,9 +65,16 @@
     oninterval?: (s: number) => void;
     /** the Reset view button */
     onreset?: () => void;
+    /** serial-monitor messages, drawn as vertical markers */
+    annotations?: Annotation[];
   } = $props();
 
   const MIN_FRAME_MS = 200;
+  // redraw the overlay when the messages change
+  $effect(() => {
+    void annotations.length;
+    for (const p of plots) p.u.redraw(false, false);
+  });
   let root: HTMLDivElement;
   let hosts: Record<string, HTMLDivElement> = $state({});
   let plots: { sig: Signal; u: uPlot }[] = [];
@@ -178,6 +195,49 @@
     for (const c of cols) c.push(c[n - 1]);
   }
 
+  const annColor = () => cssVar('--accent') || '#4da3ff';
+  /** vertical lines for serial messages in view; labels on the top plot */
+  function drawAnnotations(u: uPlot, top: boolean) {
+    if (!annotations.length) return;
+    const ctx = u.ctx;
+    const { left, top: ct, width, height } = u.bbox;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(left, ct, width, height);
+    ctx.clip();
+    const accent = annColor();
+    const tx = cssVar('--muted') || '#8a90a6';
+    const trig = cssVar('--danger') || '#ff5a5a';
+    ctx.font = '10px ui-monospace, monospace';
+    ctx.textBaseline = 'top';
+    const minX = u.valToPos(u.scales.x.min!, 'x', true);
+    const maxX = u.valToPos(u.scales.x.max!, 'x', true);
+    let lastLabel = -1e9;
+    for (const a of annotations) {
+      const x = u.valToPos(a.t + wallOffset, 'x', true);
+      if (x < minX || x > maxX) continue;
+      const col = a.kind === 'trigger' ? trig : a.kind === 'tx' ? tx : accent;
+      ctx.strokeStyle = col + 'cc';
+      ctx.lineWidth = a.kind === 'trigger' ? 1.75 : 1;
+      ctx.setLineDash(a.kind === 'tx' ? [2, 2] : [3, 3]);
+      ctx.beginPath();
+      ctx.moveTo(x, ct);
+      ctx.lineTo(x, ct + height);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      if (top && x - lastLabel > 8) {
+        const label = a.text.length > 28 ? a.text.slice(0, 27) + '…' : a.text;
+        const w = ctx.measureText(label).width;
+        ctx.fillStyle = col + 'ee';
+        ctx.fillRect(x, ct + 2, w + 6, 13);
+        ctx.fillStyle = '#0b0c12';
+        ctx.fillText(label, x + 3, ct + 4);
+        lastLabel = x + w + 6;
+      }
+    }
+    ctx.restore();
+  }
+
   function build() {
     for (const p of plots) p.u.destroy();
     plots = [];
@@ -218,6 +278,7 @@
             { ...axis, size: 78, ...(log ? { splits: logSplits } : {}), values: siValues(SIGNAL_INFO[sig].unit), stroke: col },
           ],
           hooks: {
+            draw: [(u) => drawAnnotations(u, idx === 0)],
             setSelect: [
               (u) => {
                 if (u.select.width > 3) {

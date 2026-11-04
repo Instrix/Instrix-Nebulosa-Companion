@@ -14,6 +14,7 @@
     onpick,
     ondelete,
     onzoom,
+    onanalyze,
     onclear,
     onmenu,
   }: {
@@ -26,6 +27,8 @@
     onpick: (id: number) => void;
     ondelete: (id: number) => void;
     onzoom: (id: number) => void;
+    /** open Analysis over a dual marker */
+    onanalyze?: (id: number) => void;
     onclear: () => void;
     /** right-click on a marker's row, or on the table (null) */
     onmenu?: (e: MouseEvent, id: number | null) => void;
@@ -67,6 +70,9 @@
           <td>{m.dt == null ? '' : f(m.ch.p?.integral, 'J')}</td>
           {#if math}<td>{f(m.ch.m?.mean, M.unit)}</td>{/if}
           <td class="act">
+            {#if m.dt != null && onanalyze}
+              <button class="ghost small analyze" title="Histogram, CDF, spectrum, worst window over this marker" onclick={(e) => { e.stopPropagation(); onanalyze(m.id); }}>Analyze</button>
+            {/if}
             <button class="ghost small" title="Fit the screen to this marker" onclick={(e) => { e.stopPropagation(); onzoom(m.id); }}>⤢</button>
             <button class="ghost small" title="Delete" onclick={(e) => { e.stopPropagation(); ondelete(m.id); }}>✕</button>
           </td>
@@ -149,5 +155,8 @@
     color: var(--muted);
     cursor: default;
     padding: 12px;
+  }
+  .analyze {
+    color: var(--accent);
   }
 </style>

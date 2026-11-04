@@ -37,6 +37,14 @@
     return initial;
   }
   let open = $state(load());
+  // the showcases open a section to show what's in it
+  $effect(() => {
+    const f = (e: Event) => {
+      if ((e as CustomEvent<string>).detail === id && !open) toggle();
+    };
+    addEventListener('nebulosa:open-section', f);
+    return () => removeEventListener('nebulosa:open-section', f);
+  });
   function toggle() {
     open = !open;
     try {

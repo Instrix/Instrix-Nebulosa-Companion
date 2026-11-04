@@ -64,6 +64,7 @@
     hold = $bindable(false),
     hasSelection,
     onclear,
+    onanalyze,
   }: {
     summary: Summary | null;
     accum: AccumView | null;
@@ -72,6 +73,8 @@
     hold: boolean;
     hasSelection: boolean;
     onclear: () => void;
+    /** open Analysis (absent: nothing to analyze) */
+    onanalyze?: () => void;
   } = $props();
 
   const STORAGE_KEY = 'nebulosa.meter.metrics';
@@ -190,6 +193,10 @@
     </div>
   {/if}
 
+  <button class="small analyze" onclick={() => onanalyze?.()} disabled={!onanalyze} title="Histogram, CDF, spectrum, worst window (A)"
+    >Analyze {hasSelection ? 'the selection' : 'the screen'}…</button
+  >
+
   <div class="card accum">
     <div class="head">
       <span class="name">Accumulators</span>
@@ -220,6 +227,13 @@
 </div>
 
 <style>
+  .analyze {
+    width: 100%;
+    font-weight: 600;
+    border-color: var(--accent);
+    color: var(--accent);
+    background: transparent;
+  }
   .batt .cap {
     text-transform: none;
     letter-spacing: 0;

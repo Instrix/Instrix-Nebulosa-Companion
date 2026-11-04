@@ -3,7 +3,8 @@
 
 import { Channel, invoke } from '@tauri-apps/api/core';
 import type { Candidate, Link, LinkEvents } from './device';
-import { hex, type ExportCfg, type AnalysisRequest, type AnalysisResult, type Calibration, type Info, type Meta, type RawSpanStats, type Reply, type TrigEvent, type TriggerCfg } from './nbp';
+import type { ScaEngine } from './sca';
+import { hex, type ExportCfg, type AnalysisRequest, type AnalysisResult, type Calibration, type Info, type Meta, type RawSpanStats, type Reply, type TrigEvent, type TriggerCfg, type AlignResult, type ScaInfo, type ScaResult, type TraceMeta } from './nbp';
 
 type Event = ({ event: 'meta' } & Meta) | { event: 'closed'; reason: string };
 
@@ -21,7 +22,20 @@ interface NetDev {
 
 type Target = { kind: 'usb'; id: string } | { kind: 'tcp'; host: string; port?: number };
 
+/** the desktop app's campaign: in Rust, beside the connection */
+const nativeSca: ScaEngine = {
+  create: (cfg) => invoke<void>('sca_new', { cfg }),
+  add: (t0, t1, meta) => invoke<number>('sca_add', { t0, t1, meta }),
+  info: () => invoke<ScaInfo | null>('sca_info'),
+  align: (a, b, maxShift) => invoke<AlignResult>('sca_align', { a, b, maxShift }),
+  clearAlign: () => invoke<void>('sca_clear_align'),
+  query: (req) => invoke<ScaResult>('sca_query', { req }),
+  exportNpz: async () => new Uint8Array(await invoke<ArrayBuffer>('sca_export')),
+  meta: () => invoke<TraceMeta[]>('sca_meta'),
+};
+
 class NativeLink implements Link {
+  readonly sca = nativeSca;
   constructor(
     public description: string,
     public playback = false,

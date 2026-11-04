@@ -224,6 +224,38 @@ export type AnalysisResult =
   | { kind: 'maxwindow'; t: number; width: number; mean: number; span_mean: number }
   | { kind: 'empty'; reason: string };
 
+/** sca.rs: a side-channel campaign */
+export interface ScaConfig {
+  samples: number;
+  source: Signal;
+}
+export interface TraceMeta {
+  input: number[];
+  output: number[];
+  /** TVLA: 0 fixed input, 1 random */
+  group: number;
+  /** the trigger event's width, s */
+  width: number;
+}
+export interface ScaInfo {
+  n: number;
+  samples: number;
+  dt: number;
+  source: Signal;
+  aligned: boolean;
+}
+export type ScaRequest = { kind: 'overview'; show: number } | { kind: 'ttest' } | { kind: 'timing'; threshold: number };
+export type ScaResult =
+  | { kind: 'overview'; n: number; dt: number; mean: number[]; std: number[]; traces: number[][] }
+  | { kind: 'ttest'; dt: number; t: number[]; n0: number; n1: number; max_abs: number; at: number }
+  | { kind: 'timing'; dt: number; durations: number[] }
+  | { kind: 'empty'; reason: string };
+export interface AlignResult {
+  shifts: number[];
+  mean_corr: number;
+  poor: number;
+}
+
 /** export.rs: what the logger writes */
 export type ExportWhat = 'time' | 'i' | 'v' | 'p' | 'm' | 'count' | 'range' | 'dirty' | 'charge' | 'energy';
 export interface ExportField {

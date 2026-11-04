@@ -2,7 +2,7 @@
   // Analysis over a span (the active dual marker, else the screen), on every
   // raw sample: histogram, CDF / CCDF, spectrum (Welch PSD), worst window.
   // The work runs in the core (native, or WASM in the browser).
-  import { onDestroy, tick } from 'svelte';
+  import { onDestroy, onMount, tick, untrack } from 'svelte';
   import uPlot from 'uplot';
   import 'uplot/dist/uPlot.min.css';
   import type { Link } from './device';
@@ -20,6 +20,8 @@
     spanLabel,
     onclose,
     onshow,
+    initialTab = 'histogram',
+    autorun = false,
   }: {
     /** the signals there are (the math channel once set) */
     signals: Signal[];
@@ -29,9 +31,16 @@
     onclose: () => void;
     /** puts a dual marker on [t0, t1] and shows it */
     onshow: (t0: number, t1: number) => void;
+    /** the tab it opens on */
+    initialTab?: Tab;
+    /** run at once (the showcases) */
+    autorun?: boolean;
   } = $props();
 
-  let tab = $state<Tab>('histogram');
+  let tab = $state<Tab>(untrack(() => initialTab));
+  onMount(() => {
+    if (autorun) runIt();
+  });
   let source = $state<Signal>('i');
   let bins = $state(200);
   let logBins = $state(true);
@@ -204,7 +213,7 @@
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <div class="backdrop" role="presentation" onclick={onclose}>
   <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <div class="dialog" onclick={(e) => e.stopPropagation()} role="dialog" aria-label="Analysis" tabindex="-1">
+  <div class="dialog" onclick={(e) => e.stopPropagation()} role="dialog" aria-label="Analysis" data-tour="analysis" tabindex="-1">
     <header>
       <h2>Analysis</h2>
       <span class="muted">{spanLabel}</span>

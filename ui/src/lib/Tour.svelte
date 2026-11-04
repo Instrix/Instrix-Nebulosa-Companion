@@ -6,6 +6,12 @@
     body: string;
     /** shown only when this is true when the step comes up */
     when?: () => boolean;
+    /** run when the step comes up (going forward or back): sets the app up for it */
+    enter?: () => void | Promise<void>;
+    /** something for the reader to do (tutorials), shown under the text */
+    task?: string;
+    /** the task is done: ticks it and moves on */
+    done?: () => boolean;
   }
 
   const SEEN_KEY = 'nebulosa.tourSeen';
@@ -38,8 +44,14 @@
     onclose,
     ondemo,
     connected,
+    label = 'Walkthrough',
+    interactive = false,
   }: {
     steps: TourStep[];
+    /** the card's name for screen readers, and above the count */
+    label?: string;
+    /** the app stays usable under the card (showcases: try it yourself) */
+    interactive?: boolean;
     onclose: () => void;
     /** connect the demo device (offered on the first card when nothing is connected) */
     ondemo?: () => void;
@@ -47,6 +59,11 @@
   } = $props();
 
   let k = $state(0);
+  /** the step's task is done */
+  let ticked = $state(false);
+  /** it was done on arrival (going back): no moving on by itself */
+  let wasDone = false;
+  let advance: ReturnType<typeof setTimeout> | undefined;
   let rect = $state<DOMRect | null>(null);
   let card = $state<HTMLDivElement>();
   let cardPos = $state({ x: 0, y: 0 });
@@ -66,7 +83,8 @@
 
   /** a step can be shown: its condition holds and its target is on the page */
   function usable(s: TourStep) {
-    return (!s.when || s.when()) && (!s.target || !!el(s));
+    // a step that sets the app up may bring its own target: shown either way (centred if it's missing)
+    return (!s.when || s.when()) && (!s.target || !!s.enter || !!el(s));
   }
 
   async function go(to: number, dir: 1 | -1) {
@@ -75,7 +93,22 @@
     if (i < 0) return;
     if (i >= steps.length) return finish();
     k = i;
-    el(steps[k])?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    clearTimeout(advance);
+    ticked = false;
+    const s = steps[k];
+    if (s.enter) {
+      try {
+        await s.enter();
+      } catch (e) {
+        console.warn('tour step', e);
+      }
+      if (k !== i) return; // moved on meanwhile
+      await tick();
+      await new Promise((r) => setTimeout(r, 60)); // the app redraws for it
+    }
+    el(s)?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    wasDone = !!s.done?.();
+    ticked = wasDone;
     await tick();
     place();
   }
@@ -107,6 +140,14 @@
   }
 
   function follow() {
+    const s = steps[k];
+    if (s?.done && !ticked && s.done()) {
+      ticked = true;
+      if (!wasDone) {
+        const at = k;
+        advance = setTimeout(() => k === at && go(k + 1, 1), 1300);
+      }
+    }
     place();
     raf = requestAnimationFrame(follow);
   }
@@ -114,10 +155,15 @@
   onMount(() => {
     go(0, 1);
     raf = requestAnimationFrame(follow);
-    return () => cancelAnimationFrame(raf);
+    return () => {
+      cancelAnimationFrame(raf);
+      clearTimeout(advance);
+    };
   });
 
   function onKey(e: KeyboardEvent) {
+    // tutorials: the keys belong to the app (Space, arrows, Esc are part of the lessons)
+    if (interactive) return;
     if (e.key === 'ArrowRight' || e.key === 'Enter') go(k + 1, 1);
     else if (e.key === 'ArrowLeft') go(k - 1, -1);
     else if (e.key === 'Escape') finish();
@@ -142,8 +188,8 @@
 
 <svelte:window onkeydowncapture={onKey} />
 
-<!-- blocks the app while the tour is on -->
-<div class="block" role="presentation"></div>
+<!-- blocks the app while the tour is on (not for showcases: they invite trying things) -->
+{#if !interactive}<div class="block" role="presentation"></div>{/if}
 {#if rect && box}
   {@const { L, T, R, B } = box}
   <!-- the dim around the spotlight: four panels -->
@@ -156,15 +202,21 @@
   <div class="dim"></div>
 {/if}
 
-<div class="card" bind:this={card} style="left: {cardPos.x}px; top: {cardPos.y}px" role="dialog" aria-label="Walkthrough" aria-live="polite">
-  <div class="count">{position.n} / {position.of}</div>
+<div class="card" bind:this={card} style="left: {cardPos.x}px; top: {cardPos.y}px" role="dialog" aria-label={label} aria-live="polite">
+  <div class="count">{label === 'Walkthrough' ? '' : `${label} · `}{position.n} / {position.of}</div>
   <h3>{steps[k].title}</h3>
   <p>{@html steps[k].body}</p>
+  {#if steps[k].task}
+    <div class="task" class:ok={ticked}>
+      <span class="mark" aria-hidden="true">{ticked ? '✓' : 'Try'}</span>
+      <span>{@html steps[k].task}</span>
+    </div>
+  {/if}
   {#if k === 0 && !connected && ondemo}
     <button class="demo" onclick={useDemo}>Use the demo device for the tour</button>
   {/if}
   <div class="nav">
-    <button class="ghost small skip" onclick={finish}>{position.n === position.of ? 'Close' : 'Skip the tour'}</button>
+    <button class="ghost small skip" onclick={finish}>{position.n === position.of ? 'Close' : label === 'Walkthrough' ? 'Skip the tour' : 'Leave'}</button>
     {#if position.n > 1}<button class="ghost small" onclick={() => go(k - 1, -1)}>Back</button>{/if}
     <button class="primary small" onclick={() => go(k + 1, 1)}>{position.n === position.of ? 'Done' : 'Next'}</button>
   </div>
@@ -228,6 +280,39 @@
     line-height: 1.45;
   }
   p :global(kbd) {
+    font-family: ui-monospace, monospace;
+    font-size: 11px;
+    padding: 0 4px;
+    border: 1px solid var(--border);
+    border-radius: var(--r-sm);
+  }
+  .task {
+    display: flex;
+    gap: 8px;
+    align-items: baseline;
+    margin: 0 0 10px;
+    padding: 7px 10px;
+    border: 1px dashed var(--accent);
+    border-radius: var(--r);
+    font-size: 13px;
+    line-height: 1.4;
+  }
+  .task .mark {
+    flex: none;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+  .task.ok {
+    border-style: solid;
+    border-color: var(--ok);
+  }
+  .task.ok .mark {
+    color: var(--ok);
+    font-size: 14px;
+  }
+  .task :global(kbd) {
     font-family: ui-monospace, monospace;
     font-size: 11px;
     padding: 0 4px;

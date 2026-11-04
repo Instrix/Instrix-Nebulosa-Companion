@@ -167,6 +167,54 @@ pub fn parse_update_info(p: &[u8]) -> JsValue {
     to_js(&crate::update::UpdateInfo::parse(p))
 }
 
+/// A side-channel campaign (sca.rs): traces cut out of a Pipeline's buffer.
+#[wasm_bindgen]
+pub struct Campaign(crate::sca::Campaign);
+
+#[wasm_bindgen]
+impl Campaign {
+    /// cfg: sca::Config {samples, source}
+    #[wasm_bindgen(constructor)]
+    pub fn new(cfg: JsValue) -> Result<Campaign, JsValue> {
+        let c: crate::sca::Config = serde_wasm_bindgen::from_value(cfg)?;
+        crate::sca::Campaign::new(c).map(Self).map_err(|e| JsValue::from_str(&e))
+    }
+
+    /// the samples in [t0, t1) of `p` as one more trace; meta: sca::TraceMeta. The traces so far.
+    pub fn add(&mut self, p: &Pipeline, t0: f64, t1: f64, meta: JsValue) -> Result<usize, JsValue> {
+        let m: crate::sca::TraceMeta = serde_wasm_bindgen::from_value(meta)?;
+        self.0.add(&p.0.extract(t0, t1), m).map_err(|e| JsValue::from_str(&e))
+    }
+
+    pub fn info(&self) -> JsValue {
+        to_js(&self.0.info())
+    }
+
+    /// sca::AlignResult; throws what's wrong
+    pub fn align(&mut self, a: usize, b: usize, max_shift: usize) -> Result<JsValue, JsValue> {
+        self.0.align(a, b, max_shift).map(|r| to_js(&r)).map_err(|e| JsValue::from_str(&e))
+    }
+
+    pub fn clear_align(&mut self) {
+        self.0.clear_align();
+    }
+
+    /// req: sca::Request; an sca::Result
+    pub fn query(&self, req: JsValue) -> Result<JsValue, JsValue> {
+        let r: crate::sca::Request = serde_wasm_bindgen::from_value(req)?;
+        Ok(to_js(&self.0.query(&r)))
+    }
+
+    pub fn export_npz(&self) -> Vec<u8> {
+        self.0.export_npz()
+    }
+
+    /// [sca::TraceMeta] for every trace
+    pub fn meta(&self) -> JsValue {
+        to_js(&self.0.meta())
+    }
+}
+
 #[wasm_bindgen]
 pub fn enc_update(op: u8, slot: u8, len: u32, crc: u32) -> Vec<u8> {
     crate::update::enc_update(op, slot, len, crc)

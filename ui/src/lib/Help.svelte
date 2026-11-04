@@ -97,6 +97,7 @@
         ['Drag across a plot', 'Dual marker (a window: Δt, mean, ∫)'],
         ['Double-click a plot', 'Single marker'],
         ['M / D', 'Add a single / dual marker'],
+        ['A', 'Analyze the active dual marker (else the screen): histogram, CDF, spectrum, worst window'],
         ['Drag a marker or its edges', 'Move it (in the bar above the plots)'],
         ['Del / Backspace', 'Delete the active marker'],
         ['Esc', 'Deselect'],

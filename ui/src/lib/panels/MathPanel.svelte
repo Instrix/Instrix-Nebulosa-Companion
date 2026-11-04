@@ -37,7 +37,7 @@
   }
 </script>
 
-<Section id="math" title="Math channel" open={false} summary={mathInfo.on ? `${mathInfo.name} = ${draft.expr}` : 'off'}>
+<Section id="math" title="Math channel" tour="math" open={false} summary={mathInfo.on ? `${mathInfo.name} = ${draft.expr}` : 'off'}>
     <div class="cal">
       <label>
         Example

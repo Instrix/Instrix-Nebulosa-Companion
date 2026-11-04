@@ -15,6 +15,7 @@
 //! - [`units`]: codes to A / V (calibration)
 //! - [`trigger`]: edge trigger on the full-rate samples
 //! - [`recording`]: the .nbrec file format
+//! - [`sca`]: side-channel power analysis: trace campaigns, alignment, t-test, .npz export
 //! - [`session`]: the session log: interval summaries over days, bounded memory, .nblog files
 //! - [`update`]: software update: layouts, CRC-32, .nbfw / .bit checks
 //! - [`pipeline`]: all of the above for one connection
@@ -28,6 +29,7 @@ pub mod math;
 pub mod msg;
 pub mod pipeline;
 pub mod recording;
+pub mod sca;
 pub mod session;
 pub mod stream;
 pub mod trigger;

@@ -1,6 +1,7 @@
 pub mod discovery;
 pub mod files;
 pub mod link;
+pub mod serial;
 
 use link::{Conn, Events, Reply, SharedPipeline, Target};
 use nbp_core::buffer::SpanStats;
@@ -25,6 +26,8 @@ struct AppState {
     recording: std::sync::Mutex<Option<files::Writer>>,
     logging: std::sync::Mutex<Option<files::Writer>>,
     exporting: std::sync::Mutex<Option<files::ExportWriter>>,
+    /// the side-channel campaign (kept across connections)
+    sca: std::sync::Arc<std::sync::Mutex<Option<nbp_core::sca::Campaign>>>,
     /// session log interval, s (applied at connect too)
     log_interval: std::sync::Mutex<Option<f64>>,
 }
@@ -357,6 +360,64 @@ async fn analyze(
     .map_err(|e| e.to_string())
 }
 
+// ---- side-channel campaign -------------------------------------------------------
+
+#[tauri::command]
+async fn sca_new(state: State<'_, AppState>, cfg: nbp_core::sca::Config) -> Result<(), String> {
+    *state.sca.lock().unwrap() = Some(nbp_core::sca::Campaign::new(cfg)?);
+    Ok(())
+}
+
+/// [t0, t1) of the buffer as one more trace: the traces so far.
+#[tauri::command]
+async fn sca_add(state: State<'_, AppState>, t0: f64, t1: f64, meta: nbp_core::sca::TraceMeta) -> Result<usize, String> {
+    let x = pipe(&state).ok_or("no data")?.lock().unwrap().extract(t0, t1);
+    state.sca.lock().unwrap().as_mut().ok_or("no campaign")?.add(&x, meta)
+}
+
+#[tauri::command]
+async fn sca_info(state: State<'_, AppState>) -> Result<Option<nbp_core::sca::Info>, String> {
+    Ok(state.sca.lock().unwrap().as_ref().map(|c| c.info()))
+}
+
+#[tauri::command]
+async fn sca_align(state: State<'_, AppState>, a: usize, b: usize, max_shift: usize) -> Result<nbp_core::sca::AlignResult, String> {
+    let sca = state.sca.clone();
+    tokio::task::spawn_blocking(move || sca.lock().unwrap().as_mut().ok_or("no campaign".to_string())?.align(a, b, max_shift))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn sca_clear_align(state: State<'_, AppState>) -> Result<(), String> {
+    if let Some(c) = state.sca.lock().unwrap().as_mut() {
+        c.clear_align();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn sca_query(state: State<'_, AppState>, req: nbp_core::sca::Request) -> Result<nbp_core::sca::Result, String> {
+    let sca = state.sca.clone();
+    tokio::task::spawn_blocking(move || sca.lock().unwrap().as_ref().map(|c| c.query(&req)).ok_or("no campaign".to_string()))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn sca_meta(state: State<'_, AppState>) -> Result<Vec<nbp_core::sca::TraceMeta>, String> {
+    Ok(state.sca.lock().unwrap().as_ref().map(|c| c.meta().to_vec()).unwrap_or_default())
+}
+
+/// The campaign as an .npz, raw bytes.
+#[tauri::command]
+async fn sca_export(state: State<'_, AppState>) -> Result<Response, String> {
+    let sca = state.sca.clone();
+    tokio::task::spawn_blocking(move || sca.lock().unwrap().as_ref().map(|c| Response::new(c.export_npz())).ok_or("no campaign".to_string()))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 /// Trigger events with seq ≥ since, at most max.
 #[tauri::command]
 async fn query_events(state: State<'_, AppState>, since: u64, max: usize) -> Result<Vec<nbp_core::trigger::Event>, String> {
@@ -396,11 +457,13 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
+        .manage(serial::SerialState::default())
         .invoke_handler(tauri::generate_handler![
             list_usb, discover, connect, disconnect, request, set_buffer, set_calibration, set_trigger, query_lod, query_stats,
             query_value, recordings_dir, list_recordings, start_recording, stop_recording, open_recording, export_csv,
             count_samples, save_bytes, query_events, clear_events, analyze, set_math, start_logging, stop_logging, set_log_interval, clear_session, session_lod, session_stats,
-            disk_status, open_log, start_export, stop_export, export_preview
+            disk_status, open_log, start_export, stop_export, export_preview, sca_new, sca_add, sca_info, sca_align,
+            sca_clear_align, sca_query, sca_export, sca_meta, serial::serial_list, serial::serial_open, serial::serial_write, serial::serial_signals, serial::serial_close
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

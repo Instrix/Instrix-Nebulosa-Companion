@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, untrack } from 'svelte';
+  import { onMount, tick, untrack } from 'svelte';
   import Scope, { SIGNAL_INFO, mathInfo, type AxisCfg, type ScopeSpot, type TraceCfg } from './lib/Scope.svelte';
   import ContextMenu from './lib/ContextMenu.svelte';
   import { openMenu, type MenuEntry } from './lib/menu.svelte';
@@ -49,6 +49,10 @@
   import LoggerView, { type LogView } from './lib/LoggerView.svelte';
   import ExportEditor, { defaultOutput, type OutputCfg } from './lib/ExportEditor.svelte';
   import { drag, stored, store as save } from './lib/drag';
+  import Showcases from './lib/Showcases.svelte';
+  import SideChannel from './lib/SideChannel.svelte';
+  import { SerialMonitor, defaultSerialConfig, type SerialConfig } from './lib/serialMonitor.svelte';
+  import type { Showcase, ShowcaseCtx } from './lib/showcases';
 
   /** full-rate buffer sizes, MB (4 bytes per sample) */
   const BUFFER_CHOICES = [64, 128, 256, 512, 1024, 2048];
@@ -383,6 +387,7 @@
     openMenu(e, [
       { label: 'Getting started', hint: '?', run: () => openHelp('start') },
       { label: 'Walkthrough', run: startTour },
+      { label: 'Tutorials and showcases…', run: () => (showcasesOpen = true) },
       { label: 'Keys and mouse', run: () => openHelp('keys') },
       { label: 'Troubleshooting', run: () => openHelp('trouble') },
       { sep: true },
@@ -464,7 +469,7 @@
     {
       target: 'help',
       title: 'Help is here',
-      body: 'Getting started, keys and mouse, troubleshooting, about, and this walkthrough again. <b>Aa</b> next to it makes the UI bigger or smaller; ◧ ◨ hide the side panels.',
+      body: 'Getting started, keys and mouse, troubleshooting, about, and this walkthrough again. <b>Learn</b>, next to it: hands-on tutorials (markers, triggers, events, the meter, math, analysis, the logger) and showcases of real measurements, on the demo device. <b>Aa</b> next to it makes the UI bigger or smaller; ◧ ◨ hide the side panels.',
     },
   ];
 
@@ -620,11 +625,26 @@
   }
 
   // ---- scope / logger ------------------------------------------------------------
-  let appMode = $state<'scope' | 'logger'>(stored('nebulosa.modeIsLogger', 0) === 1 ? 'logger' : 'scope');
-  function setAppMode(m: 'scope' | 'logger') {
+  let appMode = $state<'scope' | 'logger' | 'sca'>(stored('nebulosa.modeIsLogger', 0) === 1 ? 'logger' : 'scope');
+  function setAppMode(m: 'scope' | 'logger' | 'sca') {
     appMode = m;
     save('nebulosa.modeIsLogger', m === 'logger' ? 1 : 0);
   }
+
+  // the side-channel tab needs the demo playing its target (a leaky MCU); any
+  // other tab goes back to the sensor load. A showcase sets its own scenario.
+  let scaScenarioSet = false;
+  $effect(() => {
+    const d = dev?.link;
+    if (!(d instanceof DemoLink)) return;
+    if (appMode === 'sca' && !showcase) {
+      d.setScenario('target');
+      scaScenarioSet = true;
+    } else if (scaScenarioSet && d.scenario === 'target' && !showcase) {
+      d.setScenario('iot');
+      scaScenarioSet = false;
+    }
+  });
 
   let lv = $state<LogView>({ follow: true, last: 0, t0: 0, t1: 0 });
   /** the session log's state, reactive (the store's copy isn't) */
@@ -653,6 +673,91 @@
 
   const SOURCE_NAME: Record<number, string> = { [SRC.STUB_RANDOM]: 'Stub: random', [SRC.STUB_PATTERN]: 'Stub: pattern', [SRC.AD7387]: 'ADC' };
   const LOG_INTERVALS = [0.001, 0.01, 0.1, 1, 10];
+  // the serial monitor: its messages become markers on the logger, and (when
+  // logging to a file) a sidecar <log>.serial.csv next to it
+  let serialCfg = $state<SerialConfig>(loadSerialCfg());
+  function loadSerialCfg(): SerialConfig {
+    try {
+      const v = JSON.parse(localStorage.getItem('nebulosa.serial') ?? 'null');
+      if (v && typeof v.baud === 'number') return { ...defaultSerialConfig, ...v, trigger: { ...defaultSerialConfig.trigger, ...v.trigger } };
+    } catch {
+      /* storage unavailable */
+    }
+    return { ...defaultSerialConfig };
+  }
+  $effect(() => save('nebulosa.serial', $state.snapshot(serialCfg)));
+  const monitor = new SerialMonitor(
+    () => store.tEnd,
+    () => serialCfg,
+    () => {
+      // a trigger match freezes the logger on it, if asked
+      if (serialCfg.trigger.hold && appMode === 'logger') lv = { follow: false, last: lv.last, t0: store.tEnd - view.windowS, t1: store.tEnd };
+    },
+  );
+  /** messages captured since this log started, for the sidecar at stop */
+  let monitorLogStart = 0;
+  let sendText = $state('');
+  async function monitorSend() {
+    if (!sendText) return;
+    await monitor.send(sendText);
+    sendText = '';
+  }
+  // a synthetic serial feed for the simultaneous-serial showcase (no real port)
+  let demoFeed: ReturnType<typeof setInterval> | undefined;
+  function startDemoFeed() {
+    stopDemoFeed();
+    if (!monitor.open) monitor.note('--- serial monitor (demo) ---');
+    let n = 0;
+    const lines = [
+      () => 'boot: firmware 1.4.2',
+      () => `wake, reading sensors`,
+      () => `temp=${(22 + Math.random() * 3).toFixed(1)}C  rh=${(40 + Math.random() * 10).toFixed(0)}%`,
+      () => `tx packet #${n} (${12 + Math.floor(Math.random() * 6)} bytes)`,
+      () => 'ack, sleeping',
+    ];
+    demoFeed = setInterval(() => {
+      monitor.note(lines[n % lines.length]());
+      n++;
+    }, 900);
+  }
+  function stopDemoFeed() {
+    clearInterval(demoFeed);
+    demoFeed = undefined;
+  }
+  let monitorPort = $state('');
+  let monitorPorts = $state<{ path: string; label: string }[]>([]);
+  function csvField(s: string) {
+    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  }
+  /** the serial messages captured during this log, as a sidecar next to it */
+  async function writeSerialSidecar(logFile?: string) {
+    const msgs = monitor.annotations.slice(monitorLogStart);
+    if (!isNative || !logFile || !msgs.length) return;
+    const head = 'unix_time_s,fpga_time_s,wall_clock,kind,message\n';
+    const body = msgs
+      .map((a) => `${((a.wall ?? 0) / 1000).toFixed(3)},${a.t.toFixed(6)},${new Date(a.wall ?? 0).toISOString()},${a.kind ?? 'rx'},${csvField(a.text)}`)
+      .join('\n');
+    const path = logFile.replace(/\.[^.]+$/, '') + '.serial.csv';
+    try {
+      await native.saveBytes(path, new TextEncoder().encode(head + body + '\n'));
+    } catch (e) {
+      note = `Serial sidecar not saved: ${e}`;
+    }
+  }
+  async function monitorConnect() {
+    if (monitor.open) return monitor.disconnect();
+    if (isNative && !monitorPorts.length) await scanMonitorPorts();
+    await monitor.connect(isNative ? monitorPort : undefined);
+  }
+  async function scanMonitorPorts() {
+    try {
+      const { nativeSerialPorts } = await import('./lib/targets');
+      monitorPorts = await nativeSerialPorts();
+      if (!monitorPort && monitorPorts[0]) monitorPort = monitorPorts[0].path;
+    } catch (e) {
+      note = String(e);
+    }
+  }
   let logInterval = $state(stored('nebulosa.logInterval', 0.1, (v) => LOG_INTERVALS.includes(v)));
   let logging = $state<Meta['logging'] | null>(null);
   let logPath = $state('');
@@ -694,6 +799,7 @@
     error = '';
     try {
       save('nebulosa.rawCapGB', rawCapGB);
+      monitorLogStart = monitor.annotations.length;
       logPath = await native.startLogging({
         app: 'Nebulosa Companion',
         created: new Date().toISOString(),
@@ -763,6 +869,7 @@
       const r = await native.stopLogging();
       if (rawByLogger && recording?.active) await toggleRecording();
       rawByLogger = false;
+      await writeSerialSidecar(r?.path);
       if (r) note = `${reason ? reason + ' ' : ''}Log saved: ${r.path.split(/[\\/]/).pop()} · ${r.entries.toLocaleString()} entries · ${fmtBytesSize(r.bytes)}`;
       refreshRecordings();
     } catch (e) {
@@ -810,7 +917,8 @@
   }
 
   // ---- analysis ---------------------------------------------------------------
-  let analysis = $state<{ span: [number, number]; label: string } | null>(null);
+  type AnalysisTab = 'histogram' | 'cdf' | 'psd' | 'maxwindow';
+  let analysis = $state<{ span: [number, number]; label: string; tab?: AnalysisTab; autorun?: boolean } | null>(null);
 
   function openAnalysis() {
     const m = view.activeMarker;
@@ -819,6 +927,107 @@
       const sp = view.span(store);
       analysis = { span: sp, label: `the screen: ${fmtTime(sp[1] - sp[0])}` };
     }
+  }
+
+  // ---- showcases: the demo device plays a real load, a guide walks through it ----------
+  let showcasesOpen = $state(false);
+  let showcase = $state.raw<{ s: Showcase; steps: TourStep[] } | null>(null);
+  /** the newest sample when the showcase's load started: data before it is another load */
+  let scenarioSince = 0;
+
+  const sleepMs = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  const showcaseCtx: ShowcaseCtx = {
+    mode: (m) => setAppMode(m),
+    live(div) {
+      const k = TIME_DIVS.indexOf(div);
+      if (k >= 0) view.divIndex = k;
+      view.live = true;
+    },
+    trigger: (t) => void Object.assign(trig, t),
+    async math(m) {
+      if (!m) return mathInfo.on ? mathOff() : undefined;
+      mathDraft = { ...m };
+      await applyMath();
+    },
+    logAxis(sig, on) {
+      axes[sig].auto = true;
+      axes[sig].log = on;
+    },
+    async newest(atLeast = 0) {
+      for (let k = 0; k < 100 && (store.empty || store.tEnd - Math.max(store.tStart, scenarioSince) < atLeast); k++) await sleepMs(50);
+      return store.tEnd;
+    },
+    async triggered() {
+      for (let k = 0; k < 160; k++) {
+        if (trig.shown != null && (trig.mode !== 'single' || trig.status === 'stop')) return trig.shown;
+        await sleepMs(50);
+      }
+      return trig.shown;
+    },
+    dual(t0, t1) {
+      view.hold(store);
+      zoomToMarker(view.addDual(t0, t1).id);
+    },
+    clearMarkers: () => view.clearMarkers(),
+    analyze(tab) {
+      if (!tab) {
+        analysis = null;
+        return;
+      }
+      openAnalysis();
+      if (analysis) analysis = { ...analysis, tab, autorun: true };
+    },
+    meter: (sc) => void (meterScope = sc),
+    bottomTab: (t) => void (bottomTab = t),
+    openSection: (id) => void dispatchEvent(new CustomEvent('nebulosa:open-section', { detail: id })),
+    autoset: () => autoset(),
+    async newSession() {
+      await activeLink?.clearSession();
+      lv = { follow: true, last: 0, t0: 0, t1: 0 };
+    },
+    serialFeed: (on) => (on ? startDemoFeed() : stopDemoFeed()),
+    look: {
+      markers: () => view.markers,
+      active: () => view.active,
+      live: () => view.live,
+      divIndex: () => view.divIndex,
+      end: () => view.end,
+      trig,
+      bottomTab: () => bottomTab,
+      meterScope: () => meterScope,
+      appMode: () => appMode,
+      mathOn: () => mathInfo.on,
+      mathExpr: () => mathInfo.expr,
+      logView: () => lv,
+      analysisOpen: () => !!analysis,
+      serialTriggerOn: () => serialCfg.trigger.on && !!serialCfg.trigger.pattern,
+      serialMatches: () => monitor.matches,
+      serialMsgs: () => monitor.annotations.length,
+    },
+  };
+
+  async function runShowcase(s: Showcase) {
+    showcasesOpen = false;
+    touring = false;
+    showcase = null;
+    stopDemoFeed();
+    analysis = null;
+    if (dev && !(dev.link instanceof DemoLink)) await disconnect();
+    if (!dev) startDemo();
+    else if (!streaming) await start();
+    (dev!.link as unknown as DemoLink).setScenario(s.scenario);
+    scenarioSince = store.empty ? 0 : store.tEnd;
+    // each starts from a plain scope: no math, no trigger, no event log, markers in view
+    if (mathInfo.on) await mathOff();
+    Object.assign(trig, { mode: 'roll', log: false });
+    view.clearMarkers();
+    bottomTab = 'markers';
+    meterScope = 'window';
+    leftOpen = rightOpen = true;
+    resetView();
+    await tick();
+    showcase = { s, steps: s.steps(showcaseCtx) };
   }
 
   function showSpan(t0: number, t1: number) {
@@ -1069,6 +1278,7 @@
     else if (e.key === 'Delete' || e.key === 'Backspace') view.remove(view.active);
     else if (e.key === 'm') addSingleMarker();
     else if (e.key === 'd') addDualMarker();
+    else if (e.key === 'a' && hasData) openAnalysis();
     else if (e.key === '+' || e.key === '=') view.zoom(store, -1);
     else if (e.key === '-') view.zoom(store, 1);
     else if (e.key === 'ArrowLeft') view.pan(store, -0.1);
@@ -1528,8 +1738,37 @@
   <Tour steps={TOUR} connected={!!dev} ondemo={startDemo} onclose={() => (touring = false)} />
 {/if}
 
+{#if showcasesOpen}
+  <Showcases
+    realDevice={dev && !(dev.link instanceof DemoLink) ? dev.link.description : null}
+    onpick={runShowcase}
+    ontour={() => {
+      showcasesOpen = false;
+      startTour();
+    }}
+    onclose={() => (showcasesOpen = false)}
+  />
+{/if}
+
+{#if showcase}
+  {#key showcase}
+    <Tour steps={showcase.steps} label={showcase.s.title} interactive connected={!!dev} onclose={() => { showcase = null; stopDemoFeed(); }} />
+  {/key}
+{/if}
+
 {#if analysis}
-  <Analysis signals={available} link={activeLink} span={analysis.span} spanLabel={analysis.label} onclose={() => (analysis = null)} onshow={showSpan} />
+  {#key analysis.tab}
+    <Analysis
+      signals={available}
+      link={activeLink}
+      span={analysis.span}
+      spanLabel={analysis.label}
+      initialTab={analysis.tab}
+      autorun={analysis.autorun}
+      onclose={() => (analysis = null)}
+      onshow={showSpan}
+    />
+  {/key}
 {/if}
 
 <div class="app" style="grid-template-columns: {leftOpen ? leftW : 0}px minmax(0, 1fr) {rightOpen ? rightW : 0}px">
@@ -1573,6 +1812,7 @@
     <div class="modes" role="tablist" aria-label="View" data-tour="modes">
       <button class:on={appMode === 'scope'} onclick={() => setAppMode('scope')} title="Waveforms: µs to seconds, triggers, markers">Scope</button>
       <button class:on={appMode === 'logger'} onclick={() => setAppMode('logger')} title="The whole session: minutes to days, logging to disk">Logger</button>
+      <button class:on={appMode === 'sca'} onclick={() => setAppMode('sca')} title="Side-channel power analysis: capture traces, t-test, timing (ChipWhisperer-style). Beta — for slow targets.">Side-channel <span class="beta">beta</span></button>
     </div>
     <div class="status">
       {#if dev}
@@ -1586,6 +1826,7 @@
           <span class="dot"></span><span class="muted">Not connected</span>
         {/if}
       {/if}
+      <button class="ghost" onclick={() => (showcasesOpen = true)} title="Tutorials and showcases: hands-on lessons and real measurements on the demo device" data-tour="showcases">Learn</button>
       <button class="ghost side-btn" onclick={(e) => scaleMenu(e)} title="Appearance: UI scale (Ctrl + / −), theme" aria-label="UI scale"
         >Aa{#if canScale && uiScale.value !== 1}<small class="scale-pct">{Math.round(uiScale.value * 100)}%</small>{/if}</button
       >
@@ -1596,7 +1837,7 @@
 
   <aside class:hidden={!leftOpen} data-tour="sidebar">
     {#if !dev}
-      <ConnectPanel {candidates} {scanning} {busy} {recFiles} {recDir} onscan={scan} onconnect={connect} onpair={pair} onopen={openRecording} onopenfile={openFile} ondemo={startDemo} />
+      <ConnectPanel {candidates} {scanning} {busy} {recFiles} {recDir} onscan={scan} onconnect={connect} onpair={pair} onopen={openRecording} onopenfile={openFile} ondemo={startDemo} onshowcases={() => (showcasesOpen = true)} />
     {:else if playback}
       <section>
         <h2>Recording <button class="ghost small" onclick={disconnect}>Close</button></h2>
@@ -1717,6 +1958,66 @@
       <button class="ghost" onclick={newSession} disabled={!sess.has_data}>New session</button>
     </Section>
 
+    <Section id="monitor" title="Serial monitor" tour="monitor" open={false} summary={monitor.open ? `● ${monitor.annotations.length} msg${monitor.matches ? ` · ${monitor.matches} hit` : ''}` : 'off'}>
+      <p class="muted small">Read a serial port and mark its lines on the logger, timed to the measurements. Send, toggle RTS / DTR, trigger on a message. Saved as a <code>.serial.csv</code> next to a log.</p>
+      {#if isNative && !monitor.open}
+        <div class="mon-row">
+          <select bind:value={monitorPort}>
+            {#each monitorPorts as pt (pt.path)}<option value={pt.path}>{pt.label}</option>{/each}
+          </select>
+          <button class="ghost small" onclick={scanMonitorPorts}>Scan</button>
+        </div>
+      {/if}
+      <div class="mon-grid">
+        <label>Baud <input type="number" bind:value={serialCfg.baud} disabled={monitor.open} /></label>
+        <label>Data <select bind:value={serialCfg.dataBits} disabled={monitor.open}>{#each [5, 6, 7, 8] as b (b)}<option value={b}>{b}</option>{/each}</select></label>
+        <label>Parity <select bind:value={serialCfg.parity} disabled={monitor.open}><option value="none">none</option><option value="even">even</option><option value="odd">odd</option></select></label>
+        <label>Stop <select bind:value={serialCfg.stopBits} disabled={monitor.open}><option value={1}>1</option><option value={2}>2</option></select></label>
+      </div>
+      <label>Flow control <select bind:value={serialCfg.flow} disabled={monitor.open}><option value="none">none</option><option value="hardware">hardware (RTS/CTS)</option>{#if isNative}<option value="software">software (XON/XOFF)</option>{/if}</select></label>
+      <div class="mon-row">
+        <label class="mon-chk"><input type="checkbox" bind:checked={serialCfg.rts} onchange={() => monitor.open && monitor.setSignals(serialCfg.rts, serialCfg.dtr)} /> RTS</label>
+        <label class="mon-chk"><input type="checkbox" bind:checked={serialCfg.dtr} onchange={() => monitor.open && monitor.setSignals(serialCfg.rts, serialCfg.dtr)} /> DTR</label>
+        <span class="muted small">{monitor.open ? 'toggles live' : 'asserted on open'}</span>
+      </div>
+      <button class="small" class:danger={monitor.open} class:primary={!monitor.open} onclick={monitorConnect}>
+        {monitor.open ? '■ Disconnect' : isNative ? 'Open port' : 'Open port (Web Serial)'}
+      </button>
+      {#if monitor.error}<p class="error small">{monitor.error}</p>{/if}
+
+      {#if monitor.open}
+        <div class="mon-send">
+          <input placeholder="Send…" bind:value={sendText} onkeydown={(e) => e.key === 'Enter' && monitorSend()} />
+          <select bind:value={serialCfg.txNewline} title="Line ending appended to what you send"><option value="none">—</option><option value="lf">\n</option><option value="cr">\r</option><option value="crlf">\r\n</option></select>
+          <button class="small" onclick={monitorSend} disabled={!sendText}>Send</button>
+        </div>
+      {/if}
+
+      <details class="mon-more">
+        <summary>Line handling and trigger</summary>
+        <label>Split received on <select bind:value={serialCfg.rxNewline}><option value="any">any (CR / LF / CRLF)</option><option value="lf">\n</option><option value="cr">\r</option><option value="crlf">\r\n</option></select></label>
+        <label class="mon-chk"><input type="checkbox" bind:checked={serialCfg.echo} /> Echo sent lines on the log</label>
+        <label class="mon-chk"><input type="checkbox" bind:checked={serialCfg.trigger.on} /> Trigger on a message</label>
+        {#if serialCfg.trigger.on}
+          <div class="mon-send">
+            <input class="mono" placeholder={serialCfg.trigger.regex ? 'regex' : 'text to match'} bind:value={serialCfg.trigger.pattern} />
+          </div>
+          <label class="mon-chk"><input type="checkbox" bind:checked={serialCfg.trigger.regex} /> Regular expression</label>
+          <label class="mon-chk"><input type="checkbox" bind:checked={serialCfg.trigger.hold} /> Freeze the logger on a match</label>
+          <p class="muted small">A match is a red marker. {monitor.matches} so far.</p>
+        {/if}
+      </details>
+
+      {#if monitor.annotations.length}
+        <div class="mon-list">
+          {#each monitor.annotations.slice(-120).reverse() as a (a.wall)}
+            <div class="mon-msg" class:trig={a.kind === 'trigger'} class:tx={a.kind === 'tx'}><button class="mon-jump" onclick={() => openInScope(a.t)} title="Open this moment in the scope">{new Date(a.wall ?? 0).toLocaleTimeString()}</button> <span>{a.text}</span></div>
+          {/each}
+        </div>
+        <button class="ghost small" onclick={() => monitor.clear()}>Clear messages</button>
+      {/if}
+    </Section>
+
     <Section id="output" title="File output" open={false} summary="{out.kind === 'native' ? 'Nebulosa log' : out.cfg.format.type.toUpperCase()} · {out.cfg.data === 'raw' ? 'every sample' : 'per interval'}">
         <ExportEditor
           bind:out
@@ -1755,9 +2056,21 @@
   </aside>
 
   <main bind:this={mainEl}>
-    {#if appMode === 'logger'}
-      <div class="logger-wrap">
-        <LoggerView bind:this={logger} {store} session={sess} {signals} {axes} {trace} {wallOffset} bind:lv onopen={openInScope} intervals={LOG_INTERVALS} oninterval={changeLogInterval} onreset={resetView} />
+    {#if appMode === 'sca'}
+      <div class="sca-wrap">
+        <SideChannel
+          link={activeLink}
+          demo={dev && dev.link instanceof DemoLink ? dev.link.target : null}
+          {trig}
+          dt={1 / (rateHz || 2e6)}
+          {signals}
+          {streaming}
+          onnote={(m) => (note = m)}
+        />
+      </div>
+    {:else if appMode === 'logger'}
+      <div class="logger-wrap" data-tour="logger">
+        <LoggerView bind:this={logger} {store} session={sess} {signals} {axes} {trace} {wallOffset} bind:lv onopen={openInScope} intervals={LOG_INTERVALS} oninterval={changeLogInterval} onreset={resetView} annotations={monitor.annotations} />
       </div>
     {:else}
     <div class="strip" data-tour="strip">
@@ -1775,6 +2088,9 @@
         </span>
       {/if}
       <button class="small autoset" onclick={autoset} disabled={!hasData} title="Trigger, time/div and axes from the signal (like a scope's Autoset)">Autoset</button>
+      <button class="small analyze" onclick={openAnalysis} disabled={!hasData} title="Histogram, CDF, spectrum and worst window over the active dual marker, else the screen (A)"
+        >Analyze{view.activeMarker?.t1 != null ? ' marker' : ''}…</button
+      >
       <button class="ghost small" onclick={resetView} title="Plots back as they first were: equal heights, axes on auto, mean and min–max, 100 ms/div, live">Reset view</button>
       {#if autosetNote}<span class="autoset-note" role="status">{autosetNote}</span>{/if}
       <div class="tdiv">
@@ -1805,7 +2121,6 @@
           <button class="ghost small" onclick={exportCsv} disabled={!hasData} title="Every sample of the active dual marker's span (or the screen) as CSV">CSV</button>
         {/if}
         <button class="ghost small" onclick={exportPng} disabled={!hasData} title="The plots as a PNG image">PNG</button>
-        <button class="ghost small" onclick={openAnalysis} disabled={!hasData} title="Histogram, CDF, spectrum, worst window over the active dual marker (or the screen)">Analyze</button>
       </div>
       <span class="legend muted" title="Each pixel column covers many samples">
         {#if trace.mean}<span class="key"><i class="line"></i>mean</span>{/if}
@@ -1864,6 +2179,7 @@
         onpick={(id) => (view.active = id)}
         ondelete={(id) => view.remove(id)}
         onzoom={zoomToMarker}
+        onanalyze={analyzeMarker}
         onclear={() => view.clearMarkers()}
         onmenu={markerListMenu}
       />
@@ -1897,6 +2213,7 @@
       bind:hold
       hasSelection={!!view.selection}
       onclear={clearAccum}
+      onanalyze={hasData ? openAnalysis : undefined}
     />
   </div>
 </div>
@@ -1929,6 +2246,18 @@
     padding: 0 16px;
     border-bottom: 1px solid var(--border);
     background: var(--panel);
+  }
+  .modes .beta {
+    font-size: 9px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding: 1px 4px;
+    margin-left: 4px;
+    border-radius: 999px;
+    background: var(--warn, #e0a030);
+    color: #1a1205;
+    vertical-align: middle;
   }
   .linkish {
     background: none;
@@ -2040,6 +2369,11 @@
     background: var(--accent);
     color: #fff;
   }
+  .sca-wrap {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+  }
   .logger-wrap {
     flex: 1;
     min-height: 0;
@@ -2112,7 +2446,8 @@
     text-overflow: ellipsis;
     max-width: 420px;
   }
-  .autoset {
+  .autoset,
+  .analyze {
     font-weight: 600;
     border-color: var(--accent);
     color: var(--accent);
@@ -2283,6 +2618,105 @@
   }
   .wrap {
     word-break: break-all;
+  }
+.mon-row {
+    display: flex;
+    gap: 6px;
+  }
+  .mon-row select {
+    flex: 1;
+    min-width: 0;
+  }
+  .mon-baud {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+.mon-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+  }
+  .mon-grid label,
+  .mon-baud {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .mon-chk {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 5px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .mon-chk input {
+    width: auto;
+  }
+  .mon-send {
+    display: flex;
+    gap: 6px;
+  }
+  .mon-send input {
+    flex: 1;
+    min-width: 0;
+  }
+  .mon-send select {
+    width: auto;
+    flex: none;
+  }
+  .mon-more summary {
+    font-size: 12px;
+    color: var(--muted);
+    cursor: pointer;
+    padding: 2px 0;
+  }
+  .mon-more {
+    display: flex;
+    flex-direction: column;
+  }
+  .mon-more[open] {
+    gap: 7px;
+  }
+  .mon-list {
+    max-height: 160px;
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    border-radius: var(--r-sm);
+    background: var(--bg);
+    font: 11px ui-monospace, monospace;
+    padding: 3px;
+  }
+  .mon-msg {
+    display: flex;
+    gap: 6px;
+    padding: 1px 2px;
+    white-space: nowrap;
+  }
+  .mon-msg span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .mon-jump {
+    border: 0;
+    background: none;
+    color: var(--accent);
+    cursor: pointer;
+    padding: 0;
+    font: inherit;
+    flex: none;
+  }
+  .mon-msg.trig {
+    color: var(--danger);
+    font-weight: 600;
+  }
+  .mon-msg.tx span {
+    color: var(--muted);
   }
   .note {
     color: var(--ok);

@@ -2,6 +2,7 @@
 // and the browser build (WebUSB) implement Link; Device adds the typed
 // commands on top, the same for both.
 
+import type { ScaEngine } from './sca';
 import {
   CMD,
   NbpError,
@@ -55,6 +56,8 @@ export interface Link {
   clearEvents(): Promise<void>;
   /** analysis over [t0, t1) */
   analyze(t0: number, t1: number, req: AnalysisRequest): Promise<AnalysisResult>;
+  /** side-channel campaigns over this link's samples */
+  readonly sca: ScaEngine;
   close(): Promise<void>;
 }
 
