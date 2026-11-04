@@ -16,10 +16,23 @@ const RANGE_FS = [2, 0.2, 20e-3, 2e-3, 200e-6, 20e-6];
  *   sleep    a microcontroller at ~1 µA, waking for 8 ms at 4 mA each second
  *   boot     switched on every 3 s: inrush, boot, flash writes, idle
  *   battery  a Li-ion cell (a whole discharge in 4 minutes) under 120 mA radio bursts
+ *   rare     the sensor (as iot), with a rare fault: every 10 to 26 s a 320 mA
+ *            surge sags the supply, the board browns out and reboots (rareFault)
  *   target   a microcontroller under attack: idle at 2 mA, running what the
  *            side-channel tab sends it (DemoTarget: a leaky AES, a password check)
  */
-export type DemoScenario = 'iot' | 'ble' | 'pwm' | 'glitch' | 'sleep' | 'boot' | 'battery' | 'target';
+export type DemoScenario = 'iot' | 'ble' | 'pwm' | 'glitch' | 'sleep' | 'boot' | 'battery' | 'target' | 'rare';
+
+/**
+ * The rare scenario's k-th fault, s after the scenario began: 9 s, then
+ * 14 to 22 s apart (fixed, so the demo's serial prints can follow them).
+ */
+export function rareFault(k: number): number {
+  const r = Math.sin(k * 12.9898 + 1.7) * 43758.5453;
+  return 9 + 18 * k + 8 * (r - Math.floor(r) - 0.5);
+}
+/** after a fault: the surge, the reset, the boot (s) */
+export const RARE = { surge: 4e-3, reset: 0.07, boot: 0.45 };
 
 /**
  * Something the demo target does, as data (it crosses into the worker): the
@@ -95,6 +108,10 @@ export class Generator {
   }
   /** glitch: the next spike's start, s */
   private glitchAt = 1;
+  /** rare: when the scenario began, the next fault's index, the last fault's time (s) */
+  private rareFrom = NaN;
+  private rareK = 0;
+  private rareLast = -Infinity;
   private ts = 0; // 500 ns periods (= samples at 2 MS/s)
   private blockSeq = 0; // FPGA block sequence
   private dataSeq = 0; // NBP DATA sequence
@@ -112,6 +129,7 @@ export class Generator {
         this.ts += RATE * 0.015;
         this.range = -1; // a new block after the gap
       }
+      if (this.scenario !== 'rare') this.rareFrom = NaN;
       const [i0, v0] = this.sample(t);
       const i = Math.max(0, i0);
       const v = Math.max(0, v0 + (Math.random() - 0.5) * 2e-3);
@@ -149,6 +167,33 @@ export class Generator {
         const ph = (t * 2000) % 1;
         const i = noise(ph < 0.3 ? 0.08 + 0.06 * (ph / 0.3) : 2e-3, 0.03);
         return [i, 5 - i * 0.4];
+      }
+      case 'rare': {
+        if (isNaN(this.rareFrom)) {
+          this.rareFrom = t;
+          this.rareK = 0;
+          this.rareLast = -Infinity;
+        }
+        if (t >= this.rareFrom + rareFault(this.rareK)) this.rareLast = this.rareFrom + rareFault(this.rareK++);
+        const g = t - this.rareLast;
+        if (g < RARE.surge) {
+          // a short in the radio: the supply sags
+          const i = noise(0.32, 0.05);
+          return [i, 3.3 - i * 3.4];
+        }
+        if (g < RARE.reset) {
+          // browned out: in reset, the supply recovering
+          return [noise(40e-6, 0.2), 3.3 - 0.9 * Math.exp(-(g - RARE.surge) / 6e-3)];
+        }
+        if (g < RARE.boot) {
+          // booting: inrush, then the CPU at full speed
+          const i = noise(18e-3, 0.06) + 0.4 * Math.exp(-(g - RARE.reset) / 0.5e-3);
+          return [i, 3.3 - i * 0.8];
+        }
+        const phase = t % 0.5;
+        const burst = phase < 0.04;
+        const i = noise(burst ? 25e-3 + 3e-3 * Math.sin(phase * 900) : 200e-6 + 20e-6 * Math.sin(t * 7), burst ? 0.08 : 0.15);
+        return [i, 3.3 - i * 0.8];
       }
       case 'glitch': {
         if (t > this.glitchAt + 1e-3) this.glitchAt = t + 0.6 + Math.random() * 1.8;

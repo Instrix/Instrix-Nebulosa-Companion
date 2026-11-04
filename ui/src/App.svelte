@@ -7,7 +7,7 @@
   import Overview from './lib/Overview.svelte';
   import MarkerList from './lib/MarkerList.svelte';
   import Meter, { type AccumView, type MarkerRow, type Scope as MeterScope, type Summary } from './lib/Meter.svelte';
-  import { View, TIME_DIVS, fmtTime, markerColor, markerName } from './lib/view.svelte';
+  import { View, TIME_DIVS, fmtTime, fmtDur, markerColor, markerName, parseDuration } from './lib/view.svelte';
   import { Moments, SampleStore, type SpanStats } from './lib/store';
   import { Device, isNative, type Candidate, type Link } from './lib/device';
   import {
@@ -30,10 +30,12 @@
   import * as native from './lib/native';
   import * as web from './lib/webusb';
   import { DemoLink, demoRequested, demoSelection } from './lib/demo';
+  import { rareFault, RARE } from './lib/demoGen';
   import { EVENT_LABEL, KIND_LABEL, TriggerState, type KindType, type TrigMode } from './lib/trigger.svelte';
   import EventList from './lib/EventList.svelte';
   import Analysis from './lib/Analysis.svelte';
   import Updater from './lib/Updater.svelte';
+  import TriggerFields from './lib/panels/TriggerFields.svelte';
   import TriggerPanel from './lib/panels/TriggerPanel.svelte';
   import SignalsPanel from './lib/panels/SignalsPanel.svelte';
   import CalibrationPanel from './lib/panels/CalibrationPanel.svelte';
@@ -47,7 +49,7 @@
   import instrixIcon from './assets/instrix-icon.svg';
   import instrixIconWhite from './assets/instrix-icon-white.svg';
   import * as boardCmd from './lib/board';
-  import LoggerView, { type LogView } from './lib/LoggerView.svelte';
+  import LoggerView, { type CaptureMark, type LogView } from './lib/LoggerView.svelte';
   import { ViewHistory } from './lib/history.svelte';
   import CommandPalette, { type Command } from './lib/CommandPalette.svelte';
   import { SECTION_HELP } from './lib/panels/sectionHelp';
@@ -187,7 +189,7 @@
     }
   }
 
-  async function toggleRecording() {
+  async function toggleRecording(from?: number) {
     error = '';
     try {
       if (recording?.active) {
@@ -204,7 +206,7 @@
           decimation: { log2n, mode: decimMode },
           source,
           calibration: $state.snapshot(cal),
-        });
+        }, from);
         note = `Recording to ${path}`;
       }
     } catch (e) {
@@ -987,6 +989,7 @@
     () => store.tEnd,
     () => serialCfg,
     (a) => {
+      if (capState === 'armed' && capture.mode === 'triggered' && capture.source === 'serial') void fireCapture(a.t);
       // a trigger match freezes the view on it, if asked: in the Scope like a
       // trigger (the match at the trigger position), in the Logger around it
       if (!serialCfg.trigger.hold) return;
@@ -1066,10 +1069,24 @@
       () => `tx packet #${n} (${12 + Math.floor(Math.random() * 6)} bytes)`,
       () => 'ack, sleeping',
     ];
+    // the rare scenario: after each brown-out the board boots again and says why
+    let fault = 0;
+    let tick = 0;
     demoFeed = setInterval(() => {
+      const rare = (dev?.link instanceof DemoLink ? dev.link.scenario : null) === 'rare';
+      if (rare && !store.empty) {
+        while (scenarioSince + rareFault(fault) + RARE.boot < store.tEnd - 2) fault++; // long past (joined late)
+        if (store.tEnd >= scenarioSince + rareFault(fault) + RARE.boot) {
+          monitor.note('boot: firmware 1.4.2, reset cause: BROWN-OUT');
+          fault++;
+          tick = 0;
+          return;
+        }
+      }
+      if (tick++ % 9) return;
       monitor.note(lines[n % lines.length]());
       n++;
-    }, 900);
+    }, 100);
   }
   function stopDemoFeed() {
     clearInterval(demoFeed);
@@ -1132,6 +1149,195 @@
   let rawByLogger = false;
   let diskFree = $state<number | null>(null);
 
+  // ---- triggered capture ----------------------------------------------------------
+  // Logging comes two ways. Continuous: start, and it writes until stopped.
+  // Triggered: the sample buffer and the session log roll on and nothing is
+  // written; the trigger (a trigger event, or a serial message matching the
+  // monitor's trigger) starts a file with the `pre` seconds before it, and it
+  // goes on for `post` seconds (or until stopped).
+  //   idle      nothing
+  //   watch     the trigger runs and its events show on the Logger, with the
+  //             window a capture would start with: for setting it up, by eye
+  //   armed     as watch; the next trigger starts a capture
+  // A capture being written is `capturing`; after it, back to watch (or armed
+  // again, with `again`). In the browser, where files can't be streamed, a
+  // capture is kept in memory and downloaded when it ends.
+  type Capture = { mode: 'continuous' | 'triggered'; source: 'trigger' | 'serial'; pre: number; post: number; again: boolean };
+  /** suggestions; any duration can be typed (within what memory holds) */
+  const PRE_CHOICES = [0, 1, 2, 5, 10, 30, 60, 300, 600, 3600];
+  const POST_CHOICES = [0, 1, 2, 5, 10, 30, 60, 300, 600, 3600];
+  /** the session log's full-resolution entries (session.rs FINE_CAP): how far back per interval reaches */
+  const FINE_ENTRIES = 1_000_000;
+  let capture = $state<Capture>(loadCapture());
+  function loadCapture(): Capture {
+    const d: Capture = { mode: 'continuous', source: 'trigger', pre: 5, post: 5, again: false };
+    try {
+      const v = { ...d, ...JSON.parse(localStorage.getItem('nebulosa.capture') ?? '{}') };
+      return { ...v, mode: v.mode === 'triggered' ? 'triggered' : 'continuous' };
+    } catch {
+      return d;
+    }
+  }
+  $effect(() => save('nebulosa.capture', $state.snapshot(capture)));
+  let capState = $state<'idle' | 'watch' | 'armed'>('idle');
+  /** the section help's snapshot of the Logger shows both ways at once */
+  let loggerHelpPreview = $state(false);
+  $effect(() => {
+    const on = (e: Event) => (loggerHelpPreview = (e as CustomEvent<string | null>).detail === 'logger');
+    addEventListener('nebulosa:help-preview', on);
+    return () => removeEventListener('nebulosa:help-preview', on);
+  });
+  /** armed since (the buffer's time), with the trigger count then */
+  let armedFrom = { at: 0, count: 0 };
+  /** a triggered capture being written */
+  let capturing = $state<{ t: number; from: number } | null>(null);
+  let captureTimer: ReturnType<typeof setTimeout> | undefined;
+  /** captures made this session, drawn on the Logger */
+  let captures = $state<CaptureMark[]>([]);
+  /** events seen since watching began */
+  let watchCount0 = $state(0);
+  const watchHits = $derived(Math.max(0, trig.count - watchCount0));
+  /** the trigger runs for the Logger while it waits, or captures */
+  $effect(() => {
+    trig.watch = capture.mode === 'triggered' && capture.source === 'trigger' && (capState !== 'idle' || !!capturing);
+  });
+  /** files are streamed in the desktop app; in the browser a capture is downloaded at its end */
+  const streamed = $derived(isNative);
+  /** how far back a capture can reach: every sample, the sample buffer; per interval, the session log at full resolution */
+  const memS = $derived(out.cfg.data === 'raw' ? bufferS : FINE_ENTRIES * logInterval);
+  const preMax = $derived(memS);
+  /** files go on as long as they like; in the browser before and after must both still be in memory at the end */
+  const postMax = $derived(streamed ? Infinity : Math.max(0, memS - Math.min(capture.pre, preMax)));
+  /** a duration typed for Before or After: parsed, kept within what memory holds */
+  function setDur(which: 'pre' | 'post', el: HTMLInputElement) {
+    const text = el.value.trim().toLowerCase();
+    let v = which === 'post' && /^(|∞|until stopped|until stop|stop|forever|-)$/.test(text) ? 0 : which === 'pre' && /^(none|-)$/.test(text) ? 0 : parseDuration(text);
+    if (v == null || v < 0) {
+      toast('Not a duration: try 30s, 2min, 1m30s, 1h or 2:05');
+      el.value = durText(which, capture[which]);
+      return;
+    }
+    const max = which === 'pre' ? preMax : postMax;
+    if (v > max) {
+      toast(`${which === 'pre' ? 'Before' : 'After'}: at most ${fmtDur(max)} (${out.cfg.data === 'raw' ? 'the sample buffer' : `the session log at ${fmtTime(logInterval)}`})`);
+      v = max;
+    }
+    capture[which] = v;
+    el.value = durText(which, v);
+  }
+  function durText(which: 'pre' | 'post', v: number) {
+    return v ? fmtDur(v) : which === 'pre' ? 'none' : 'until stopped';
+  }
+  /** what stops a capture from arming, if anything */
+  const armBlock = $derived.by(() => {
+    if (!dev || dev.link.playback) return 'Connect a device (or the demo device).';
+    if (!streaming) return 'Start the stream first.';
+    if (capture.source === 'trigger' && !trig.detecting && capState === 'idle') return '';
+    if (capture.source === 'serial' && !(serialCfg.trigger.on && serialCfg.trigger.pattern)) return 'Set a message trigger in the Serial monitor first.';
+    if (capture.source === 'serial' && !monitor.open && !demoFeed) return 'Open the serial port first.';
+    if (!streamed && capture.post === 0 && out.cfg.data === 'raw') return 'In the browser, every sample needs an end (it must fit the sample buffer): choose After.';
+    if (!streamed && capture.post > postMax) return `Every sample, before and after must fit the sample buffer (${fmtTime(bufferS)}).`;
+    if (out.kind !== 'native' && !out.cfg.fields.length) return 'Choose fields in File output.';
+    return '';
+  });
+
+  function watch() {
+    watchCount0 = trig.count;
+    capState = 'watch';
+  }
+  function stopWatching() {
+    capState = 'idle';
+  }
+  function arm() {
+    if (capState === 'idle') watchCount0 = trig.count;
+    armedFrom = { at: store.tEnd, count: trig.count };
+    capState = 'armed';
+  }
+  function disarm() {
+    capState = 'watch';
+  }
+
+  /** the trigger fired at `t` (the buffer's time, s): a capture starts */
+  async function fireCapture(t: number) {
+    if (capState !== 'armed' || capturing) return;
+    capState = 'watch';
+    const pre = Math.min(capture.pre, preMax);
+    const from = t - pre;
+    capturing = { t, from };
+    const n = captures.length + 1;
+    captures = [...captures, { t, pre, end: null, label: `capture ${n}` }];
+    note = `Triggered at ${new Date((t + wallOffset) * 1000).toLocaleTimeString()}: capturing from ${fmtTime(pre)} before${capture.post ? `, for ${fmtTime(capture.post)} after` : ''}.`;
+    if (streamed) await startLog(from);
+    // the end counts from the trigger, which came a moment before we heard of it
+    if (capture.post > 0) {
+      const wait = () => {
+        const left = t + capture.post - store.tEnd;
+        if (left <= 0) void endCapture();
+        else captureTimer = setTimeout(wait, Math.min(1000, Math.max(50, left * 1000)));
+      };
+      wait();
+    }
+  }
+
+  /** the capture's end: the file closes (or, in the browser, downloads) */
+  async function endCapture(reason = 'Capture done.') {
+    const c = capturing;
+    if (!c) return;
+    clearTimeout(captureTimer);
+    const end = Math.min(store.tEnd, capture.post > 0 ? c.t + capture.post : Infinity);
+    if (streamed) await stopLog(reason);
+    else await downloadCapture(c.from, end);
+    capturing = null;
+    captures = captures.map((m, k) => (k === captures.length - 1 ? { ...m, end } : m));
+    if (capture.again && capState === 'watch') arm();
+  }
+
+  /** the browser's capture: [t0, t1) as text, downloaded */
+  async function downloadCapture(t0: number, t1: number) {
+    const link = activeLink;
+    if (!link?.exportSpan) return;
+    const text = out.kind === 'native' || out.cfg.format.type === 'hdf5';
+    const cfg = text ? { ...$state.snapshot(out.cfg), format: { type: 'csv' as const, separator: ',', decimal_comma: false, header: true } } : $state.snapshot(out.cfg);
+    try {
+      const bytes = await link.exportSpan(cfg, wallOffset, t0, t1);
+      const ext = cfg.format.type === 'txt' ? 'txt' : cfg.format.type === 'jsonl' ? 'jsonl' : 'csv';
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([bytes as BlobPart], { type: 'text/plain' }));
+      a.download = `nebulosa-capture-${stamp()}.${ext}`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+      note = `Capture saved: ${a.download} · ${fmtBytesSize(bytes.length)}${text && out.kind === 'native' ? ' (CSV: the Nebulosa format needs the desktop app)' : ''}`;
+    } catch (e) {
+      error = `Capture not saved: ${e}`;
+    }
+  }
+
+  /** the trigger's level halfway between the min and max the Logger shows */
+  async function loggerLevel50() {
+    const s0 = store.session;
+    if (!s0.has_data) return;
+    const [t0, t1] = lv.follow ? [lv.last > 0 ? Math.max(s0.t_start, s0.t_end - lv.last) : s0.t_start, s0.t_end] : [lv.t0, lv.t1];
+    const m = (await store.sessionStats(t0, t1))[trig.source];
+    if (!m.n) return;
+    const mid = (m.min + m.max) / 2;
+    trig.level = mid;
+    trig.low = mid - (m.max - m.min) / 4;
+    trig.high = mid + (m.max - m.min) / 4;
+  }
+  /** pick mode on the Logger: a click sets the trigger's source and level */
+  let loggerPick = $state(false);
+  function onLoggerPick(sig: Signal, v: number) {
+    loggerPick = false;
+    trig.source = sig;
+    if (trig.kind === 'window') {
+      const h = Math.abs(trig.high - trig.low) / 2 || Math.abs(v) * 0.1 || 1e-6;
+      trig.low = v - h;
+      trig.high = v + h;
+    } else trig.level = v;
+    if (capState === 'idle') watch();
+    toast(`Trigger: ${SIGNAL_INFO[sig].name} at ${fmtSI(v, SIGNAL_INFO[sig].unit, 3)}`);
+  }
+
   async function changeLogInterval(iv: number, sel?: HTMLSelectElement) {
     if (store.session.has_data && !(await ask('A new interval starts the session log over. Go on?'))) {
       if (sel) sel.value = String(logInterval); // cancelled: show the interval still in use
@@ -1162,8 +1368,8 @@
   /** rough size of an every-sample log: 4 bytes a sample natively, ~11 characters a column as text */
   const rawBytesPerS = $derived(rateHz * (out.kind === 'native' ? 4 : out.kind === 'hdf5' ? 4 * out.cfg.fields.length : 11 * out.cfg.fields.length));
 
-  async function startLog() {
-    if (out.kind !== 'native') return startExportLog();
+  async function startLog(from?: number) {
+    if (out.kind !== 'native') return startExportLog(from);
     error = '';
     try {
       save('nebulosa.rawCapGB', rawCapGB);
@@ -1179,11 +1385,11 @@
         decimation: { log2n, mode: decimMode },
         calibration: $state.snapshot(cal),
         math: mathInfo.on ? $state.snapshot(mathInfo) : null,
-      });
+      }, from);
       note = `Logging to ${logPath}`;
       logStarted = Date.now();
       if (out.cfg.data === 'raw' && !recording?.active) {
-        await toggleRecording();
+        await toggleRecording(from);
         rawByLogger = true;
       }
     } catch (e) {
@@ -1191,10 +1397,10 @@
     }
   }
 
-  async function startExportLog() {
+  async function startExportLog(from?: number) {
     error = '';
     try {
-      logPath = await native.startExport($state.snapshot(out.cfg), wallOffset, logHeader());
+      logPath = await native.startExport($state.snapshot(out.cfg), wallOffset, logHeader(), from);
       exporting = true;
       exportBytes = 0;
       logStarted = Date.now();
@@ -1220,6 +1426,13 @@
   }
 
   async function stopLog(reason?: string) {
+    // a capture stopped by hand: its span ends here, and it doesn't arm again
+    if (capturing && !reason) {
+      clearTimeout(captureTimer);
+      const end = store.tEnd;
+      capturing = null;
+      captures = captures.map((m, k) => (k === captures.length - 1 ? { ...m, end } : m));
+    }
     if (exporting) {
       try {
         const r = await native.stopExport();
@@ -1304,6 +1517,15 @@
   let paletteOpen = $state(false);
 
   /** goes to a settings section: the view it is in, the panel shown, the section open and in view */
+  /** a section in its own window, once it is on the page (a view switch puts it there a moment later) */
+  function popoutSection(id: string, tries = 20) {
+    if (!leftOpen) toggleSide('left');
+    requestAnimationFrame(() => {
+      if (document.querySelector(`[data-sec="${id}"]`)) dispatchEvent(new CustomEvent('nebulosa:popout-section', { detail: id }));
+      else if (tries > 0) popoutSection(id, tries - 1);
+    });
+  }
+
   function gotoSection(id: string) {
     if (!info) return toast('Connect a device first (or try the demo device)');
     if (LOGGER_SECTIONS.some((x) => x.id === id) && appMode !== 'logger') setAppMode('logger');
@@ -1351,6 +1573,27 @@
       { group: 'Action', label: 'Save the plots as PNG…', disabled: !hasData, keywords: 'image screenshot picture', run: exportPng },
       { group: 'Action', label: 'Set the trigger by clicking a plot', disabled: !hasData, keywords: 'trigger level pick', run: () => (setAppMode('scope'), (pickTrigger = true)) },
       { group: 'Action', label: 'Start logging to file', disabled: !isNative || !dev || !!logging?.active || exporting, keywords: 'record save log file every sample', run: () => (setAppMode('logger'), startLog()) },
+      { group: 'Action', label: 'Triggered capture', detail: 'a rolling window, saved when the trigger fires', disabled: !dev || !!logging?.active || exporting, keywords: 'capture rare event pre-trigger before glitch arm watch rolling window', run: () => (setAppMode('logger'), (capture.mode = 'triggered'), gotoSection('logger')) },
+      ...(
+        [
+          ['trigger', 'Trigger', 'scope'],
+          ['logger', 'Logger', 'logger'],
+          ['output', 'File output', 'logger'],
+          ['monitor', 'Serial monitor', null],
+          ['math', 'Math channel', null],
+        ] as const
+      ).map(([id, name, view]) => ({
+        group: 'Action',
+        label: `${name} in its own window`,
+        detail: 'bigger, movable, while you watch the plots',
+        keywords: 'pop out float window expand detach',
+        disabled: !info,
+        run: () => {
+          if (view && appMode !== view) setAppMode(view);
+          else if (appMode === 'sca') setAppMode('scope');
+          popoutSection(id);
+        },
+      })),
       { group: 'Action', label: 'Hide / show the settings panel', hint: '[', keywords: 'sidebar left', run: () => toggleSide('left') },
       { group: 'Action', label: 'Hide / show the meter', hint: ']', keywords: 'sidebar right panel', run: () => toggleSide('right') },
       { group: 'Action', label: 'Configurations…', keywords: 'profiles save load settings', run: () => (configOpen = true) },
@@ -1427,6 +1670,32 @@
       lv = { follow: true, last: 0, t0: 0, t1: 0 };
     },
     serialFeed: (on) => (on ? startDemoFeed() : stopDemoFeed()),
+    serialTrigger(pattern) {
+      serialCfg.trigger.on = pattern != null;
+      if (pattern != null) {
+        serialCfg.trigger.pattern = pattern;
+        serialCfg.trigger.regex = false;
+        serialCfg.trigger.hold = false;
+      }
+    },
+    async capture(c) {
+      if (capturing) await endCapture('Stopped.');
+      const { data, interval, ...rest } = c;
+      Object.assign(capture, rest);
+      if (data) setLogData(data);
+      if (interval != null && interval !== logInterval) {
+        logInterval = interval;
+        save('nebulosa.logInterval', interval);
+        await activeLink?.setLogInterval(interval);
+      }
+    },
+    captureState(st) {
+      if (st === 'idle') stopWatching();
+      else if (st === 'watch') watch();
+      else arm();
+    },
+    loggerSpan: (t0, t1) => void (lv = { follow: false, last: lv.last, t0, t1 }),
+    dock: (id) => void dispatchEvent(new CustomEvent('nebulosa:dock-section', { detail: id })),
     scaOpen: () => setAppMode('sca'),
     scaCapture: async (plan, t, sLen) => {
       if (await whenSca()) await sca!.scaCapture(plan, t, sLen);
@@ -1455,6 +1724,11 @@
       serialTriggerOn: () => serialCfg.trigger.on && !!serialCfg.trigger.pattern,
       serialMatches: () => monitor.matches,
       serialMsgs: () => monitor.annotations.length,
+      window: (id) => {
+        const r = document.querySelector(`#fwin-host .fwin[data-fid="${id}"]`)?.getBoundingClientRect();
+        return r ? { x: r.x, y: r.y, w: r.width, h: r.height } : null;
+      },
+      capture: () => ({ mode: capture.mode, state: capState, capturing: !!capturing, made: captures.length, last: captures.at(-1)?.t ?? null, pre: capture.pre, post: capture.post }),
       scaTraces: () => sca?.scaState().traces ?? 0,
       scaView: () => sca?.scaState().view ?? 'traces',
       scaCapturing: () => sca?.scaState().capturing ?? false,
@@ -1471,6 +1745,10 @@
     showcase = null;
     stopDemoFeed();
     analysis = null;
+    // a capture left from before stops; the guide sets its own
+    if (capturing) await endCapture('Stopped.');
+    capState = 'idle';
+    loggerPick = false;
     if (dev && !(dev.link instanceof DemoLink)) await disconnect();
     if (!dev) startDemo();
     else if (!streaming) await start();
@@ -1858,6 +2136,7 @@
   let tEndNow = $state(0);
   /** what relative times in the Scope's lists count from: the trigger shown, else the screen's right edge */
   const scopeOrigin = $derived(trig.mode !== 'roll' && trig.shown != null ? trig.shown : view.live ? tEndNow : view.end);
+  let loggerTab = $state<'serial' | 'events'>('serial');
   let loggerMsgsOpen = $state(stored('nebulosa.loggerMsgs', 1) === 1);
   $effect(() => save('nebulosa.loggerMsgs', loggerMsgsOpen ? 1 : 0));
 
@@ -2177,6 +2456,8 @@
   function reset() {
     // another device (or none): the views before don't apply to it
     scopeHist.clear();
+    capState = 'idle';
+    captures = [];
     loggerHist.clear();
     hasData = false;
     store.attach(null);
@@ -2239,6 +2520,11 @@
       fitAll();
     }
     trig.update(m.trigger.recent, m.trigger.count, store, view);
+    if (capState === 'armed' && capture.mode === 'triggered' && capture.source === 'trigger' && m.trigger.count > armedFrom.count) {
+      const at = armedFrom.at;
+      const after = m.trigger.recent.filter((t) => t > at);
+      void fireCapture(after.length ? Math.min(...after) : store.tEnd);
+    }
     trig.fetch(activeLink, m.trigger.count);
     runMoments = m.run;
     stats = m.stats;
@@ -2381,6 +2667,9 @@
 {#if updating && dev}
   <Updater {dev} onclose={() => (updating = false)} onrestart={() => { updating = false; boardRestarts(); }} />
 {/if}
+
+<!-- sections popped out of the sidebar (Section.svelte, ⤢) float here, styled as in the sidebar -->
+<div class="fwins" id="fwin-host"></div>
 
 {#if paletteOpen}
   <CommandPalette commands={commands()} onclose={() => (paletteOpen = false)} />
@@ -2590,15 +2879,29 @@
     {/if}
 
     {#if appMode === 'logger'}
-    <Section id="logger" icon="logger" title="Logger" tour="logger-panel" summary={logging?.active || exporting ? '● logging to file' : `${fmtTime(logInterval)} intervals`}>
+    <Section id="logger" icon="logger" title="Logger" tour="logger-panel" popout summary={capturing ? '● capturing' : logging?.active || exporting ? '● logging to file' : capState === 'armed' ? '◎ armed' : capState === 'watch' ? 'watching the trigger' : capture.mode === 'triggered' ? 'triggered capture' : `${fmtTime(logInterval)} intervals`}>
+      {@const busyLog = !!(logging?.active || exporting || capturing || capState === 'armed')}
+      <div class="seg wide logstart" data-tour="log-start" role="group" aria-label="How logging starts">
+        <button class:on={capture.mode === 'continuous'} disabled={busyLog} onclick={() => ((capture.mode = 'continuous'), (capState = 'idle'))} title="Start, and it writes until you stop it">● Continuous</button>
+        <button class:on={capture.mode === 'triggered'} disabled={busyLog} onclick={() => (capture.mode = 'triggered')} title="A rolling window: when the trigger fires, the file starts from a while before it — for catching a rare event">◎ Triggered</button>
+      </div>
       <label title="Per interval: min, max, mean and σ of every signal. In memory it stays bounded: older intervals merge 10×, then 100×.">
         Interval <span class="muted small">· ~{fmtBytesSize(sess.bytes)} in memory</span>
         <select value={logInterval} onchange={(e) => changeLogInterval(Number(e.currentTarget.value), e.currentTarget)}>
           {#each LOG_INTERVALS as iv (iv)}<option value={iv}>{fmtTime(iv)}</option>{/each}
         </select>
       </label>
+      <div class="seg wide logdata" data-tour="log-mode" role="group" aria-label="What is written">
+        <button class:on={out.cfg.data === 'summary'} disabled={busyLog} onclick={() => setLogData('summary')} title="One row per interval: min, max, mean and σ of the samples in it">
+          Per {fmtTime(logInterval)} (stats)
+        </button>
+        <button class:on={out.cfg.data === 'raw'} disabled={busyLog} onclick={() => setLogData('raw')} title="Every sample at the full rate, as measured: no averaging">Every sample</button>
+      </div>
+      {#if out.cfg.data === 'raw'}
+        <small class="muted">Every sample at {fmtRate(rateHz)}, no averaging: ~{fmtBytesSize(rawBytesPerS)}/s, {fmtBytesSize(rawBytesPerS * 3600)}/h.</small>
+      {/if}
+
       {#if logging?.active || exporting}
-        <button class="danger" onclick={() => stopLog()}>■ Stop logging</button>
         <dl>
           <dt>File</dt><dd class="wrap">{logPath.split(/[\\/]/).pop()}</dd>
           {#if logging?.active}<dt>Entries</dt><dd>{logging.entries.toLocaleString()}</dd>{/if}
@@ -2608,32 +2911,88 @@
           {#if diskFree != null}<dt>Disk free</dt><dd>{fmtBytesSize(diskFree)}</dd>{/if}
         </dl>
       {/if}
-      {#if isNative}
-        {#if !logging?.active && !exporting}
-          <div class="seg wide" data-tour="log-mode">
-            <button class:on={out.cfg.data === 'summary'} onclick={() => setLogData('summary')} title="One row per interval: min, max, mean and σ of the samples in it">
-              Per {fmtTime(logInterval)} (stats)
-            </button>
-            <button class:on={out.cfg.data === 'raw'} onclick={() => setLogData('raw')} title="Every sample at the full rate, as measured: no averaging">
-              Every sample
-            </button>
-          </div>
-          {#if out.cfg.data === 'raw'}
-            <small class="muted">Every sample at {fmtRate(rateHz)}, no averaging: ~{fmtBytesSize(rawBytesPerS)}/s, {fmtBytesSize(rawBytesPerS * 3600)}/h.</small>
-          {/if}
-          <button class="primary" onclick={startLog} disabled={!dev || !!dev.link.playback || (out.kind !== 'native' && !out.cfg.fields.length)}>
-            ● Start logging to file
-          </button>
+
+      {#if capture.mode === 'continuous' || loggerHelpPreview}
+        {#if logging?.active || exporting}
+          <button class="danger" onclick={() => stopLog()}>■ Stop logging</button>
+        {:else if isNative}
+          <button class="primary" onclick={() => startLog()} disabled={!dev || !!dev.link.playback || (out.kind !== 'native' && !out.cfg.fields.length)}>● Start logging to file</button>
           <small class="muted">To ~/Documents/Nebulosa, as set in File output. Stops cleanly if the disk runs low.</small>
+        {:else}
+          <small class="muted">Continuous logging to a file needs the desktop app. <b>Triggered</b> captures work here: each downloads when it ends.</small>
         {/if}
-      {:else}
-        <small class="muted">Files need the desktop app; File output below previews what would be written.</small>
+      {/if}
+      {#if capture.mode === 'triggered' || loggerHelpPreview}
+        <div class="capstatus {capturing ? 'cap' : capState}" role="status" data-tour="capture-status">
+          {#if capturing}
+            ● CAPTURING · {fmtTime(Math.max(0, tEndNow - capturing.t))} after the trigger{capture.post ? ` of ${fmtTime(capture.post)}` : ''}
+          {:else if capState === 'armed'}
+            ◎ ARMED · waiting for {capture.source === 'serial' ? 'a matching message' : 'the trigger'}
+          {:else if capState === 'watch'}
+            WATCHING · {capture.source === 'serial' ? `${monitor.matches} matching messages` : `${watchHits.toLocaleString()} trigger events`} · nothing written
+          {:else}
+            Not watching
+          {/if}
+        </div>
+        <label title="What starts a capture">
+          Starts on
+          <select bind:value={capture.source} disabled={capState === 'armed' || !!capturing}>
+            <option value="trigger">The trigger (below)</option>
+            <option value="serial">A serial message (the monitor's trigger)</option>
+          </select>
+        </label>
+        {#if capture.source === 'trigger' || loggerHelpPreview}
+          <div class="capfields" data-tour="capture-trigger">
+            <TriggerFields {trig} {available} onlevel50={loggerLevel50} picking={loggerPick} onpick={() => ((loggerPick = !loggerPick), capState === 'idle' && watch())} />
+          </div>
+          <small class="muted">The same trigger as the Scope's. On the plots: drag its level line, or ⌖ and click a plot. ▼ marks each event.</small>
+        {/if}
+        {#if capture.source === 'serial'}
+          <small class={serialCfg.trigger.on && serialCfg.trigger.pattern ? 'muted' : 'warn'}>
+            {#if serialCfg.trigger.on && serialCfg.trigger.pattern}
+              On lines matching <code>{serialCfg.trigger.pattern}</code>{serialCfg.trigger.regex ? ' (regex)' : ''}.
+            {:else}
+              No message trigger set.
+            {/if}
+            <button class="link" onclick={() => gotoSection('monitor')}>Serial monitor…</button>
+          </small>
+        {/if}
+        <div class="row" data-tour="capture-window">
+          <label title="How much from before the trigger a capture starts with: any duration (30s, 2min, 1h…), up to {fmtTime(preMax)}. The shaded band on the plots shows it.">
+            Before
+            <input class="dur" list="dur-pre" value={durText('pre', capture.pre)} disabled={capState === 'armed' || !!capturing} onchange={(e) => setDur('pre', e.currentTarget)} onfocus={(e) => e.currentTarget.select()} />
+          </label>
+          <label title="How long it goes on after the trigger: any duration, or until stopped (leave it empty){streamed ? '' : `; in the browser up to ${fmtTime(postMax)}`}">
+            After
+            <input class="dur" list="dur-post" value={durText('post', capture.post)} disabled={capState === 'armed' || !!capturing} onchange={(e) => setDur('post', e.currentTarget)} onfocus={(e) => e.currentTarget.select()} />
+          </label>
+          <datalist id="dur-pre">{#each PRE_CHOICES.filter((v) => v <= preMax) as v (v)}<option value={durText('pre', v)}></option>{/each}</datalist>
+          <datalist id="dur-post">{#each POST_CHOICES.filter((v) => v <= postMax && (v || streamed || out.cfg.data !== 'raw')) as v (v)}<option value={durText('post', v)}></option>{/each}</datalist>
+        </div>
+        <small class="muted">Before reaches back up to {fmtDur(preMax)}: {out.cfg.data === 'raw' ? 'the sample buffer (Display › Sample buffer)' : `the session log at ${fmtTime(logInterval)} intervals`}.</small>
+        <label class="check" title="After each capture, wait for the next trigger (each capture its own file)"><input type="checkbox" bind:checked={capture.again} /> Again after each capture</label>
+        <div class="row capbtns">
+          {#if capturing}
+            <button class="danger" onclick={() => (streamed ? stopLog() : endCapture('Stopped.'))}>■ Stop capture</button>
+          {:else if capState === 'armed'}
+            <button class="ghost" onclick={disarm}>Disarm</button>
+          {:else}
+            {#if capState === 'watch'}
+              <button class="ghost" onclick={stopWatching} title="Stop showing the trigger's events">■ Stop</button>
+            {:else}
+              <button class="ghost" onclick={watch} disabled={!dev} title="Run the trigger and show its events and the window on the plots, without writing: for setting it up">▶ Watch</button>
+            {/if}
+            <button class="primary" onclick={arm} disabled={!!armBlock} title={armBlock || 'The next trigger starts a capture'}>◎ Arm</button>
+          {/if}
+        </div>
+        {#if armBlock && !capturing && capState !== 'armed'}<small class="warn">{armBlock}</small>{/if}
+        <small class="muted">{streamed ? 'Each capture is a file in ~/Documents/Nebulosa, as set in File output.' : 'Each capture downloads when it ends (CSV, text or JSON Lines, as set in File output).'}</small>
       {/if}
       <button class="ghost" onclick={newSession} disabled={!sess.has_data}>New session</button>
     </Section>
 
 
-    <Section id="output" icon="output" title="File output" open={false} summary="{out.kind === 'native' ? 'Nebulosa log' : out.cfg.format.type.toUpperCase()} · {out.cfg.data === 'raw' ? 'every sample' : 'per interval'}">
+    <Section id="output" icon="output" title="File output" popout open={false} summary="{out.kind === 'native' ? 'Nebulosa log' : out.cfg.format.type.toUpperCase()} · {out.cfg.data === 'raw' ? 'every sample' : 'per interval'}">
         <ExportEditor
           bind:out
           link={activeLink}
@@ -2663,7 +3022,7 @@
 
     <CalibrationPanel bind:cal ranges={CURRENT_RANGES} note={calNote} onapply={() => applyCal()} onreset={resetCal} />
 
-    <Section id="monitor" icon="monitor" title="Serial monitor" tour="monitor" open={false} summary={monitor.open ? `● ${monitor.annotations.length} msg${monitor.matches ? ` · ${monitor.matches} hit` : ''}` : 'off'}>
+    <Section id="monitor" icon="monitor" title="Serial monitor" tour="monitor" popout open={false} summary={monitor.open ? `● ${monitor.annotations.length} msg${monitor.matches ? ` · ${monitor.matches} hit` : ''}` : 'off'}>
       <p class="muted small">Read a serial port and mark its lines on the plots (Scope and Logger), timed to the measurements. Send, toggle RTS / DTR, trigger on a message. Saved as a <code>.serial.csv</code> next to a log.</p>
       {#if isNative && !monitor.open}
         <div class="mon-row">
@@ -2792,16 +3151,37 @@
       </div>
     {:else if appMode === 'logger'}
       <div class="logger-wrap" data-tour="logger">
-        <LoggerView bind:this={logger} {store} session={sess} {signals} {axes} {trace} {wallOffset} bind:lv onopen={openInScope} intervals={LOG_INTERVALS} oninterval={changeLogInterval} onreset={resetView} annotations={monitor.annotations} onback={navBack} onforward={navForward} canBack={loggerHist.canBack} canForward={loggerHist.canForward} />
+        <LoggerView bind:this={logger} {store} session={sess} {signals} {axes} {trace} {wallOffset} bind:lv onopen={openInScope} intervals={LOG_INTERVALS} oninterval={changeLogInterval} onreset={resetView} annotations={monitor.annotations} onback={navBack} onforward={navForward} canBack={loggerHist.canBack} canForward={loggerHist.canForward}
+          {trig}
+          showTrig={capture.mode === 'triggered' && capture.source === 'trigger' && (trig.detecting || loggerPick)}
+          rolling={capture.mode === 'triggered' && !capturing && capState !== 'idle' ? capState : null}
+          preS={Math.min(capture.pre, preMax)}
+          {captures}
+          picking={loggerPick}
+          onpick={onLoggerPick}
+        />
       </div>
       <!-- the same tab bar as under the Scope (the Logger has one list: the serial messages) -->
       <div class="markers-wrap logger-msgs" class:folded={!loggerMsgsOpen} data-tour="logger-msgs" style={loggerMsgsOpen ? 'height: min(240px, 26vh)' : ''}>
         <div class="tabs">
-          <button class="on" onclick={() => (loggerMsgsOpen = true)}>Serial <small>{monitor.annotations.length.toLocaleString()}</small></button>
+          <button class:on={loggerTab === 'serial' || capture.mode !== 'triggered'} onclick={() => ((loggerTab = 'serial'), (loggerMsgsOpen = true))}>Serial <small>{monitor.annotations.length.toLocaleString()}</small></button>
+          {#if capture.mode === 'triggered'}
+            <button class:on={loggerTab === 'events'} onclick={() => ((loggerTab = 'events'), (loggerMsgsOpen = true))}>Events <small>{trig.count.toLocaleString()}</small></button>
+          {/if}
           <span class="sp"></span>
           <button class="fold" onclick={() => (loggerMsgsOpen = !loggerMsgsOpen)} aria-expanded={loggerMsgsOpen} title={loggerMsgsOpen ? 'Fold the list' : 'Show the list'}>{loggerMsgsOpen ? '▾' : '▸'}</button>
         </div>
-        {#if loggerMsgsOpen}
+        {#if loggerMsgsOpen && loggerTab === 'events' && capture.mode === 'triggered'}
+          <EventList
+            {trig}
+            unit={SIGNAL_INFO[trig.source].unit}
+            integralUnit={SIGNAL_INFO[trig.source].integral ?? ''}
+            origin={tEndNow}
+            onjump={(e) => jumpLoggerTo(e.t)}
+            onclear={() => trig.clearLog(activeLink)}
+            onexport={exportEvents}
+          />
+        {:else if loggerMsgsOpen}
           <SerialList messages={monitor.annotations} wallClock onjump={jumpLoggerTo} onclear={() => monitor.clear()} onsave={saveMessages} />
         {/if}
       </div>
@@ -2851,7 +3231,7 @@
       </div>
       <div class="tdiv">
         {#if isNative && dev && !dev.link.playback}
-          <button class="small rec" class:on={recording?.active} onclick={toggleRecording} title="Record every sample to a file">
+          <button class="small rec" class:on={recording?.active} onclick={() => toggleRecording()} title="Record every sample to a file">
             {#if recording?.active}■ Stop · {fmtTime(recording.seconds)} · {fmtBytesSize(recording.bytes)}{:else}● REC{/if}
           </button>
         {/if}
@@ -3548,6 +3928,53 @@
   .warn {
     color: var(--warn);
   }
+  button.link {
+    background: none;
+    border: 0;
+    padding: 0;
+    color: var(--accent);
+    text-decoration: underline;
+    cursor: pointer;
+    font-size: inherit;
+  }
+  .capstatus {
+    font: 600 12px ui-monospace, monospace;
+    letter-spacing: 0.04em;
+    padding: 6px 8px;
+    border: 1px solid var(--border);
+    border-radius: var(--r-sm);
+    color: var(--muted);
+    text-align: center;
+  }
+  .capstatus.watch {
+    color: var(--text);
+    border-color: color-mix(in srgb, var(--hold) 50%, var(--border));
+  }
+  .capstatus.armed {
+    color: var(--hold);
+    border-color: var(--hold);
+    animation: armed 1.6s ease-in-out infinite;
+  }
+  .capstatus.cap {
+    color: #fff;
+    background: var(--danger);
+    border-color: var(--danger);
+  }
+  .capfields {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding-left: 8px;
+    border-left: 2px solid color-mix(in srgb, var(--trig) 40%, transparent);
+  }
+  .capbtns button {
+    flex: 1;
+  }
+  @keyframes armed {
+    50% {
+      opacity: 0.55;
+    }
+  }
   .small {
     font-size: 12px;
   }
@@ -3571,7 +3998,13 @@
     min-width: 96px;
   }
   /* the sidebar's panels (components too): shared look */
-  aside :global {
+  .fwins {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 40;
+  }
+  :is(aside, .fwins) :global {
     section {
       padding: 12px 0;
       border-bottom: 1px solid var(--border);

@@ -15,6 +15,43 @@ export const TIME_DIVS = [
 export const DIVS_X = 10;
 export const DIVS_Y = 8;
 
+/**
+ * A duration typed by hand, s: `90`, `90s`, `500ms`, `2.5 min`, `1m30s`,
+ * `1h`, `1h 20m`, `2:05` (m:ss), `1:02:03` (h:mm:ss). null if it isn't one.
+ */
+export function parseDuration(text: string): number | null {
+  const v = text.trim().toLowerCase().replace(/\s+/g, '');
+  if (!v) return null;
+  const colon = v.match(/^(?:(\d+):)?(\d+):(\d{1,2}(?:\.\d+)?)$/);
+  if (colon) return Number(colon[1] ?? 0) * 3600 + Number(colon[2]) * 60 + Number(colon[3]);
+  const unit: Record<string, number> = { ms: 1e-3, s: 1, sec: 1, m: 60, min: 60, h: 3600, hr: 3600, d: 86400 };
+  let total = 0;
+  let rest = v;
+  while (rest) {
+    const m = rest.match(/^(\d+(?:\.\d+)?|\.\d+)(ms|sec|s|min|m|hr|h|d)?/);
+    if (!m) return null;
+    total += Number(m[1]) * (m[2] ? unit[m[2]] : 1);
+    rest = rest.slice(m[0].length);
+    if (!m[2] && rest) return null; // a bare number only on its own
+  }
+  return isFinite(total) ? total : null;
+}
+
+/** a duration for reading and typing back: 500 ms, 30 s, 1 min 30 s, 2 h 5 min, 27.8 h */
+export function fmtDur(s: number): string {
+  if (s < 1) return `${+(s * 1000).toPrecision(3)} ms`;
+  if (s < 60) return `${+s.toPrecision(3)} s`;
+  if (s < 3600) {
+    const m = Math.floor(s / 60), r = Math.round(s - m * 60);
+    return r ? `${m} min ${r} s` : `${m} min`;
+  }
+  if (s < 10 * 3600) {
+    const h = Math.floor(s / 3600), m = Math.round((s - h * 3600) / 60);
+    return m ? `${h} h ${m} min` : `${h} h`;
+  }
+  return `${+(s / 3600).toFixed(1)} h`;
+}
+
 export function fmtTime(s: number, digits = 3): string {
   const a = Math.abs(s);
   if (a === 0) return '0';

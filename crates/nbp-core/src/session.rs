@@ -456,6 +456,14 @@ impl SessionLog {
         self.fine.entries.iter().skip(k).copied().collect()
     }
 
+    /// Fine entries already taken for the log files (not pending) that end
+    /// after `t`, oldest first: what a file started late gets to catch up.
+    pub fn since(&self, t: f64) -> Vec<LogEntry> {
+        let held = self.fine.entries.len() - self.pending.len().min(self.fine.entries.len());
+        let first = self.fine.entries.partition_point(|e| e.t0 + e.dur <= t);
+        self.fine.entries.range(first.min(held)..held).copied().collect()
+    }
+
     /// Fine entries finished since the last call (for the log file).
     pub fn take_pending(&mut self) -> Vec<LogEntry> {
         std::mem::take(&mut self.pending)
@@ -758,6 +766,28 @@ mod tests {
             m.add(x, 1.0, f64::NAN);
         }
         m
+    }
+
+    /// `since`: the entries a late file catches up on, none of the pending
+    /// ones (those still reach it the usual way).
+    #[test]
+    fn since_leaves_pending_out() {
+        let mut s = SessionLog::new(0.1);
+        for k in 0..100u64 {
+            s.add(k as f64 * 0.05, 0.05, &m3(1.0, 64));
+        }
+        s.close();
+        let pending = s.take_pending().len();
+        assert_eq!(pending, 50);
+        let all = s.since(1.0);
+        assert_eq!(all.len(), 40);
+        assert!((all[0].t0 - 1.0).abs() < 1e-9);
+        // a new one, not yet taken: not in `since`
+        s.add(5.0, 0.05, &m3(1.0, 64));
+        s.add(5.25, 0.05, &m3(1.0, 64));
+        assert_eq!(s.since(1.0).len(), 40);
+        assert_eq!(s.take_pending().len(), 1);
+        assert_eq!(s.since(1.0).len(), 41);
     }
 
     #[test]

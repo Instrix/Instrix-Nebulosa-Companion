@@ -46,6 +46,8 @@ export interface Link {
   clearSession(): Promise<void>;
   /** what an export would write for the latest rows (preview) */
   exportPreview(cfg: ExportCfg, wallOffset: number, rows: number): Promise<string>;
+  /** [t0, t1) written whole in a text format, to download (where files aren't streamed: the browser) */
+  exportSpan?(cfg: ExportCfg, wallOffset: number, t0: number, t1: number): Promise<Uint8Array>;
   /** the math channel's expression, or null for none; resolves to an error message, or null */
   setMath(expr: string | null): Promise<string | null>;
   /** codes to units, for samples from now on */

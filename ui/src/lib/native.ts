@@ -148,7 +148,8 @@ export interface RecFile {
 
 export const listRecordings = () => invoke<RecFile[]>('list_recordings');
 export const recordingsDir = () => invoke<string>('recordings_dir');
-export const startRecording = (header: unknown) => invoke<string>('start_recording', { header: JSON.stringify(header) });
+/** `from`: a time (s) before now to start from, out of the sample buffer (a capture armed on a trigger) */
+export const startRecording = (header: unknown, from?: number) => invoke<string>('start_recording', { header: JSON.stringify(header), from: from ?? null });
 export const stopRecording = () =>
   invoke<{ path: string; samples: number; bytes: number; seconds: number } | null>('stop_recording');
 export const countSamples = (t0: number, t1: number) => invoke<number>('count_samples', { t0, t1 });
@@ -183,7 +184,7 @@ export async function pickSave(defaultPath: string, name: string, ext: string): 
 
  // ---- logging ----------------------------------------------------------------
 
-export const startLogging = (header: unknown) => invoke<string>('start_logging', { header: JSON.stringify(header) });
+export const startLogging = (header: unknown, from?: number) => invoke<string>('start_logging', { header: JSON.stringify(header), from: from ?? null });
 export const stopLogging = () => invoke<{ path: string; entries: number; bytes: number } | null>('stop_logging');
 export const diskStatus = () =>
   invoke<{
@@ -208,8 +209,8 @@ export async function openLog(path: string, ev: LinkEvents): Promise<{ link: Lin
   return { link: new NativeLink(`Log ${name}`, true), header: h };
 }
 
-export const startExport = (cfg: ExportCfg, wallOffset: number, header: unknown) =>
-  invoke<string>('start_export', { cfg, wallOffset, header: JSON.stringify(header) });
+export const startExport = (cfg: ExportCfg, wallOffset: number, header: unknown, from?: number) =>
+  invoke<string>('start_export', { cfg, wallOffset, header: JSON.stringify(header), from: from ?? null });
 export const stopExport = () => invoke<{ path: string; rows: number; bytes: number } | null>('stop_export');
 
 export const exportCsv = (t0: number, t1: number, path: string) => invoke<number>('export_csv', { t0, t1, path });

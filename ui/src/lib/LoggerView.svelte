@@ -9,6 +9,13 @@
     /** received, sent, or a trigger match (sets the marker colour) */
     kind?: 'rx' | 'tx' | 'trigger';
   }
+  /** a triggered capture, drawn as its span: from `pre` before the trigger to its end (null: still going) */
+  export interface CaptureMark {
+    t: number;
+    pre: number;
+    end: number | null;
+    label: string;
+  }
   export interface LogView {
     follow: boolean;
     /** follow: seconds back from the newest (0: the whole session) */
@@ -36,6 +43,7 @@
   import { fmtTime } from './view.svelte';
   import { drag as dragAct, store as save } from './drag';
   import HoverTip, { type TipRow } from './HoverTip.svelte';
+  import type { TriggerState } from './trigger.svelte';
 
   let {
     store,
@@ -54,6 +62,13 @@
     onforward,
     canBack = false,
     canForward = false,
+    trig,
+    showTrig = false,
+    rolling = null,
+    preS = 0,
+    captures = [],
+    picking = false,
+    onpick,
   }: {
     store: SampleStore;
     /** the session log's state (reactive) */
@@ -78,6 +93,17 @@
     onforward?: () => void;
     canBack?: boolean;
     canForward?: boolean;
+    /** the trigger: its level lines (dragged to set) and its events, shown when `showTrig` */
+    trig?: TriggerState;
+    showTrig?: boolean;
+    /** a triggered capture waiting: the stretch it would start with, `preS` back from the newest */
+    rolling?: 'watch' | 'armed' | null;
+    preS?: number;
+    /** triggered captures made, drawn as spans */
+    captures?: CaptureMark[];
+    /** pick mode: a click on a plot sets the trigger there (its signal, its value) */
+    picking?: boolean;
+    onpick?: (sig: Signal, value: number) => void;
   } = $props();
 
   /** new log data redraws no faster than this, nor than twice what a redraw costs; the user's moves at once */
@@ -86,6 +112,11 @@
   let annDirty = false;
   $effect(() => {
     void annotations.length;
+    annDirty = true;
+  });
+  // the trigger's lines, events, the window and the captures: redraw the overlay when they change
+  $effect(() => {
+    void [showTrig, rolling, preS, captures.length, captures.at(-1)?.end, trig?.levels().join(), trig?.source, trig?.logVersion];
     annDirty = true;
   });
   let root: HTMLDivElement;
@@ -337,7 +368,7 @@
             { ...axis, size: 78, ...(log ? { splits: logSplits } : {}), values: siValues(SIGNAL_INFO[sig].unit), stroke: col },
           ],
           hooks: {
-            draw: [(u) => drawAnnotations(u, idx === 0)],
+            draw: [(u) => drawAnnotations(u, idx === 0), (u) => drawCapture(u, sig, idx === 0)],
             setSelect: [
               (u) => {
                 if (u.select.width > 3) {
@@ -378,6 +409,9 @@
       );
       u.over.addEventListener('wheel', onWheel(u), { passive: false });
       u.over.addEventListener('dblclick', () => (lv = { follow: true, last: 0, t0: 0, t1: 0 }));
+      // before uPlot's own (selection) and the click: grab a level line, or pick
+      u.over.addEventListener('mousedown', levelDown(sig, u), { capture: true });
+      u.over.addEventListener('mousemove', levelHover(sig, u));
       u.over.addEventListener('mousedown', onDown(u));
       plots.push({ sig, u });
     });
@@ -416,6 +450,148 @@
         if (Math.abs(ev.clientX - x0) < 3 && ev.button === 0) onopen(u.posToVal(e.offsetX, 'x') - wallOffset);
       };
       window.addEventListener('mouseup', up);
+    };
+  }
+
+  /** the trigger's level lines (source plot), its events, the waiting window and the captures */
+  function drawCapture(u: uPlot, sig: Signal, top: boolean) {
+    const ctx = u.ctx;
+    const { left, top: ct, width, height } = u.bbox;
+    const dpr = devicePixelRatio;
+    const xMin = u.scales.x.min!, xMax = u.scales.x.max!;
+    const X = (t: number) => u.valToPos(t + wallOffset, 'x', true);
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(left, ct, width, height);
+    ctx.clip();
+    ctx.font = `${10 * dpr}px ui-monospace, monospace`;
+    ctx.textBaseline = 'top';
+    ctx.textAlign = 'left';
+    const label = (x: number, text: string, col: string) => {
+      const w = ctx.measureText(text).width + 6 * dpr;
+      x = Math.max(left, Math.min(x, left + width - w));
+      ctx.fillStyle = col;
+      ctx.fillRect(x, ct + 2 * dpr, w, 13 * dpr);
+      ctx.fillStyle = '#0b0c12';
+      ctx.fillText(text, x + 3 * dpr, ct + 4 * dpr);
+    };
+    const span = (a: number, b: number, col: string) => {
+      const x0 = Math.max(left, X(a)), x1 = Math.min(left + width, X(b));
+      if (x1 <= x0) return;
+      ctx.fillStyle = col;
+      ctx.fillRect(x0, ct, x1 - x0, height);
+    };
+    // captures made: their span, the trigger a solid line
+    const acc = cssVar('--accent') || '#4da3ff';
+    for (const c of captures) {
+      const end = c.end ?? store.session.t_end;
+      if (end + wallOffset < xMin || c.t - c.pre + wallOffset > xMax) continue;
+      span(c.t - c.pre, end, acc + '22');
+      const x = X(c.t);
+      ctx.strokeStyle = acc;
+      ctx.lineWidth = 1.5 * dpr;
+      ctx.beginPath();
+      ctx.moveTo(x, ct);
+      ctx.lineTo(x, ct + height);
+      ctx.stroke();
+      if (top) label(Math.max(left, X(c.t - c.pre)), c.label, acc + 'ee');
+    }
+    // waiting: what a capture would start with if it fired now
+    if (rolling && preS > 0) {
+      const end = store.session.t_end;
+      const hold = cssVar('--hold') || '#e8b339';
+      span(end - preS, end, hold + (rolling === 'armed' ? '30' : '18'));
+      if (top && end - preS + wallOffset < xMax) label(Math.max(left, X(end - preS)), `${rolling === 'armed' ? 'armed' : 'watching'} · ${fmtTime(preS)} before`, hold + 'dd');
+    }
+    if (showTrig && trig && sig === trig.source) {
+      const col = cssVar('--trig') || '#ff8c42';
+      ctx.strokeStyle = col;
+      ctx.fillStyle = col;
+      ctx.lineWidth = dpr;
+      for (const v of trig.levels()) {
+        const y = u.valToPos(v, 'y', true);
+        if (!(y >= ct && y <= ct + height)) continue;
+        ctx.setLineDash([6 * dpr, 4 * dpr]);
+        ctx.beginPath();
+        ctx.moveTo(left, y);
+        ctx.lineTo(left + width, y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        ctx.moveTo(left + width, y);
+        ctx.lineTo(left + width - 8 * dpr, y - 6 * dpr);
+        ctx.lineTo(left + width - 8 * dpr, y + 6 * dpr);
+        ctx.fill();
+      }
+      // every event in view: a tick at the top
+      const ev = trig.events;
+      const a = xMin - wallOffset, b = xMax - wallOffset;
+      let lo = 0, hi = ev.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (ev[mid].t < a) lo = mid + 1;
+        else hi = mid;
+      }
+      ctx.globalAlpha = 0.85;
+      for (let k = lo, n = 0; k < ev.length && ev[k].t <= b && n < 4000; k++, n++) {
+        const x = X(ev[k].t);
+        ctx.beginPath();
+        ctx.moveTo(x - 4 * dpr, ct);
+        ctx.lineTo(x + 4 * dpr, ct);
+        ctx.lineTo(x, ct + 7 * dpr);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    }
+    ctx.restore();
+  }
+
+  // ---- the trigger level, dragged on its plot; pick mode ---------------------------
+  const GRAB_PX = 6;
+  function levelAt(sig: Signal, u: uPlot, y: number): number {
+    if (!showTrig || !trig || sig !== trig.source) return -1;
+    let best = -1, bestD = GRAB_PX + 1;
+    trig.levels().forEach((v, k) => {
+      const d = Math.abs(u.valToPos(v, 'y') - y);
+      if (d < bestD) [best, bestD] = [k, d];
+    });
+    return best;
+  }
+  function levelHover(sig: Signal, u: uPlot) {
+    return (e: MouseEvent) => {
+      if (e.buttons) return;
+      u.over.style.cursor = picking ? 'crosshair' : levelAt(sig, u, e.offsetY) >= 0 ? 'ns-resize' : '';
+    };
+  }
+  function levelDown(sig: Signal, u: uPlot) {
+    return (e: MouseEvent) => {
+      if (e.button !== 0 || !trig) return;
+      if (picking) {
+        e.stopImmediatePropagation();
+        e.preventDefault();
+        const v = u.posToVal(e.offsetY, 'y');
+        if (!axes[sig].log || v > 0) onpick?.(sig, v);
+        return;
+      }
+      const k = levelAt(sig, u, e.offsetY);
+      if (k < 0) return;
+      e.stopImmediatePropagation();
+      e.preventDefault();
+      const t = trig;
+      const topPx = u.over.getBoundingClientRect().top;
+      const move = (ev: MouseEvent) => {
+        let v = u.posToVal(Math.min(u.over.clientHeight, Math.max(0, ev.clientY - topPx)), 'y');
+        if (axes[sig].log) v = Math.max(v, 1e-15);
+        if (t.kind !== 'window') t.level = v;
+        else if (k === 0) t.low = v;
+        else t.high = v;
+      };
+      const up = () => {
+        removeEventListener('mousemove', move);
+        removeEventListener('mouseup', up);
+      };
+      addEventListener('mousemove', move);
+      addEventListener('mouseup', up);
     };
   }
 

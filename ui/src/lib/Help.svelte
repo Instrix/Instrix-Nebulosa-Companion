@@ -139,6 +139,8 @@
         ['[ / ]', 'Hide / show the settings / the meter'],
         ['Drag a divider', 'Resize panels and plots'],
         ['Double-click a divider', 'Reset its size'],
+        ['⤢ on a section heading', 'Its own window (Trigger, Logger, File output, Serial monitor, Math): drag the title to move, the corner to resize'],
+        ['⤡ or Esc in a window', 'Back in the sidebar'],
         ['Ctrl + / Ctrl − / Ctrl 0', 'UI scale: bigger / smaller / 100 %'],
         ['Ctrl 1 / 2 / 3', 'Scope / Logger / Side-channel'],
         ['? or F1', 'Help'],

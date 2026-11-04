@@ -1,7 +1,7 @@
 <script lang="ts">
   // A sidebar section: a header that folds it, with a one-line summary while
   // folded. Open or folded is remembered per section.
-  import type { Snippet } from 'svelte';
+  import { setContext, type Snippet } from 'svelte';
   import Icon from './Icon.svelte';
   import { SECTION_HELP } from './sectionHelp';
   import SectionHelpDialog from './SectionHelpDialog.svelte';
@@ -14,6 +14,7 @@
     open: initial = true,
     tour,
     actions,
+    popout = false,
     children,
   }: {
     /** remembers open / folded under this name */
@@ -29,6 +30,8 @@
     tour?: string;
     /** buttons at the header's right */
     actions?: Snippet;
+    /** ⤢ pops it out into a floating window (moved, resized, still live; its contents flow into columns) */
+    popout?: boolean;
     children: Snippet;
   } = $props();
 
@@ -55,12 +58,29 @@
   }
   $effect(() => {
     const openOne = (e: Event) => {
-      if ((e as CustomEvent<string>).detail === id) set(true);
+      if ((e as CustomEvent<string>).detail !== id) return;
+      set(true);
+      if (floating && winEl) {
+        raise();
+        winEl.classList.add('flash');
+        setTimeout(() => winEl?.classList.remove('flash'), 700);
+      }
     };
     const all = (e: Event) => set(!!(e as CustomEvent<boolean>).detail);
+    // Ctrl+K: a section in its own window
+    const pop = (e: Event) => {
+      if ((e as CustomEvent<string>).detail === id && popout) (floating ? raise() : popOut());
+    };
+    const dockIt = (e: Event) => {
+      if ((e as CustomEvent<string>).detail === id && floating) dock();
+    };
+    addEventListener('nebulosa:popout-section', pop);
+    addEventListener('nebulosa:dock-section', dockIt);
     addEventListener('nebulosa:open-section', openOne);
     addEventListener('nebulosa:all-sections', all);
     return () => {
+      removeEventListener('nebulosa:popout-section', pop);
+      removeEventListener('nebulosa:dock-section', dockIt);
       removeEventListener('nebulosa:open-section', openOne);
       removeEventListener('nebulosa:all-sections', all);
     };
@@ -69,6 +89,126 @@
   const help = $derived(SECTION_HELP[id]);
   let helpOpen = $state(false);
   let secEl = $state<HTMLElement>();
+
+  // ---- popped out: a floating window -------------------------------------------
+  // The same body (its controls, their state) moves into the window and back:
+  // nothing is drawn twice. Where it was and its size are remembered.
+  type Win = { x: number; y: number; w: number; h: number };
+  const fkey = () => `nebulosa.section.${id}.float`;
+  function loadWin(): { on: boolean; win: Win } {
+    const d = { on: false, win: { x: 300, y: 72, w: 600, h: 0 } };
+    try {
+      const v = JSON.parse(localStorage.getItem(fkey()) ?? 'null');
+      if (v?.win && typeof v.win.x === 'number' && v.win.h > 0) return { on: !!v.on && popout, win: v.win };
+    } catch {
+      /* storage unavailable */
+    }
+    return d;
+  }
+  const saved = loadWin();
+  let floating = $state(saved.on);
+  let win = $state<Win>(saved.win);
+  let bodyEl = $state<HTMLElement>();
+  let winEl = $state<HTMLElement>();
+  let winBody = $state<HTMLElement>();
+  /** the newest window on top */
+  let z = $state(0);
+  // panels inside can lay out wider (and unfold their extras) when floating
+  setContext('section-floating', () => floating);
+
+  function saveWin() {
+    try {
+      localStorage.setItem(fkey(), JSON.stringify({ on: floating, win }));
+    } catch {
+      /* storage unavailable */
+    }
+  }
+  function clamp() {
+    const W = innerWidth, H = innerHeight;
+    win.w = Math.min(Math.max(320, win.w), W - 16);
+    win.h = Math.min(Math.max(200, win.h), H - 16);
+    win.x = Math.min(Math.max(8, win.x), W - win.w - 8);
+    win.y = Math.min(Math.max(8, win.y), H - win.h - 8);
+  }
+  function popOut() {
+    const fit = !win.h;
+    if (fit) win.h = 400;
+    floating = true;
+    set(true);
+    clamp();
+    raise();
+    // the first time: as tall as its contents (within the screen)
+    if (fit)
+      requestAnimationFrame(() => {
+        if (!winEl || !winBody || !bodyEl) return;
+        // the contents' own height (the scroll area is at least as tall as the window), with its padding and border
+        win.h = Math.min(innerHeight - 100, (winEl.querySelector('.whead') as HTMLElement).offsetHeight + bodyEl.offsetHeight + 28 + 2);
+        clamp();
+        saveWin();
+      });
+    else saveWin();
+  }
+  function dock() {
+    floating = false;
+    saveWin();
+    requestAnimationFrame(() => secEl?.scrollIntoView({ block: 'nearest' }));
+  }
+  function raise() {
+    z = (globalThis as { __nebulosaWinZ?: number }).__nebulosaWinZ = ((globalThis as { __nebulosaWinZ?: number }).__nebulosaWinZ ?? 0) + 1;
+  }
+  // the window lives in the app's host (fixed, over everything, styled as the sidebar)
+  function portal(node: HTMLElement) {
+    (document.getElementById('fwin-host') ?? document.body).appendChild(node);
+    return { destroy: () => node.remove() };
+  }
+  // the body goes where it's shown: the window, or back under the header
+  $effect(() => {
+    if (!bodyEl || !secEl) return;
+    if (floating && winBody) winBody.appendChild(bodyEl);
+    else if (bodyEl.parentElement !== secEl) secEl.appendChild(bodyEl);
+  });
+  // its size, as the reader drags the corner
+  $effect(() => {
+    if (!winEl) return;
+    const ro = new ResizeObserver(() => {
+      if (!winEl) return;
+      win.w = winEl.offsetWidth;
+      win.h = winEl.offsetHeight;
+      saveWin();
+    });
+    ro.observe(winEl);
+    return () => ro.disconnect();
+  });
+  $effect(() => {
+    if (!floating) return;
+    const on = () => clamp();
+    addEventListener('resize', on);
+    return () => removeEventListener('resize', on);
+  });
+  function dragWin(e: PointerEvent) {
+    if (e.button !== 0 || (e.target as HTMLElement).closest('button')) return;
+    e.preventDefault();
+    const x0 = e.clientX - win.x, y0 = e.clientY - win.y;
+    const move = (ev: PointerEvent) => {
+      win.x = ev.clientX - x0;
+      win.y = ev.clientY - y0;
+      clamp();
+    };
+    const up = () => {
+      removeEventListener('pointermove', move);
+      removeEventListener('pointerup', up);
+      saveWin();
+    };
+    addEventListener('pointermove', move);
+    addEventListener('pointerup', up);
+  }
+  function winKey(e: KeyboardEvent) {
+    // Esc docks it (from a field: the field keeps Esc)
+    if (e.key === 'Escape' && !(e.target as HTMLElement).closest('input, select, textarea')) {
+      e.stopPropagation();
+      dock();
+    }
+  }
 
   function toggle() {
     open = !open;
@@ -89,18 +229,53 @@
       {#if !open && summary}<span class="sum">{summary}</span>{/if}
     </button>
     {#if actions}<div class="actions">{@render actions()}</div>{/if}
+    {#if popout}
+      <button class="pop" onclick={() => (floating ? dock() : popOut())} title={floating ? 'Back in the sidebar' : 'Open in its own window: bigger, movable, while you watch the plots'} aria-label={floating ? `Dock ${title}` : `Pop out ${title}`}>{floating ? '⤡' : '⤢'}</button>
+    {/if}
     {#if help}
       <button class="help" onclick={() => (helpOpen = true)} title="{title}: what's here and how to use it" aria-label="Help: {title}">?</button>
     {/if}
   </div>
-  <!-- folded, the contents stay (their state with them), only hidden -->
-  <div class="body" hidden={!open}>
+  {#if floating}
+    <button class="placeholder" onclick={() => (raise(), winEl?.focus())} title="It's in its own window: click to bring it to the front">
+      In its own window · <span class="dockit" role="presentation" onclick={(e) => (e.stopPropagation(), dock())}>⤡ dock here</span>
+    </button>
+  {/if}
+  <!-- folded, the contents stay (their state with them), only hidden; popped out, they move to the window -->
+  <div class="body" hidden={!open && !floating} bind:this={bodyEl}>
     {@render children()}
   </div>
 </section>
 
+{#if floating}
+  <div
+    class="fwin sec open"
+    data-fid={id}
+    data-tour="win-{id}"
+    role="dialog"
+    aria-label={title}
+    tabindex="-1"
+    use:portal
+    bind:this={winEl}
+    style="left: {win.x}px; top: {win.y}px; width: {win.w}px; height: {win.h}px; z-index: {z}"
+    onpointerdown={raise}
+    onkeydown={winKey}
+  >
+    <div class="whead" role="presentation" onpointerdown={dragWin}>
+      {#if icon}<Icon name={icon} />{/if}
+      <h2>{title}</h2>
+      <span class="sp"></span>
+      {#if help}
+        <button class="help" onclick={() => (helpOpen = true)} title="{title}: what's here and how to use it" aria-label="Help: {title}">?</button>
+      {/if}
+      <button class="pop" onclick={dock} title="Back in the sidebar (Esc)" aria-label="Dock {title}">⤡</button>
+    </div>
+    <div class="wbody" bind:this={winBody}></div>
+  </div>
+{/if}
+
 {#if helpOpen && help && secEl}
-  <SectionHelpDialog sec={secEl} {id} {title} {icon} {help} onclose={() => (helpOpen = false)} />
+  <SectionHelpDialog sec={floating && winEl ? winEl : secEl} {id} {title} {icon} {help} onclose={() => (helpOpen = false)} />
 {/if}
 
 <style>
@@ -184,6 +359,116 @@
   }
   .body[hidden] {
     display: none;
+  }
+  .pop {
+    flex: none;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    border: 1px solid transparent;
+    border-radius: var(--r-sm);
+    background: transparent;
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 1;
+    opacity: 0.6;
+  }
+  .sec:hover .pop,
+  .fwin .pop,
+  .pop:focus-visible {
+    opacity: 1;
+  }
+  .pop:hover {
+    color: var(--accent);
+    border-color: var(--accent);
+  }
+  .placeholder {
+    margin-top: 8px;
+    padding: 8px;
+    border: 1px dashed var(--border);
+    border-radius: var(--r);
+    background: transparent;
+    color: var(--muted);
+    font-size: 12px;
+    text-align: center;
+  }
+  .dockit {
+    color: var(--accent);
+    cursor: pointer;
+  }
+  .dockit:hover {
+    text-decoration: underline;
+  }
+  /* the floating window */
+  .fwin {
+    position: fixed;
+    pointer-events: auto;
+    display: flex !important;
+    flex-direction: column;
+    gap: 0 !important;
+    padding: 0 !important;
+    background: var(--panel);
+    border: 1px solid var(--border) !important;
+    border-radius: var(--r-lg);
+    box-shadow: 0 18px 50px #0009;
+    resize: both;
+    overflow: hidden;
+    min-width: 320px;
+    min-height: 200px;
+  }
+  .fwin:global(.flash) {
+    animation: sec-flash 0.6s ease-out;
+  }
+  .whead {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px 8px 14px;
+    border-bottom: 1px solid var(--border);
+    cursor: grab;
+    user-select: none;
+  }
+  .whead:active {
+    cursor: grabbing;
+  }
+  .whead :global(.icon) {
+    color: var(--accent);
+  }
+  .sp {
+    flex: 1;
+  }
+  .wbody {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    padding: 12px 16px 16px;
+  }
+  /* wider: the contents flow into columns, each control kept whole */
+  .wbody > :global(.body) {
+    display: block;
+    margin-top: 0;
+    columns: 260px;
+    column-gap: 24px;
+    column-rule: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  }
+  .wbody > :global(.body > *) {
+    break-inside: avoid;
+    margin-bottom: 10px;
+  }
+  /* a group of controls (the Logger's trigger) may run on into the next column, each of its controls whole */
+  .wbody > :global(.body > .capfields) {
+    break-inside: auto;
+  }
+  .wbody > :global(.body > .capfields > *) {
+    break-inside: avoid;
+  }
+  /* one big editor (File output) takes the whole width; it lays itself out wide */
+  .wbody > :global(.body > .ed) {
+    column-span: all;
+  }
+  .wbody > :global(.body > :is(small, p)) {
+    display: block;
   }
   .help {
     flex: none;

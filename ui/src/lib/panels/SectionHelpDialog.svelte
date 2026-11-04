@@ -70,6 +70,12 @@
     });
     copy.removeAttribute('data-tour');
     copy.removeAttribute('data-sec');
+    // a section in its own window (Section.svelte): the copy keeps its width and
+    // layout, not its place on the screen or its fixed height
+    if (copy.classList.contains('fwin')) {
+      copy.style.cssText = `position:relative;left:auto;top:auto;z-index:auto;width:${sec.getBoundingClientRect().width}px;height:auto;resize:none;box-shadow:none;`;
+      copy.querySelectorAll<HTMLElement>('.wbody').forEach((b) => (b.style.overflow = 'visible'));
+    }
     let inner: HTMLElement = copy;
     for (let a = sec.parentElement; a && a !== document.body; a = a.parentElement) {
       const w = document.createElement(a.tagName);

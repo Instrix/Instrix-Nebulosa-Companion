@@ -101,11 +101,12 @@ pub struct RecordingDone {
 
 /// Opens the file, starts the writer thread, and turns recording on in the
 /// pipeline; the dispatcher feeds the thread from then on.
-pub fn start(path: PathBuf, header_json: &str, pipe: &SharedPipeline, sink: &RecSink) -> Result<Writer, String> {
+/// `from`: a time (s) to start from, before now, out of the buffer.
+pub fn start(path: PathBuf, header_json: &str, from: Option<f64>, pipe: &SharedPipeline, sink: &RecSink) -> Result<Writer, String> {
     let (w, s) = spawn_writer(path)?;
     // lock order as in the dispatcher: pipeline, then sink
     let mut p = pipe.lock().unwrap();
-    p.start_recording(header_json);
+    p.start_recording_from(header_json, from);
     *sink.lock().unwrap() = Some(s);
     Ok(w)
 }
@@ -136,10 +137,10 @@ pub struct LoggingDone {
     pub bytes: u64,
 }
 
-pub fn start_log(path: PathBuf, header_json: &str, pipe: &SharedPipeline, sink: &RecSink) -> Result<Writer, String> {
+pub fn start_log(path: PathBuf, header_json: &str, from: Option<f64>, pipe: &SharedPipeline, sink: &RecSink) -> Result<Writer, String> {
     let (w, s) = spawn_writer(path)?;
     let mut p = pipe.lock().unwrap();
-    p.start_logging(header_json);
+    p.start_logging_from(header_json, from);
     *sink.lock().unwrap() = Some(s);
     Ok(w)
 }
@@ -296,6 +297,7 @@ pub fn start_export(
     cfg: ExportCfg,
     wall_offset: f64,
     header_json: &str,
+    from: Option<f64>,
     pipe: &SharedPipeline,
     sink: &ChunkSink,
 ) -> Result<ExportWriter, String> {
@@ -319,7 +321,7 @@ pub fn start_export(
     });
     let dropped: Arc<AtomicU64> = Arc::default();
     let mut p = pipe.lock().unwrap();
-    p.start_export(data);
+    p.start_export_from(data, from);
     *sink.lock().unwrap() = Some(ChunkSinkInner { tx, dropped: dropped.clone() });
     Ok(ExportWriter { path, thread, error, dropped })
 }

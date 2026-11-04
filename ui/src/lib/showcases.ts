@@ -9,7 +9,7 @@ import type { TourStep } from './Tour.svelte';
 import type { TriggerState } from './trigger.svelte';
 
 type TrigSettings = Partial<
-  Pick<TriggerState, 'mode' | 'source' | 'kind' | 'slope' | 'level' | 'low' | 'high' | 'polarity' | 'cond' | 'minWidth' | 'maxWidth' | 'timeout' | 'position' | 'log' | 'filter'>
+  Pick<TriggerState, 'mode' | 'source' | 'kind' | 'slope' | 'level' | 'low' | 'high' | 'polarity' | 'cond' | 'minWidth' | 'maxWidth' | 'timeout' | 'position' | 'log' | 'filter' | 'hysteresis' | 'holdoff'>
 >;
 
 /** what a showcase may do to the app */
@@ -42,6 +42,16 @@ export interface ShowcaseCtx {
   newSession(): Promise<void>;
   /** a synthetic serial feed into the monitor (the simultaneous-serial demo) */
   serialFeed(on: boolean): void;
+  /** the serial monitor's trigger on a message: its text, or off */
+  serialTrigger(pattern: string | null): void;
+  /** the Logger's logging: continuous or triggered, what starts a capture, the window, what is written */
+  capture(c: Partial<{ mode: 'continuous' | 'triggered'; source: 'trigger' | 'serial'; pre: number; post: number; again: boolean; data: 'summary' | 'raw'; interval: number }>): Promise<void>;
+  /** the triggered capture: watch, arm, or stop */
+  captureState(s: 'idle' | 'watch' | 'armed'): void;
+  /** the Logger shows [t0, t1] (held) */
+  loggerSpan(t0: number, t1: number): void;
+  /** a section back in the sidebar (from its own window) */
+  dock(id: string): void;
   /** side-channel tab: open it, run a capture, switch view, align, recover the key */
   scaOpen(): void;
   scaCapture(plan: 'aes-tvla' | 'aes-random' | 'password', traces: number, samples: number): Promise<void>;
@@ -67,6 +77,10 @@ export interface ShowcaseCtx {
     serialTriggerOn(): boolean;
     serialMatches(): number;
     serialMsgs(): number;
+    /** a section's own window: where it is and its size, or null when it's in the sidebar */
+    window(id: string): { x: number; y: number; w: number; h: number } | null;
+    /** the Logger's logging: its mode, the triggered capture's state, a capture being written, captures made (the last one's trigger time) */
+    capture(): { mode: 'continuous' | 'triggered'; state: 'idle' | 'watch' | 'armed'; capturing: boolean; made: number; last: number | null; pre: number; post: number };
     scaTraces(): number;
     scaView(): string;
     scaCapturing(): boolean;
@@ -94,6 +108,73 @@ export interface Showcase {
 const lastPeriod = (t: number, period: number, back = 0) => Math.floor((t - back) / period) * period;
 
 export const SHOWCASES: Showcase[] = [
+  {
+    id: 'brownout',
+    title: 'Catch a brown-out reset',
+    blurb: 'A board resets now and then, and says so on its serial port afterwards. Capture the seconds before its message: the cause.',
+    features: ['Triggered capture', 'Serial trigger', 'Pre-trigger', 'Logger'],
+    scenario: 'rare',
+    steps: (c) => [
+      {
+        title: 'Catch a brown-out reset',
+        body: 'The demo device plays a sensor that reboots every 10 to 30 s. After each reboot its firmware prints <code>reset cause: BROWN-OUT</code>. The message comes half a second <i>after</i> the trouble — so we capture from before it.',
+        enter: async () => {
+          c.trigger({ mode: 'roll', log: false });
+          c.captureState('idle');
+          await c.capture({ mode: 'triggered', source: 'serial', pre: 2, post: 1, again: false, interval: 0.001, data: 'summary' });
+          await c.newSession();
+          c.mode('logger');
+          c.serialFeed(true);
+          c.serialTrigger(null);
+        },
+      },
+      {
+        target: 'logger',
+        title: 'Prints and power',
+        body: 'Each serial line is a dashed marker at the moment it arrived. Watch for a <b>boot … BROWN-OUT</b> line: just before it, the current spikes, then drops to nothing (the reset) and the board boots again.',
+        enter: () => c.bottomTab('serial'),
+      },
+      {
+        target: 'monitor',
+        title: 'Trigger on the message',
+        body: 'The serial monitor’s <b>Trigger on a message</b> is set to <code>BROWN-OUT</code>: matching lines turn red.',
+        enter: () => {
+          c.serialTrigger('BROWN-OUT');
+          c.openSection('monitor');
+        },
+      },
+      {
+        target: 'logger-panel',
+        title: 'Armed on it',
+        body: '<b>Triggered</b>, starting on <b>a serial message</b>, <b>2 s before</b> and <b>1 s after</b>, at 1 ms intervals. Armed: the session log rolls on in memory and nothing is written until the message comes.',
+        enter: () => {
+          c.openSection('logger');
+          c.captureState('armed');
+        },
+      },
+      {
+        target: 'logger',
+        title: 'Waiting…',
+        body: 'The amber band at the right is what a capture would start with right now. When the next <code>BROWN-OUT</code> arrives, the capture takes the 2 s before it: the fault itself.',
+        task: 'Wait for the next reset (under half a minute).',
+        done: () => c.look.capture().made > 0 && !c.look.capture().capturing,
+      },
+      {
+        target: 'logger',
+        title: 'The cause, before the message',
+        body: 'The capture (blue) starts 2 s before the message (the line). Half a second before it: a <b>320 mA</b> surge for 4 ms, the voltage sagging to ~2.2 V, then the reset and the boot. In the desktop app it is a file; in the browser it downloaded.',
+        enter: () => {
+          const { last, pre } = c.look.capture();
+          if (last != null) c.loggerSpan(last - Math.min(pre, 1.2), last + 0.4);
+        },
+      },
+      {
+        target: 'logger-panel',
+        title: 'Overnight',
+        body: '<b>Again after each capture</b> keeps it armed, a file per reset. <b>Every sample</b> saves the raw 2 MS/s samples instead (as far back as the sample buffer holds). The <b>trigger</b> can start it too: a current over 100 mA would catch the surge itself.',
+      },
+    ],
+  },
   {
     id: 'ble',
     title: 'Battery life of a BLE beacon',

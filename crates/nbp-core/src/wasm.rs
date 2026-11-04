@@ -94,6 +94,12 @@ impl Pipeline {
         Ok(self.0.export_preview(&c, wall_offset, rows))
     }
 
+    /// [t0, t1) written whole (text formats): a capture to download
+    pub fn export_span(&self, cfg: JsValue, wall_offset: f64, t0: f64, t1: f64) -> Result<Vec<u8>, JsValue> {
+        let c: crate::export::ExportCfg = serde_wasm_bindgen::from_value(cfg)?;
+        self.0.export_span(&c, wall_offset, t0, t1).map_err(|e| JsValue::from_str(&e))
+    }
+
     pub fn set_buffer_samples(&mut self, n: usize) {
         self.0.set_buffer_samples(n);
     }

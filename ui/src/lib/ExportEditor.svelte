@@ -78,7 +78,7 @@
 <script lang="ts">
   // The logger's output: format, data (summaries or every sample), and the
   // fields, with a live preview and the data rate it makes.
-  import { onDestroy } from 'svelte';
+  import { getContext, onDestroy } from 'svelte';
   import type { Link } from './device';
   import { fmtTime } from './view.svelte';
 
@@ -207,9 +207,11 @@
   function fmtBytes(b: number) {
     return b >= 1e12 ? `${(b / 1e12).toFixed(1)} TB` : b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : b >= 1e6 ? `${(b / 1e6).toFixed(1)} MB` : b >= 1e3 ? `${(b / 1e3).toFixed(0)} kB` : `${b.toFixed(0)} B`;
   }
+  /** in a popped-out window (Section.svelte): room to lay the fields out wide */
+  const floating = getContext<(() => boolean) | undefined>('section-floating') ?? (() => false);
 </script>
 
-<div class="ed" class:disabled>
+<div class="ed" class:disabled class:wide={floating()}>
   <label>
     Format
     <select value={out.kind} onchange={(e) => setKind((e.currentTarget as HTMLSelectElement).value as OutKind)} {disabled}>
@@ -396,6 +398,11 @@
     display: flex;
     flex-direction: column;
     gap: 6px;
+  }
+  /* in a popped-out window: the field cards side by side */
+  .wide .fields {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
   }
   .field {
     border: 1px solid var(--border);

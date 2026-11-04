@@ -90,14 +90,14 @@ fn list_recordings(app: AppHandle) -> Result<Vec<files::RecFile>, String> {
 
 /// Records every sample from now on into the recordings folder; returns the file's path.
 #[tauri::command]
-async fn start_recording(app: AppHandle, state: State<'_, AppState>, header: String) -> Result<String, String> {
+async fn start_recording(app: AppHandle, state: State<'_, AppState>, header: String, from: Option<f64>) -> Result<String, String> {
     if state.recording.lock().unwrap().is_some() {
         return Err("already recording".into());
     }
     let conn = state.conn.lock().await;
     let c = conn.as_ref().ok_or("connect to a device to record")?;
     let path = files::recordings_dir(&app)?.join(format!("{}.{}", files::timestamp(), files::EXT));
-    let rec = files::start(path.clone(), &header, &c.pipe, &c.rec)?;
+    let rec = files::start(path.clone(), &header, from, &c.pipe, &c.rec)?;
     *state.recording.lock().unwrap() = Some(rec);
     Ok(path.display().to_string())
 }
@@ -116,14 +116,14 @@ async fn stop_recording(state: State<'_, AppState>) -> Result<Option<files::Reco
 
 /// Starts writing the session log to ~/Documents/Nebulosa/<time>.nblog; returns the path.
 #[tauri::command]
-async fn start_logging(app: AppHandle, state: State<'_, AppState>, header: String) -> Result<String, String> {
+async fn start_logging(app: AppHandle, state: State<'_, AppState>, header: String, from: Option<f64>) -> Result<String, String> {
     if state.logging.lock().unwrap().is_some() {
         return Err("already logging".into());
     }
     let conn = state.conn.lock().await;
     let c = conn.as_ref().ok_or("connect to a device to log")?;
     let path = files::recordings_dir(&app)?.join(format!("{}.{}", files::timestamp(), files::LOG_EXT));
-    let w = files::start_log(path.clone(), &header, &c.pipe, &c.log)?;
+    let w = files::start_log(path.clone(), &header, from, &c.pipe, &c.log)?;
     *state.logging.lock().unwrap() = Some(w);
     Ok(path.display().to_string())
 }
@@ -156,6 +156,7 @@ async fn start_export(
     cfg: nbp_core::export::ExportCfg,
     wall_offset: f64,
     header: String,
+    from: Option<f64>,
 ) -> Result<String, String> {
     if state.exporting.lock().unwrap().is_some() {
         return Err("already exporting".into());
@@ -166,7 +167,7 @@ async fn start_export(
     let conn = state.conn.lock().await;
     let c = conn.as_ref().ok_or("connect to a device to log")?;
     let path = files::recordings_dir(&app)?.join(format!("{}.{}", files::timestamp(), files::export_ext(&cfg.format)));
-    let w = files::start_export(path.clone(), cfg, wall_offset, &header, &c.pipe, &c.export)?;
+    let w = files::start_export(path.clone(), cfg, wall_offset, &header, from, &c.pipe, &c.export)?;
     *state.exporting.lock().unwrap() = Some(w);
     Ok(path.display().to_string())
 }

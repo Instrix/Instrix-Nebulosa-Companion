@@ -29,6 +29,7 @@ const PIPELINE = new Set([
   'set_log_interval',
   'clear_session',
   'export_preview',
+  'export_span',
   'set_buffer_samples',
   'set_calibration',
   'meta',

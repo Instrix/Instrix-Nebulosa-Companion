@@ -265,7 +265,49 @@ impl Pipeline {
     /// Starts an export: summaries (one row per interval) or every sample;
     /// chunks come from [`take_export`](Self::take_export).
     pub fn start_export(&mut self, data: crate::export::Data) {
-        self.export = Some((data, crate::export::RawTap::default(), Vec::new()));
+        self.start_export_from(data, None);
+    }
+
+    /// As [`start_export`](Self::start_export), from time `from` (s) if
+    /// given: what the buffer (every sample) or the session log (summaries)
+    /// still holds since then goes first, so a capture armed on a trigger
+    /// keeps the moments before it.
+    pub fn start_export_from(&mut self, data: crate::export::Data, from: Option<f64>) {
+        use crate::export::{Chunk, Data, RawTap};
+        let mut tap = RawTap::default();
+        let mut out = Vec::new();
+        if let Some(t) = from {
+            match data {
+                Data::Raw => self.replay(t, |ts, step, p, m| tap.sample(ts, step, p, m)),
+                Data::Summary => {
+                    let e = self.session.since(t);
+                    if !e.is_empty() {
+                        out.push(Chunk::Entries(e));
+                    }
+                }
+            }
+        }
+        self.export = Some((data, tap, out));
+    }
+
+    /// The buffer's samples from time `t0` (s) to the newest, oldest first,
+    /// a slice of time at a time (bounded memory): f(ts, step, packed, math).
+    fn replay(&self, t0: f64, mut f: impl FnMut(u64, u32, u32, f64)) {
+        const SLICE: f64 = 0.25;
+        let Some((start, end)) = self.buf.time_range() else { return };
+        let mut a = t0.max(start);
+        while a <= end {
+            let b = a + SLICE;
+            for (rt0, dt, packed, math) in self.buf.extract(a, b).runs {
+                let ts0 = (rt0 / TS_PERIOD_S).round() as u64;
+                let step = (dt / TS_PERIOD_S).round() as u32;
+                for (k, p) in packed.iter().enumerate() {
+                    let m = math.as_ref().map_or(f64::NAN, |m| m[k] as f64);
+                    f(ts0 + k as u64 * step as u64, step, *p, m);
+                }
+            }
+            a = b;
+        }
     }
 
     /// What an export with `cfg` would write for the latest `rows` rows
@@ -303,6 +345,37 @@ impl Pipeline {
         let mut out = x.header();
         x.text(&chunk, &mut out);
         String::from_utf8_lossy(&out).into_owned()
+    }
+
+    /// [t0, t1) written whole in a text format (CSV, text, JSON Lines), from
+    /// the buffer (every sample) or the session log (per interval): a capture
+    /// saved where there is no file to stream to (the browser).
+    pub fn export_span(&self, cfg: &crate::export::ExportCfg, wall_offset: f64, t0: f64, t1: f64) -> Result<Vec<u8>, String> {
+        use crate::export::{Chunk, Data, Exporter, Format, RawTap};
+        if matches!(cfg.format, Format::Hdf5) {
+            return Err("HDF5 needs the desktop app".into());
+        }
+        let mut x = Exporter::new(cfg.clone(), self.cal.clone(), wall_offset);
+        let mut out = x.header();
+        match cfg.data {
+            Data::Summary => {
+                let e: Vec<_> = self.session.since(t0).into_iter().filter(|e| e.t0 < t1).collect();
+                x.text(&Chunk::Entries(e), &mut out);
+            }
+            Data::Raw => {
+                let mut tap = RawTap::default();
+                self.replay(t0, |ts, step, p, m| {
+                    if (ts as f64) * TS_PERIOD_S < t1 {
+                        tap.sample(ts, step, p, m);
+                    }
+                });
+                tap.flush();
+                for c in &tap.done {
+                    x.text(c, &mut out);
+                }
+            }
+        }
+        Ok(out)
     }
 
     /// Chunks for the export's writer (whole raw runs of 64 Ki samples unless `flush`).
@@ -345,7 +418,17 @@ impl Pipeline {
 
     /// Starts writing the session log's entries to a file (bytes from take_log).
     pub fn start_logging(&mut self, header_json: &str) {
-        self.log = Some(LogWriter::new(header_json));
+        self.start_logging_from(header_json, None);
+    }
+
+    /// As [`start_logging`](Self::start_logging), with the session log's
+    /// entries since time `from` (s) first.
+    pub fn start_logging_from(&mut self, header_json: &str, from: Option<f64>) {
+        let mut w = LogWriter::new(header_json);
+        if let Some(t) = from {
+            w.add(&self.session.since(t));
+        }
+        self.log = Some(w);
     }
 
     pub fn take_log(&mut self) -> Vec<u8> {
@@ -378,7 +461,17 @@ impl Pipeline {
     /// Starts writing every sample from now on; the file's bytes come from
     /// [`Pipeline::take_recording`].
     pub fn start_recording(&mut self, header_json: &str) {
-        self.rec = Some(Recorder::new(header_json, &self.cal));
+        self.start_recording_from(header_json, None);
+    }
+
+    /// As [`start_recording`](Self::start_recording), with the buffer's
+    /// samples since time `from` (s) first.
+    pub fn start_recording_from(&mut self, header_json: &str, from: Option<f64>) {
+        let mut r = Recorder::new(header_json, &self.cal);
+        if let Some(t) = from {
+            self.replay(t, |ts, step, p, _| r.sample(ts, step, p));
+        }
+        self.rec = Some(r);
     }
 
     /// Bytes for the file since the last call (whole blocks unless `flush`).
@@ -586,5 +679,59 @@ mod tests {
         // a lost DATA block is counted
         pl.push(0, &data_msg(2, 0, &[]));
         assert_eq!(pl.data_stats().lost_blocks, 1);
+    }
+
+    /// A file started "from" an earlier time (a capture armed on a trigger)
+    /// gets the samples since then out of the buffer, then the new ones: each
+    /// once, in order.
+    #[test]
+    fn files_started_late_catch_up() {
+        use crate::export::{Chunk, Data};
+        let mut pl = Pipeline::new();
+        pl.set_buffer_samples(1 << 16);
+        let block = |k: u32| {
+            let s: Vec<_> = (0..400).map(|j| (((k * 400 + j) & 0x3fff) as u16, 7, false)).collect();
+            data_msg(k, if k == 0 { msg::BLK_FIRST } else { 0 }, &block_words(k as u16, 2, 0, k as u64 * 400, &s))
+        };
+        for k in 0..4 {
+            pl.push(0, &block(k));
+        }
+        let from = 1000.0 * TS_PERIOD_S;
+        pl.start_recording_from("{}", Some(from));
+        pl.start_export_from(Data::Raw, Some(from));
+        pl.push(0, &block(4));
+        pl.push(0, &block(5));
+        let want = pl.stats(from, 1.0).m.n();
+        assert_eq!(want, 1400);
+
+        let mut bytes = pl.take_recording(true);
+        bytes.extend(pl.stop_recording().unwrap().0);
+        let r = Pipeline::from_recording(&bytes).unwrap();
+        assert_eq!(r.stats(0.0, 1.0).m.n(), want);
+        let (t0, _) = r.buf.time_range().unwrap();
+        assert!((t0 - from).abs() < 1e-12, "{t0}");
+
+        let mut next = 1000u64;
+        let mut n = 0;
+        for c in pl.stop_export() {
+            if let Chunk::Raw { ts0, step, packed, .. } = c {
+                assert_eq!((ts0, step), (next, 1));
+                next += packed.len() as u64;
+                n += packed.len() as u64;
+            }
+        }
+        assert_eq!(n, want);
+
+        // the same span written whole (a browser's capture): a header and a row a sample
+        use crate::export::{ExportCfg, Field, Format, Stat, TimeFmt, What};
+        let cfg = ExportCfg {
+            data: Data::Raw,
+            format: Format::Csv { separator: ",".into(), decimal_comma: false, header: true },
+            time: TimeFmt::Relative,
+            fields: vec![Field { what: What::Time, stat: Stat::Mean, label: "t".into(), scale: 1.0, decimals: 7 }],
+        };
+        let csv = String::from_utf8(pl.export_span(&cfg, 0.0, from, 2000.0 * TS_PERIOD_S).unwrap()).unwrap();
+        assert_eq!(csv.lines().count(), 1 + 1000);
+        assert_eq!(csv.lines().nth(1).unwrap().parse::<f64>().unwrap(), 0.0);
     }
 }

@@ -92,8 +92,8 @@ async fn main() {
     let csv_path = dir.join(format!("{stamp}.csv"));
     let h5_path = dir.join(format!("{stamp}.h5"));
     let header = "{\"soak\":true}";
-    let rec = files::start(rec_path.clone(), header, &c.pipe, &c.rec).expect("record");
-    let log = files::start_log(log_path.clone(), header, &c.pipe, &c.log).expect("log");
+    let rec = files::start(rec_path.clone(), header, None, &c.pipe, &c.rec).expect("record");
+    let log = files::start_log(log_path.clone(), header, None, &c.pipe, &c.log).expect("log");
     let raw_cfg = ExportCfg {
         data: Data::Raw,
         format: Format::Csv { separator: ",".into(), decimal_comma: false, header: true },
@@ -105,7 +105,7 @@ async fn main() {
             field(What::M, "P_mW", 1.0, 4),
         ],
     };
-    let csv = files::start_export(csv_path.clone(), raw_cfg, 0.0, header, &c.pipe, &c.export).expect("csv export");
+    let csv = files::start_export(csv_path.clone(), raw_cfg, 0.0, header, None, &c.pipe, &c.export).expect("csv export");
 
     let csv_secs = (secs / 3).clamp(2, 10);
     let start = Instant::now();
@@ -134,7 +134,7 @@ async fn main() {
                 fields: vec![field(What::Time, "t", 1.0, 6), field(What::I, "I", 1.0, 9), field(What::Charge, "Q", 1.0, 9)],
             };
             h5_start_entries = m.session.entries;
-            h5 = Some(files::start_export(h5_path.clone(), h5_cfg, 1.7e9, header, &c.pipe, &c.export).expect("h5 export"));
+            h5 = Some(files::start_export(h5_path.clone(), h5_cfg, 1.7e9, header, None, &c.pipe, &c.export).expect("h5 export"));
         }
         if s >= 5 {
             let r = rss_mb();

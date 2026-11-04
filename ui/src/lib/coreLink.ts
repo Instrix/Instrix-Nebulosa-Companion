@@ -52,6 +52,9 @@ export abstract class CoreLink {
   exportPreview(cfg: ExportCfg, wallOffset: number, rows: number) {
     return this.call<string>('export_preview', cfg, wallOffset, rows);
   }
+  exportSpan(cfg: ExportCfg, wallOffset: number, t0: number, t1: number) {
+    return this.call<Uint8Array>('export_span', cfg, wallOffset, t0, t1);
+  }
   async setMath(expr: string | null) {
     return (await this.call<string | undefined>('set_math', expr ?? undefined)) ?? null;
   }

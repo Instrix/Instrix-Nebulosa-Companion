@@ -500,10 +500,190 @@ export const TUTORIALS: Showcase[] = [
       {
         target: 'logger-panel',
         title: 'Intervals and files',
-        body: 'The interval (1 ms to 10 s) sets the block size: shorter is finer and takes more memory. <b>New session</b> starts over. In the desktop app, <b>Start logging to file</b> writes the session to disk, and <b>File output</b> chooses CSV, HDF5 and more, per interval or every sample.',
-        enter: () => c.openSection('logger'),
+        body: 'The interval (1 ms to 10 s) sets the block size: shorter is finer and takes more memory. <b>New session</b> starts over. <b>Continuous</b> logging (desktop app) writes from <b>Start</b> until you stop; <b>Triggered</b> waits for an event and saves the moments around it — the next tutorial. <b>File output</b> chooses CSV, HDF5 and more, per interval or every sample.',
+        enter: async () => {
+          await c.capture({ mode: 'continuous' });
+          c.openSection('logger');
+        },
       },
     ],
+  },
+  {
+    kind: 'tutorial',
+    id: 't-windows',
+    title: 'Bigger panels',
+    blurb: 'Open a busy settings section in its own window: everything at once, moved off the plots, changed while you watch.',
+    features: ['⤢ Own window', 'Move / resize', 'Live', 'Dock'],
+    scenario: 'iot',
+    steps: (c) => {
+      let snap = { x: 0, y: 0, w: 0, h: 0, level: 0 };
+      const w = () => c.look.window('trigger');
+      return [
+        {
+          title: 'Bigger panels',
+          body: 'Some sections have a lot in them — the trigger, the logger, the file format, the serial monitor, the math channel. Each has a <b>⤢</b> on its heading that opens it in its own window, bigger and movable, while the plots stay live beside it.',
+          enter: () => {
+            c.dock('trigger');
+            c.mode('scope');
+            c.trigger({ mode: 'normal', source: 'i', kind: 'edge', slope: 'rise', level: 0.015, position: 0.3 });
+            c.live(0.1);
+            c.openSection('trigger');
+          },
+        },
+        {
+          target: 'trigger',
+          title: 'Pop it out',
+          body: 'The Trigger section, in the sidebar. Its <b>⤢</b> is at the right of its heading, beside the <b>?</b>.',
+          task: 'Click <b>⤢</b> on the Trigger heading.',
+          done: () => w() != null,
+        },
+        {
+          target: 'win-trigger',
+          title: 'Everything at once',
+          body: 'Wider, the settings flow into columns, and the extras (noise, holdoff, filter) are unfolded. A sketch shows what the trigger fires on — try another <b>Type</b> or <b>Edge</b> and watch it change. The sidebar keeps a line to bring it back.',
+        },
+        {
+          target: 'win-trigger',
+          title: 'Out of the way',
+          body: 'The window floats over the app. Put it where it doesn’t hide what you’re looking at.',
+          task: 'Drag the window by its <b>title bar</b>.',
+          enter: () => {
+            const r = w();
+            if (r) snap = { ...snap, x: r.x, y: r.y };
+          },
+          done: () => {
+            const r = w();
+            return !!r && Math.hypot(r.x - snap.x, r.y - snap.y) > 30;
+          },
+        },
+        {
+          target: 'plots',
+          title: 'Still live',
+          body: 'The plots go on as you change settings. The dashed line is the trigger level: change it in the window, or drag the line on the plot — the window follows.',
+          task: 'Change the <b>Level</b>, in the window or by dragging the line.',
+          enter: () => {
+            snap = { ...snap, level: c.look.trig.level };
+          },
+          done: () => Math.abs(c.look.trig.level - snap.level) > 1e-9,
+        },
+        {
+          target: 'win-trigger',
+          title: 'Any size',
+          body: 'Its bottom-right corner resizes it; the columns rearrange to fit.',
+          task: 'Drag the window’s <b>bottom-right corner</b>.',
+          enter: () => {
+            const r = w();
+            if (r) snap = { ...snap, w: r.w, h: r.h };
+          },
+          done: () => {
+            const r = w();
+            return !!r && (Math.abs(r.w - snap.w) > 10 || Math.abs(r.h - snap.h) > 10);
+          },
+        },
+        {
+          target: 'win-trigger',
+          title: 'Put it back',
+          body: '<b>⤡</b> (or <kbd>Esc</kbd> in the window) puts it back in the sidebar. A window reopens where you left it, and stays open across restarts until you dock it.',
+          task: 'Click <b>⤡</b> in the window’s title bar.',
+          done: () => w() == null,
+        },
+        {
+          target: 'sidebar',
+          title: 'The others',
+          body: 'The same <b>⤢</b> is on the <b>Logger</b>, <b>File output</b>, <b>Serial monitor</b> and <b>Math channel</b> sections. <kbd>Ctrl</kbd> <kbd>K</kbd> › <i>… in its own window</i> opens any of them from the keyboard. Several can be open at once; a click brings one to the front.',
+        },
+      ];
+    },
+  },
+  {
+    kind: 'tutorial',
+    id: 't-capture',
+    title: 'Catch a rare event',
+    blurb: 'A rolling window that saves only when the trigger fires: set the trigger by eye on the Logger, watch it, arm it, and get the moments before and after.',
+    features: ['Triggered capture', 'Pre-trigger', 'Drag the level', 'Watch / Arm'],
+    scenario: 'rare',
+    steps: (c) => {
+      let snap = { level: 0, count: 0 };
+      return [
+        {
+          title: 'Catch a rare event',
+          body: 'The demo device is a sensor with a fault: once in a while, every 10 to 30 s, its radio shorts, the supply sags and the board resets. Logging for hours to find a few seconds is a waste; a <b>triggered capture</b> keeps a rolling window in memory and saves only when the trigger fires — with what came <i>before</i> it.',
+          enter: async () => {
+            c.trigger({ mode: 'roll', log: false });
+            await c.capture({ mode: 'continuous', source: 'trigger', pre: 2, post: 2, again: false, interval: 0.01, data: 'summary' });
+            c.captureState('idle');
+            await c.newSession();
+            c.mode('logger');
+            c.openSection('logger');
+          },
+        },
+        {
+          target: 'log-start',
+          title: 'Two ways to log',
+          body: '<b>Continuous</b> writes from Start until Stop. <b>Triggered</b> writes nothing until an event, then saves from a while before it.',
+          task: 'Click <b>◎ Triggered</b>.',
+          done: () => c.look.capture().mode === 'triggered',
+        },
+        {
+          target: 'capture-trigger',
+          title: 'The trigger',
+          body: 'The same trigger as the Scope’s, with the same settings: a source, a type, a level. It starts at a <b>rising edge</b> on current through <b>10 mA</b>.',
+          enter: () => c.trigger({ source: 'i', kind: 'edge', slope: 'rise', level: 0.01, hysteresis: 0, holdoff: 0, filter: 0 }),
+        },
+        {
+          target: 'capture-status',
+          title: 'Watch it first',
+          body: '<b>Watch</b> runs the trigger and shows what it does on the plots, without writing anything: a <b>▼</b> for each event, the level as a dashed line.',
+          task: 'Click <b>▶ Watch</b>.',
+          done: () => c.look.capture().state !== 'idle',
+        },
+        {
+          target: 'logger',
+          title: 'Too eager',
+          body: 'At 10 mA every radio burst (25 mA, twice a second) fires it: a ▼ on each. Those are normal. The fault pulls over 300 mA; set the level above the bursts. The line can be dragged, like the Scope’s.',
+          task: '<b>Drag the dashed line</b> on the current plot up above the bursts (over 50 mA), or type <code>100m</code> in Level.',
+          done: () => c.look.trig.level > 0.04,
+        },
+        {
+          target: 'logger',
+          title: 'Wait for the fault',
+          body: 'Now nothing fires during normal work. The next brown-out comes within half a minute: a tall spike, a drop to nothing (the reset), then the boot. ⌖ beside Level also sets it: click it, then a point on a plot.',
+          task: 'Wait for a <b>▼</b> on a fault.',
+          enter: () => {
+            snap = { level: c.look.trig.level, count: c.look.trig.count };
+          },
+          done: () => c.look.trig.count > snap.count,
+        },
+        {
+          target: 'capture-window',
+          title: 'Before and after',
+          body: '<b>Before</b>: how much from before the trigger a capture starts with. It comes out of memory — the sample buffer for every sample, the session log per interval — and the shaded band at the right of the plots shows it. <b>After</b>: how long it goes on.',
+          enter: () => c.capture({ pre: 2, post: 2 }),
+        },
+        {
+          target: 'capture-status',
+          title: 'Arm',
+          body: 'Armed, the next trigger starts a capture. Leave it running overnight if the fault is rarer.',
+          task: 'Click <b>◎ Arm</b>.',
+          enter: () => {
+            snap = { ...snap, count: c.look.capture().made };
+          },
+          done: () => c.look.capture().state === 'armed' || c.look.capture().made > snap.count,
+        },
+        {
+          target: 'logger',
+          title: 'Captured',
+          body: 'When the fault fires, the capture starts 2 s before it and ends 2 s after: the blue span on the plots, with the trigger as a line. In the desktop app it is a file in Documents/Nebulosa; in the browser it downloads.',
+          task: 'Wait for the next fault.',
+          done: () => c.look.capture().made > snap.count && !c.look.capture().capturing,
+        },
+        {
+          target: 'logger-panel',
+          title: 'More',
+          body: '<b>Again after each capture</b> arms again after each one, a file each. <b>Starts on</b> can also be a <b>serial message</b> — the board’s own error print (the showcase <i>Catch a brown-out reset</i>). <b>Every sample</b> saves the raw samples, as far back as the sample buffer holds.',
+        },
+      ];
+    },
   },
   {
     kind: 'tutorial',

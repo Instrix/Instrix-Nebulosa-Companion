@@ -56,6 +56,8 @@ export class TriggerState {
   mode = $state<TrigMode>('roll');
   /** detect and log events in Roll mode too */
   log = $state(false);
+  /** the Logger's triggered capture is watching or armed: detect, whatever the Scope's mode */
+  watch = $state(false);
   source = $state<Signal>('i');
   kind = $state<KindType>('edge');
   slope = $state<'rise' | 'fall' | 'both'>('rise');
@@ -127,7 +129,7 @@ export class TriggerState {
   }
 
   get detecting() {
-    return this.mode !== 'roll' || this.log;
+    return this.mode !== 'roll' || this.log || this.watch;
   }
 
   kindCfg(): TriggerKind {
