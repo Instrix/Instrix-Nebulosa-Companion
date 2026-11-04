@@ -2065,7 +2065,9 @@
         </div>
       {/if}
       <div class="mon-grid">
-        <label>Baud <input type="number" bind:value={serialCfg.baud} disabled={monitor.open} /></label>
+        <label>Baud <input type="number" list="baud-presets" bind:value={serialCfg.baud} disabled={monitor.open} />
+          <datalist id="baud-presets">{#each [9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600] as b (b)}<option value={b}></option>{/each}</datalist>
+        </label>
         <label>Data <select bind:value={serialCfg.dataBits} disabled={monitor.open}>{#each [5, 6, 7, 8] as b (b)}<option value={b}>{b}</option>{/each}</select></label>
         <label>Parity <select bind:value={serialCfg.parity} disabled={monitor.open}><option value="none">none</option><option value="even">even</option><option value="odd">odd</option></select></label>
         <label>Stop <select bind:value={serialCfg.stopBits} disabled={monitor.open}><option value={1}>1</option><option value={2}>2</option></select></label>
@@ -2080,6 +2082,9 @@
         {monitor.open ? '■ Disconnect' : isNative ? 'Open port' : 'Open port (Web Serial)'}
       </button>
       {#if monitor.error}<p class="error small">{monitor.error}</p>{/if}
+      {#if monitor.open}
+        <p class="mon-status"><span class="dot ok"></span>{monitor.handle?.name ?? 'open'} · ↓{fmtBytesSize(monitor.bytesIn)} ↑{fmtBytesSize(monitor.bytesOut)} · {monitor.annotations.length} msg</p>
+      {/if}
 
       {#if monitor.open}
         <div class="mon-send">
@@ -2093,6 +2098,7 @@
         <summary>Line handling and trigger</summary>
         <label>Split received on <select bind:value={serialCfg.rxNewline}><option value="any">any (CR / LF / CRLF)</option><option value="lf">\n</option><option value="cr">\r</option><option value="crlf">\r\n</option></select></label>
         <label class="mon-chk"><input type="checkbox" bind:checked={serialCfg.echo} /> Echo sent lines on the log</label>
+        <label class="mon-chk"><input type="checkbox" bind:checked={serialCfg.clearOnConnect} /> Clear the list when the port opens</label>
         <label class="mon-chk"><input type="checkbox" bind:checked={serialCfg.trigger.on} /> Trigger on a message</label>
         {#if serialCfg.trigger.on}
           <div class="mon-send">
@@ -2104,14 +2110,21 @@
         {/if}
       </details>
 
+      {#if monitor.open}
+        <div class="mon-row">
+          <button class="ghost small" class:on={monitor.paused} onclick={() => (monitor.paused = !monitor.paused)} title="Freeze the list; the port keeps receiving">{monitor.paused ? '▶ Resume' : '⏸ Pause'}</button>
+          <span class="muted small">{monitor.annotations.length} msg{monitor.paused ? ' · frozen' : ''}</span>
+        </div>
+      {/if}
       {#if monitor.annotations.length}
         <div class="mon-list">
           {#each monitor.annotations.slice(-200).reverse() as a (a.wall)}
-            <div class="mon-msg" class:trig={a.kind === 'trigger'} class:tx={a.kind === 'tx'}><button class="mon-jump" onclick={() => openInScope(a.t)} title="Open this moment in the scope">{new Date(a.wall ?? 0).toLocaleTimeString()}</button> <span>{monitorHex ? toHexLine(a.text) : a.text}</span></div>
+            <div class="mon-msg" class:trig={a.kind === 'trigger'} class:tx={a.kind === 'tx'}>{#if serialCfg.timestamps}<button class="mon-jump" onclick={() => openInScope(a.t)} title="Open this moment in the scope">{new Date(a.wall ?? 0).toLocaleTimeString()}</button>{/if} <span>{monitorHex ? toHexLine(a.text) : a.text}</span></div>
           {/each}
         </div>
         <div class="mon-row">
           <label class="mon-chk"><input type="checkbox" bind:checked={monitorHex} /> Hex</label>
+          <label class="mon-chk"><input type="checkbox" bind:checked={serialCfg.timestamps} /> Time</label>
           <span class="spacer"></span>
           <button class="ghost small" onclick={saveMessages}>Save…</button>
           <button class="ghost small" onclick={() => monitor.clear()}>Clear</button>
@@ -2728,6 +2741,19 @@
   }
   .mon-row .spacer {
     flex: 1;
+  }
+  .mon-status {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    margin: 0;
+    font: 11px ui-monospace, monospace;
+    color: var(--muted);
+  }
+  .mon-status .dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
   }
   .mon-row select {
     flex: 1;

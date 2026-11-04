@@ -22,6 +22,10 @@ export interface SerialConfig {
   txNewline: 'none' | 'lf' | 'cr' | 'crlf';
   /** show what you send in the monitor too */
   echo: boolean;
+  /** clear the message list when a port opens */
+  clearOnConnect: boolean;
+  /** show a timestamp on each message */
+  timestamps: boolean;
   /** raise a highlighted marker when a received line matches */
   trigger: {
     on: boolean;
@@ -44,6 +48,8 @@ export const defaultSerialConfig: SerialConfig = {
   rxNewline: 'any',
   txNewline: 'lf',
   echo: true,
+  clearOnConnect: false,
+  timestamps: true,
   trigger: { on: false, pattern: '', regex: false, hold: false },
 };
 
@@ -136,6 +142,11 @@ export class SerialMonitor {
   error = $state('');
   /** how many received lines have matched the trigger */
   matches = $state(0);
+  /** bytes seen since connect */
+  bytesIn = $state(0);
+  bytesOut = $state(0);
+  /** frozen: keep the stream but stop adding to the list */
+  paused = $state(false);
   readonly cap = 5000;
 
   private rxBuf = '';
@@ -157,6 +168,9 @@ export class SerialMonitor {
     this.error = '';
     try {
       this.rxBuf = '';
+      this.bytesIn = 0;
+      this.bytesOut = 0;
+      if (this.cfg().clearOnConnect) this.clear();
       this.handle = await openPort(this.cfg(), (b) => this.onBytes(b), path);
     } catch (e) {
       this.error = String(e instanceof Error ? e.message : e);
@@ -164,9 +178,11 @@ export class SerialMonitor {
   }
 
   private onBytes(b: Uint8Array) {
+    this.bytesIn += b.length;
     this.rxBuf += this.dec.decode(b, { stream: true });
     const [lines, rest] = splitLines(this.rxBuf, this.cfg().rxNewline);
     this.rxBuf = rest;
+    if (this.paused) return; // frozen: drop lines, keep the byte count
     for (const line of lines) if (line.length) this.rx(line);
   }
 
@@ -196,6 +212,7 @@ export class SerialMonitor {
     const bytes = new TextEncoder().encode(text + EOL[this.cfg().txNewline]);
     try {
       await this.handle.write(bytes);
+      this.bytesOut += bytes.length;
       if (this.cfg().echo) this.push({ t: this.now(), text: `» ${text}`, wall: Date.now(), kind: 'tx' });
     } catch (e) {
       this.error = String(e);
