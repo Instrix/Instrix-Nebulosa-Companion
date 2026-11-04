@@ -508,6 +508,11 @@
       body: 'Every marker with its measurements; the trigger’s events with their width and charge. Click one to go to it; right-click for more.',
     },
     {
+      target: 'config',
+      title: 'Save your setup',
+      body: 'The <b>⚙</b> button keeps <b>configurations</b>: save the current settings as a named profile, apply one, pick one to load on boot, or share a file and apply only part of it (just the trigger, say). Set up the bench once, then recall it with a click.',
+    },
+    {
       target: 'help',
       title: 'Help is here',
       body: 'Getting started, keys and mouse, troubleshooting, about, and this walkthrough again. <b>Learn</b>, next to it: hands-on tutorials (markers, triggers, events, the meter, math, analysis, the logger) and showcases of real measurements, on the demo device. <b>Aa</b> next to it makes the UI bigger or smaller; ◧ ◨ hide the side panels.',
@@ -2112,7 +2117,7 @@
         {/if}
       {/if}
       <button class="ghost" onclick={() => (showcasesOpen = true)} title="Tutorials and showcases: hands-on lessons and real measurements on the demo device" data-tour="showcases">Learn</button>
-      <button class="ghost side-btn" onclick={() => (configOpen = true)} title="Configurations: save, load and apply setting profiles" aria-label="Configurations">⚙</button>
+      <button class="ghost side-btn" onclick={() => (configOpen = true)} title="Configurations: save, load and apply setting profiles" aria-label="Configurations" data-tour="config">⚙</button>
       <button class="ghost side-btn" onclick={(e) => scaleMenu(e)} title="Appearance: UI scale (Ctrl + / −), theme" aria-label="UI scale"
         >Aa{#if canScale && uiScale.value !== 1}<small class="scale-pct">{Math.round(uiScale.value * 100)}%</small>{/if}</button
       >
