@@ -25,6 +25,14 @@
     trig.mode = m;
   }
 
+  // the help's snapshot shows every option, even those this mode hides
+  let preview = $state(false);
+  $effect(() => {
+    const on = (e: Event) => (preview = (e as CustomEvent<string | null>).detail === 'trigger');
+    addEventListener('nebulosa:help-preview', on);
+    return () => removeEventListener('nebulosa:help-preview', on);
+  });
+
   function level50() {
     onlevel50();
   }
@@ -41,7 +49,7 @@
       <input type="checkbox" bind:checked={trig.log} /> Log events
     </label>
   {/if}
-  {#if trig.detecting}
+  {#if trig.detecting || preview}
     {@const unit = SIGNAL_INFO[trig.source].unit}
     <div class="axis">
       <span>Source</span>
@@ -143,13 +151,13 @@
       </label>
     </details>
 
-    {#if trig.mode !== 'roll'}
+    {#if trig.mode !== 'roll' || preview}
       <label>
         Position {Math.round(trig.position * 100)} % pre-trigger
         <input type="range" min="0.1" max="0.9" step="0.05" bind:value={trig.position} />
       </label>
     {/if}
-    {#if trig.mode === 'single'}
+    {#if trig.mode === 'single' || preview}
       <button class="primary" onclick={onarm}>Arm</button>
     {/if}
   {/if}

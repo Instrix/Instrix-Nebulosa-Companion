@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { ask } from '../ask';
   // The board: its power inputs and USB-PD contract, the analog front end's
   // supplies (off: the ADC reads nothing real), its clock, the self-tests
   // and the rest of its status. Polled every 2 s.
@@ -109,7 +110,7 @@
   const offers12 = $derived(pdos.find((p) => p.mv >= 12000 && p.mv <= 15000));
 
   async function requestPd(mv: number) {
-    if (streaming && !confirm('Changing the USB-C voltage needs the stream stopped. Stop it?')) return;
+    if (streaming && !(await ask('Changing the USB-C voltage needs the stream stopped. Stop it?'))) return;
     if (streaming) await onstop();
     await act(() => bd.set(dev, bd.SET.PD_MV, mv));
     if (!error) onnote(`USB-C: asked the charger for ${(mv / 1000).toFixed(0)} V`);
@@ -126,7 +127,7 @@
   /** the stream stops for the tests (they take the buses) and starts again after */
   async function runTests() {
     const wasStreaming = streaming;
-    if (wasStreaming && !confirm('The self-tests stop the stream for a few seconds (it starts again after). Run them?')) return;
+    if (wasStreaming && !(await ask('The self-tests stop the stream for a few seconds (it starts again after). Run them?'))) return;
     showTests = true;
     if (wasStreaming) await onstop();
     error = '';

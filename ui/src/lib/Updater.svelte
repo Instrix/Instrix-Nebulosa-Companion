@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { ask } from './ask';
   // Software update: what runs and what's in the two flash slots; install a
   // firmware image (.nbfw) or a gateware (.bit / .bin); revert the gateware;
   // the ROM bootloader for recovery.
@@ -68,7 +69,7 @@
   async function installIt() {
     if (!file) return;
     const what = file.kind === 'firmware' ? 'The board restarts to install it.' : 'The board tests it on the FPGA and keeps the old one if it fails.';
-    if (!confirm(`Install ${file.name}?\n\n${what}`)) return;
+    if (!(await ask(`Install ${file.name}?\n\n${what}`))) return;
     busy = true;
     cancelled = false;
     error = '';
@@ -93,7 +94,7 @@
   }
 
   async function revertIt() {
-    if (!confirm('Make the previous gateware (the other slot) active again?')) return;
+    if (!(await ask('Make the previous gateware (the other slot) active again?'))) return;
     busy = true;
     error = '';
     try {
@@ -108,7 +109,7 @@
   }
 
   async function recoveryIt() {
-    if (!confirm('Restart the board into its ROM USB bootloader (WCH ISP)?\n\nIt leaves this app; flash it with a WCH tool, or power-cycle to come back.')) return;
+    if (!(await ask('Restart the board into its ROM USB bootloader (WCH ISP)?\n\nIt leaves this app; flash it with a WCH tool, or power-cycle to come back.'))) return;
     await up.recovery(dev);
     onrestart();
   }

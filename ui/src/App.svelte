@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { ask } from './lib/ask';
   import { onMount, tick, untrack } from 'svelte';
   import Scope, { SIGNAL_INFO, mathInfo, type AxisCfg, type ScopeSpot, type TraceCfg } from './lib/Scope.svelte';
   import ContextMenu from './lib/ContextMenu.svelte';
@@ -267,7 +268,7 @@
       const [t0, t1] = exportSpan();
       const n = await native.countSamples(t0, t1);
       if (!n) throw new Error('no samples in the span');
-      if (n > 5e6 && !confirm(`${(n / 1e6).toFixed(1)} M samples, about ${fmtBytesSize(n * 60)} of CSV. Export?`)) return;
+      if (n > 5e6 && !(await ask(`${(n / 1e6).toFixed(1)} M samples, about ${fmtBytesSize(n * 60)} of CSV. Export?`))) return;
       const path = await native.pickSave(`${recDir || '.'}/${stamp()}.csv`, 'CSV', 'csv');
       if (!path) return;
       const rows = await native.exportCsv(t0, t1, path);
@@ -993,15 +994,18 @@
   let rawByLogger = false;
   let diskFree = $state<number | null>(null);
 
-  async function changeLogInterval(iv: number) {
-    if (store.session.has_data && !confirm('A new interval starts the session log over. Go on?')) return;
+  async function changeLogInterval(iv: number, sel?: HTMLSelectElement) {
+    if (store.session.has_data && !(await ask('A new interval starts the session log over. Go on?'))) {
+      if (sel) sel.value = String(logInterval); // cancelled: show the interval still in use
+      return;
+    }
     logInterval = iv;
     save('nebulosa.logInterval', iv);
     await activeLink?.setLogInterval(iv);
   }
 
   async function newSession() {
-    if (!confirm('Clear the session log and start over?')) return;
+    if (!(await ask('Clear the session log and start over?'))) return;
     await activeLink?.clearSession();
     lv = { follow: true, last: 0, t0: 0, t1: 0 };
   }
@@ -2283,7 +2287,7 @@
     <Section id="logger" icon="logger" title="Logger" tour="logger-panel" summary={logging?.active || exporting ? '● logging to file' : `${fmtTime(logInterval)} intervals`}>
       <label title="Per interval: min, max, mean and σ of every signal. In memory it stays bounded: older intervals merge 10×, then 100×.">
         Interval <span class="muted small">· ~{fmtBytesSize(sess.bytes)} in memory</span>
-        <select value={logInterval} onchange={(e) => changeLogInterval(Number((e.currentTarget as HTMLSelectElement).value))}>
+        <select value={logInterval} onchange={(e) => changeLogInterval(Number(e.currentTarget.value), e.currentTarget)}>
           {#each LOG_INTERVALS as iv (iv)}<option value={iv}>{fmtTime(iv)}</option>{/each}
         </select>
       </label>

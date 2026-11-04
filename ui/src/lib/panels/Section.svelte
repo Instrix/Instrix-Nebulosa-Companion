@@ -4,6 +4,7 @@
   import type { Snippet } from 'svelte';
   import Icon from './Icon.svelte';
   import { SECTION_HELP } from './sectionHelp';
+  import SectionHelpDialog from './SectionHelpDialog.svelte';
 
   let {
     id,
@@ -67,18 +68,7 @@
   // the "?": a quick rundown of this section's options
   const help = $derived(SECTION_HELP[id]);
   let helpOpen = $state(false);
-  /** shown over everything: moved to <body>, out of the sidebar's scrolling */
-  function portal(node: HTMLElement) {
-    document.body.appendChild(node);
-    return { destroy: () => node.remove() };
-  }
-  function onHelpKey(e: KeyboardEvent) {
-    if (helpOpen && e.key === 'Escape') {
-      e.stopPropagation();
-      e.preventDefault();
-      helpOpen = false;
-    }
-  }
+  let secEl = $state<HTMLElement>();
 
   function toggle() {
     open = !open;
@@ -90,7 +80,7 @@
   }
 </script>
 
-<section class="sec" class:open data-tour={tour} data-sec={id}>
+<section class="sec" class:open data-tour={tour} data-sec={id} bind:this={secEl}>
   <div class="head">
     <button class="toggle" onclick={toggle} aria-expanded={open} title={open ? 'Fold' : 'Unfold'}>
       <span class="chev" aria-hidden="true">›</span>
@@ -109,34 +99,8 @@
   </div>
 </section>
 
-<svelte:window onkeydowncapture={onHelpKey} />
-
-{#if helpOpen && help}
-  <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <div class="hbackdrop" role="presentation" use:portal onclick={() => (helpOpen = false)}>
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <div class="hdialog" role="dialog" aria-label="Help: {title}" tabindex="-1" onclick={(e) => e.stopPropagation()}>
-      <header>
-        {#if icon}<Icon name={icon} />{/if}
-        <h3>{title}</h3>
-        <button class="ghost small hclose" onclick={() => (helpOpen = false)} aria-label="Close">✕</button>
-      </header>
-      <p class="intro">{help.intro}</p>
-      <dl>
-        {#each help.items as it (it.name)}
-          <dt>{it.name}</dt>
-          <dd>{it.text}</dd>
-        {/each}
-      </dl>
-      {#if help.tips?.length}
-        <h4>How to use</h4>
-        <ul>
-          {#each help.tips as t (t)}<li>{t}</li>{/each}
-        </ul>
-      {/if}
-      <p class="more muted">More in Help (? or F1) and the user manual.</p>
-    </div>
-  </div>
+{#if helpOpen && help && secEl}
+  <SectionHelpDialog sec={secEl} {id} {title} {icon} {help} onclose={() => (helpOpen = false)} />
 {/if}
 
 <style>
@@ -245,74 +209,5 @@
   .help:hover {
     color: var(--accent);
     border-color: var(--accent);
-  }
-  .hbackdrop {
-    position: fixed;
-    inset: 0;
-    background: #0008;
-    display: grid;
-    place-items: center;
-    z-index: 70;
-  }
-  .hdialog {
-    width: min(540px, 94vw);
-    max-height: 86vh;
-    overflow: auto;
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: var(--r-lg);
-    padding: 14px 18px 16px;
-    color: var(--text);
-    font-size: 13px;
-    line-height: 1.45;
-  }
-  .hdialog header {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-  .hdialog header :global(.icon) {
-    color: var(--accent);
-  }
-  .hdialog h3 {
-    margin: 0;
-    font-size: 16px;
-  }
-  .hclose {
-    margin-left: auto;
-  }
-  .intro {
-    margin: 8px 0 10px;
-  }
-  .hdialog dl {
-    display: grid;
-    grid-template-columns: minmax(110px, max-content) 1fr;
-    gap: 6px 14px;
-    margin: 0;
-  }
-  .hdialog dt {
-    font-weight: 600;
-  }
-  .hdialog dd {
-    margin: 0;
-    color: var(--muted);
-  }
-  .hdialog h4 {
-    margin: 14px 0 4px;
-    font-size: 12px;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: var(--muted);
-  }
-  .hdialog ul {
-    margin: 0;
-    padding-left: 18px;
-  }
-  .hdialog li {
-    margin: 2px 0;
-  }
-  .more {
-    margin: 12px 0 0;
-    font-size: 12px;
   }
 </style>

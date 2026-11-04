@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { ask } from './ask';
   // Saved configurations: save the current settings as a named profile, apply
   // one (all of it or only chosen sections), set one to load on boot, and
   // import / export profiles as .nbcfg files. The advanced load lets you pick
@@ -51,8 +52,8 @@
     }
   }
 
-  function remove(name: string) {
-    if (!confirm(`Delete the configuration “${name}”?`)) return;
+  async function remove(name: string) {
+    if (!(await ask(`Delete the configuration “${name}”?`))) return;
     deleteConfig(name);
     refresh();
   }
