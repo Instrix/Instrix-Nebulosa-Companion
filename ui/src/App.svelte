@@ -616,7 +616,7 @@
     view.end = t + view.windowS / 2;
   }
 
-  const LOG_INTERVALS = [0.01, 0.1, 1, 10];
+  const LOG_INTERVALS = [0.001, 0.01, 0.1, 1, 10];
   let logInterval = $state(stored('nebulosa.logInterval', 0.1, (v) => LOG_INTERVALS.includes(v)));
   let logging = $state<Meta['logging'] | null>(null);
   let logPath = $state('');
@@ -1723,7 +1723,7 @@
   <main bind:this={mainEl}>
     {#if appMode === 'logger'}
       <div class="logger-wrap">
-        <LoggerView {store} session={sess} {signals} {axes} {trace} {wallOffset} bind:lv onopen={openInScope} />
+        <LoggerView {store} session={sess} {signals} {axes} {trace} {wallOffset} bind:lv onopen={openInScope} intervals={LOG_INTERVALS} oninterval={changeLogInterval} />
       </div>
     {:else}
     <div class="strip" data-tour="strip">

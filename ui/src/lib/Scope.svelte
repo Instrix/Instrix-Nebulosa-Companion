@@ -73,6 +73,7 @@
   import { fmtSI, prefixFor } from './si';
   import type { TriggerState } from './trigger.svelte';
   import { drag as dragAct, store as save } from './drag';
+  import HoverTip, { type TipRow } from './HoverTip.svelte';
 
   let {
     store,
@@ -150,6 +151,8 @@
   let root: HTMLDivElement;
   let hosts: Record<string, HTMLDivElement> = $state({});
   let plots: { sig: Signal; u: uPlot }[] = [];
+  /** the plot the last drag started on */
+  let selectSrc: uPlot | null = null;
   let drawnKey = '';
   let lastDraw = 0;
   let span: [number, number] = [0, 1];
@@ -165,8 +168,26 @@
   /** the trigger's x in the marker bar, or null off screen */
   let trigX = $state<number | null>(null);
   let singleVals = $state<{ m: Marker; x: number; v: PointValue }[]>([]);
-  let readout = $state<{ t: number; v: Partial<Record<Signal, { avg: number; min: number; max: number } | null>> } | null>(
-    null,
+  let readout = $state<{
+    t: number;
+    n: number;
+    v: Partial<Record<Signal, { avg: number; min: number; max: number; sd: number } | null>>;
+  } | null>(null);
+  /** the mouse, px in the scope, for the hover box */
+  let hover = $state<{ x: number; y: number; w: number; h: number } | null>(null);
+  function onHover(e: PointerEvent) {
+    const r = root.getBoundingClientRect();
+    hover = { x: e.clientX - r.left, y: e.clientY - r.top, w: r.width, h: r.height };
+  }
+  const tipRows = $derived<TipRow[]>(
+    readout
+      ? signals.flatMap((s) => {
+          const r = readout!.v[s];
+          if (!r) return [];
+          const one = readout!.n <= 1;
+          return [{ name: SIGNAL_INFO[s].name, color: SIGNAL_INFO[s].color, unit: SIGNAL_INFO[s].unit, avg: r.avg, ...(one ? {} : { min: r.min, max: r.max, sd: r.sd }) }];
+        })
+      : [],
   );
 
   function cssVar(name: string) {
@@ -394,6 +415,8 @@
             y: { auto: true, range: yRange(sig), ...(log ? { distr: 3, log: 10 } : {}) },
           },
           legend: { show: false },
+          // room for the top and bottom y labels, so they stay off the neighbouring plots
+          padding: [12, 8, last ? 0 : 12, 0],
           cursor: { drag: { x: true, y: false, setScale: false }, points: { show: false }, sync: { key: SYNC_KEY } },
           series: [
             {},
@@ -427,7 +450,8 @@
             draw: [overlay(sig)],
             setSelect: [
               (u) => {
-                if (u.select.width > 3) {
+                // the cursor sync mirrors a selection on every plot: only the one dragged on makes the marker
+                if (u.select.width > 3 && u === selectSrc) {
                   const a = u.posToVal(u.select.left, 'x');
                   const b = u.posToVal(u.select.left + u.select.width, 'x');
                   view.hold(store);
@@ -446,10 +470,12 @@
                 const L = lod;
                 readout = {
                   t: L.t[k] - origin(),
+                  n: L.n[k] ?? 1,
                   v: Object.fromEntries(
                     signals.map((s) => {
                       const c = L.ch[s];
-                      return [s, c.avg[k] == null ? null : { avg: c.avg[k]!, min: c.min[k]!, max: c.max[k]! }];
+                      const avg = c.avg[k];
+                      return [s, avg == null ? null : { avg, min: c.min[k]!, max: c.max[k]!, sd: c.sdHi[k] != null ? c.sdHi[k]! - avg : 0 }];
                     }),
                   ),
                 };
@@ -460,6 +486,7 @@
         [[], [], [], [], [], []],
         el,
       );
+      u.over.addEventListener('mousedown', () => (selectSrc = u), { capture: true });
       u.over.addEventListener('wheel', onWheel(u), { passive: false });
       u.over.addEventListener('dblclick', onDbl(u));
       u.over.addEventListener('contextmenu', onCtx(sig, u));
@@ -740,14 +767,10 @@
     void key;
     queueMicrotask(build);
   });
-
-  function fmtVal(x: number, unit: string) {
-    const p = prefixFor(x);
-    return `${(x / p[0]).toFixed(3)} ${p[1]}${unit}`;
-  }
 </script>
 
-<div class="scope" bind:this={root}>
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div class="scope" bind:this={root} onpointermove={onHover} onpointerleave={() => (hover = null)}>
   <div class="markers">
     {#each geo as g (g.m.id)}
       {@const col = markerColor(g.m)}
@@ -817,13 +840,6 @@
     <div class="row" bind:this={rowEls[sig]} style="flex: {weights[sig]} 1 0px">
       <div class="host" bind:this={hosts[sig]}></div>
       <span class="name" style="color: var({info.color})">{info.name}</span>
-      {#if readout && readout.v[sig]}
-        {@const r = readout.v[sig]!}
-        <span class="val" style="color: var({info.color})">
-          {fmtVal(r.avg, info.unit)}
-          <small>{fmtVal(r.min, info.unit)} … {fmtVal(r.max, info.unit)}</small>
-        </span>
-      {/if}
       {#if dualStats && dualStats.vals[sig]}
         {@const d = dualStats.vals[sig]}
         {@const flip = dualStats.x > area.left + area.width * 0.7}
@@ -844,8 +860,16 @@
   {:else}
     <div class="empty">No signals shown.</div>
   {/each}
-  {#if readout}
-    <span class="t">t {fmtTime(readout.t)}</span>
+  {#if readout && hover && tipRows.length}
+    <HoverTip
+      x={hover.x}
+      y={hover.y}
+      boxW={hover.w}
+      boxH={hover.h}
+      title="t {fmtTime(readout.t)}"
+      note={readout.n > 1 ? `${readout.n.toLocaleString()} samples` : '1 sample'}
+      rows={tipRows}
+    />
   {/if}
 </div>
 
@@ -974,16 +998,22 @@
   }
   .rsplit {
     flex: none;
-    height: 6px;
-    margin: -3px 0;
+    height: 10px;
     position: relative;
     z-index: 3;
     cursor: row-resize;
     touch-action: none;
+  }
+  .rsplit::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 4px;
     border-top: 1px solid var(--scope-border);
   }
-  .rsplit:hover,
-  .rsplit:active {
+  .rsplit:hover::after,
+  .rsplit:active::after {
     border-top: 2px solid var(--accent);
   }
   .host {
@@ -991,7 +1021,6 @@
     inset: 0;
   }
   .name,
-  .val,
   .mstat,
   .mval {
     position: absolute;
@@ -1008,16 +1037,6 @@
     text-transform: uppercase;
     letter-spacing: 0.04em;
   }
-  .val {
-    top: 4px;
-    right: 12px;
-    font-size: 12px;
-  }
-  .val small {
-    font-weight: 400;
-    opacity: 0.75;
-    margin-left: 6px;
-  }
   .mstat {
     top: 26px;
     color: #fff;
@@ -1033,16 +1052,6 @@
     color: #fff;
     border: 1px solid var(--m);
     font-weight: 400;
-  }
-  .t {
-    position: absolute;
-    right: 12px;
-    bottom: 32px;
-    font: 12px ui-monospace, monospace;
-    background: #000a;
-    padding: 1px 6px;
-    border-radius: var(--r-sm);
-    pointer-events: none;
   }
   .empty {
     margin: auto;

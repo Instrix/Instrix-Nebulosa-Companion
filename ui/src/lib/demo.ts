@@ -298,11 +298,14 @@ export class DemoLink implements Link {
   private pipeline = new core.Pipeline();
   private gen = new Generator();
   private timers: ReturnType<typeof setInterval>[] = [];
+  /** STREAM_STOP pauses the data, STREAM_START resumes it (it starts streaming, like a connected board) */
+  private streaming = true;
 
   constructor(ev: LinkEvents) {
     let sent = -1;
     this.timers.push(
       setInterval(() => {
+        if (!this.streaming) return;
         for (const m of this.gen.next((RATE * TICK_MS) / 1000)) this.pipeline.push(0, m);
         const meta = this.pipeline.meta() as Meta;
         if (meta.version !== sent) {
@@ -316,6 +319,8 @@ export class DemoLink implements Link {
   private board = new FakeBoard();
 
   async request(cmd: number, payload = new Uint8Array()): Promise<Reply> {
+    if (cmd === 0x10) this.streaming = true;
+    if (cmd === 0x11) this.streaming = false;
     if ((cmd >= 0x38 && cmd <= 0x3f) || cmd === 0x10 || cmd === 0x11) return this.board.request(cmd, payload);
     if (cmd === 0x30) {
       // SET_DECIMATION: answered as applied (the synthetic data stays at 2 MS/s)

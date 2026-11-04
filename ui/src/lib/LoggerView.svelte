@@ -23,6 +23,8 @@
   import type { Lod, SampleStore } from './store';
   import { fmtSI, logSplits, prefixFor } from './si';
   import { fmtTime } from './view.svelte';
+  import { drag as dragAct, store as save } from './drag';
+  import HoverTip, { type TipRow } from './HoverTip.svelte';
 
   let {
     store,
@@ -33,6 +35,8 @@
     wallOffset,
     lv = $bindable(),
     onopen,
+    intervals = [],
+    oninterval,
   }: {
     store: SampleStore;
     /** the session log's state (reactive) */
@@ -45,6 +49,9 @@
     lv: LogView;
     /** open FPGA time t in the scope */
     onopen: (t: number) => void;
+    /** the log intervals to choose from, and a choice (it starts the session log over) */
+    intervals?: number[];
+    oninterval?: (s: number) => void;
   } = $props();
 
   const MIN_FRAME_MS = 200;
@@ -56,9 +63,66 @@
   let lastDraw = 0;
   let inflight = false;
   let raf = 0;
-  let readout = $state<{ t: number; v: Partial<Record<Signal, number | null>> } | null>(null);
+  let readout = $state<{ t: number; v: Partial<Record<Signal, { avg: number; min: number; max: number; sd: number } | null>> } | null>(null);
+  let plotsEl: HTMLDivElement;
+  /** the mouse, px in the plots, for the hover box */
+  let hover = $state<{ x: number; y: number; w: number; h: number } | null>(null);
+  function onHover(e: PointerEvent) {
+    const r = plotsEl.getBoundingClientRect();
+    hover = { x: e.clientX - r.left, y: e.clientY - r.top, w: r.width, h: r.height };
+  }
+  const tipRows = $derived<TipRow[]>(
+    readout
+      ? signals.flatMap((s) => {
+          const r = readout!.v[s];
+          return r ? [{ name: SIGNAL_INFO[s].name, color: SIGNAL_INFO[s].color, unit: SIGNAL_INFO[s].unit, ...r }] : [];
+        })
+      : [],
+  );
   /** the span on screen, FPGA time */
   let span = $state<[number, number]>([0, 1]);
+  // ---- plot heights: the splitters between the plots (as in the scope) ----
+  const WEIGHTS_KEY = 'nebulosa.loggerWeights';
+  const MIN_ROW = 60;
+  function loadWeights(): Record<Signal, number> {
+    try {
+      const w = JSON.parse(localStorage.getItem(WEIGHTS_KEY) ?? 'null');
+      if (w && w.i > 0 && w.v > 0 && w.p > 0) return { m: 1, ...w };
+    } catch {
+      /* storage unavailable */
+    }
+    return { i: 1, v: 1, p: 1, m: 1 };
+  }
+  let weights = $state<Record<Signal, number>>(loadWeights());
+  let rowEls: Record<string, HTMLDivElement> = $state({});
+  function rowSplit(a: Signal, b: Signal) {
+    let ha = 0, hb = 0, wa = 0, wb = 0;
+    return {
+      start: () => {
+        ha = rowEls[a].clientHeight;
+        hb = rowEls[b].clientHeight;
+        wa = weights[a];
+        wb = weights[b];
+      },
+      move: (_dx: number, dy: number) => {
+        const d = Math.max(MIN_ROW - ha, Math.min(hb - MIN_ROW, dy));
+        weights[a] = ((wa + wb) * (ha + d)) / (ha + hb);
+        weights[b] = ((wa + wb) * (hb - d)) / (ha + hb);
+      },
+      end: () => save(WEIGHTS_KEY, $state.snapshot(weights)),
+    };
+  }
+  function equalize() {
+    weights = { i: 1, v: 1, p: 1, m: 1 };
+    save(WEIGHTS_KEY, weights);
+  }
+
+  /** the time each block on screen averages */
+  let avgWin = $state(0.1);
+  /** the blocks are single samples (zoomed in on the sample buffer) */
+  let single = $state(false);
+  /** drawn from the sample buffer, not the session log */
+  let buffered = $state(false);
 
   function cssVar(n: string) {
     return getComputedStyle(root ?? document.documentElement).getPropertyValue(n).trim();
@@ -96,6 +160,16 @@
     };
   }
 
+  const steps = uPlot.paths.stepped!({ align: 1 });
+
+  /** the rows with one more at the end of the last interval, so its step has a width */
+  function closeSteps(t: number[], cols: (number | null)[][], width: number) {
+    const n = t.length;
+    if (!n || cols[0][n - 1] == null) return;
+    t.push(t[n - 1] + width);
+    for (const c of cols) c.push(c[n - 1]);
+  }
+
   function build() {
     for (const p of plots) p.u.destroy();
     plots = [];
@@ -118,8 +192,18 @@
           // wall-clock seconds: uPlot draws dates and times
           scales: { x: { time: true, auto: false }, y: { auto: true, range: yRange(sig), ...(log ? { distr: 3, log: 10 } : {}) } },
           legend: { show: false },
+          // room for the top and bottom y labels, so they stay off the neighbouring plots
+          padding: [12, 8, last ? 0 : 12, 0],
           cursor: { drag: { x: true, y: false, setScale: false }, points: { show: false }, sync: { key: 'nebulosa-logger' } },
-          series: [{}, { ...hidden }, { ...hidden }, { ...hidden }, { ...hidden }, trace.mean ? { stroke: col, width: 1.25, points: { show: () => !!lod?.raw, size: 4, fill: col } } : { ...hidden }],
+          // each logged interval is a block over its time (min..max band, the mean as a flat step), not a point
+          series: [
+            {},
+            { ...hidden, paths: steps },
+            { ...hidden, paths: steps },
+            { ...hidden, paths: steps },
+            { ...hidden, paths: steps },
+            trace.mean ? { stroke: col, width: 1.25, paths: steps, points: { show: false } } : { ...hidden },
+          ],
           bands,
           axes: [
             { ...axis, size: last ? 40 : 6, ...(last ? {} : { values: (_u: uPlot, v: number[]) => v.map(() => '') }) },
@@ -138,13 +222,25 @@
             ],
             setCursor: [
               (u) => {
-                const k = u.cursor.idx;
-                if (k == null || u.cursor.left == null || u.cursor.left < 0 || !lod) {
+                if (u.cursor.idx == null || u.cursor.left == null || u.cursor.left < 0 || !lod) {
                   readout = null;
                   return;
                 }
                 const L = lod;
-                readout = { t: L.t[k], v: Object.fromEntries(signals.map((s) => [s, L.ch[s].avg[k]])) };
+                // the interval under the cursor: the last one starting at or before it
+                const at = u.posToVal(u.cursor.left, 'x') - wallOffset;
+                let k = 0;
+                while (k + 1 < L.t.length && L.t[k + 1] <= at) k++;
+                readout = {
+                  t: L.t[k],
+                  v: Object.fromEntries(
+                    signals.map((s) => {
+                      const c = L.ch[s];
+                      const avg = c.avg[k];
+                      return [s, avg == null ? null : { avg, min: c.min[k]!, max: c.max[k]!, sd: c.sdHi[k] != null ? c.sdHi[k]! - avg : 0 }];
+                    }),
+                  ),
+                };
               },
             ],
           },
@@ -171,7 +267,8 @@
       } else {
         const at = u.posToVal(e.offsetX, 'x') - wallOffset;
         const f = e.deltaY > 0 ? 1.4 : 1 / 1.4;
-        const nw = Math.max(w * f, store.session.interval * 4);
+        // down to a few samples (the buffer has them for recent data)
+        const nw = Math.max(w * f, 2e-5);
         const frac = (at - a) / w;
         lv = { follow: false, last: lv.last, t0: at - frac * nw, t1: at + (1 - frac) * nw };
       }
@@ -206,17 +303,31 @@
     lastDraw = now;
     inflight = true;
     const bins = Math.max(50, Math.round(plots[0].u.bbox.width / devicePixelRatio));
-    store
-      .sessionLod(want[0], want[1], bins)
+    // zoomed in past the log interval on data the sample buffer still holds: draw from the buffer,
+    // down to single samples; else from the session log
+    const iv = store.session.interval;
+    const fromBuf = (want[1] - want[0]) / bins < iv && want[0] >= store.tStart && want[1] <= store.tEnd;
+    (fromBuf ? store.lod(want[0], want[1], bins) : store.sessionLod(want[0], want[1], bins))
       .then((l) => {
         lod = l;
         span = want;
-        const t = l.t.map((x) => x + wallOffset);
+        // the last block is one interval (or one bin when zoomed out) wide
+        // zoomed out, several log intervals merge into one block; from the buffer, a block is a column (or one sample)
+        const col = (want[1] - want[0]) / bins;
+        const width = fromBuf
+          ? l.raw && l.t.length > 1 ? (l.t[l.t.length - 1] - l.t[0]) / (l.t.length - 1) : col
+          : l.raw ? iv : Math.max(iv, Math.ceil(col / iv) * iv);
+        avgWin = width;
+        single = fromBuf && l.raw;
+        buffered = fromBuf;
         for (const { sig, u } of plots) {
           const c = l.ch[sig];
-          const pos = (a: (number | null)[]) => (axes[sig].log ? a.map((x) => (x != null && x > 0 ? x : null)) : a);
+          const pos = (a: (number | null)[]) => (axes[sig].log ? a.map((x) => (x != null && x > 0 ? x : null)) : [...a]);
+          const t = l.t.map((x) => x + wallOffset);
+          const cols = [pos(c.min), pos(c.max), pos(c.sdLo), pos(c.sdHi), pos(c.avg)];
+          closeSteps(t, cols, width);
           u.batch(() => {
-            u.setData([t, pos(c.min), pos(c.max), pos(c.sdLo), pos(c.sdHi), pos(c.avg)] as uPlot.AlignedData, false);
+            u.setData([t, ...cols] as uPlot.AlignedData, false);
             u.setScale('x', { min: want[0] + wallOffset, max: want[1] + wallOffset });
           });
         }
@@ -263,6 +374,15 @@
   function fmtClock(t: number) {
     return new Date((t + wallOffset) * 1000).toLocaleString();
   }
+
+  /** wall-clock time with the second's fraction, to the precision the blocks on screen need */
+  function fmtClockFine(t: number, step: number) {
+    const u = t + wallOffset;
+    const d = new Date(Math.floor(u) * 1000);
+    const digits = Math.min(7, Math.max(0, Math.ceil(-Math.log10(step)) + 1));
+    const frac = digits ? (u - Math.floor(u)).toFixed(digits).slice(1) : '';
+    return `${d.toLocaleDateString()} ${d.toLocaleTimeString([], { hour12: false })}${frac}`;
+  }
 </script>
 
 <div class="logger" bind:this={root}>
@@ -275,21 +395,45 @@
         <button class:on={lv.follow && lv.last === s} onclick={() => (lv = { follow: true, last: s, t0: 0, t1: 0 })}>{label}</button>
       {/each}
     </div>
-    <span class="mono muted">{fmtTime(span[1] - span[0])} shown · {fmtTime(session.interval)} intervals</span>
+    <span class="mono muted">{fmtTime(span[1] - span[0])} shown</span>
+    <span
+      class="avgwin"
+      title="Each block on the plots is the average of this much time; the shaded band spans its lowest to highest sample. The log interval is the shortest block the session log keeps; zoom in on recent data (still in the sample buffer) to see single samples."
+    >
+      each block =
+      {#if single}<b>1 sample</b> ({fmtTime(avgWin)}){:else}<b>{fmtTime(avgWin)}</b> average{/if}
+      {#if buffered}<span class="src">from the sample buffer</span>{/if}
+    </span>
+    {#if intervals.length && oninterval}
+      <label class="ivsel" title="The session log's interval: one min/max/mean/σ entry per interval. Changing it starts the log over.">
+        log interval
+        <select value={session.interval} onchange={(e) => oninterval(Number((e.currentTarget as HTMLSelectElement).value))}>
+          {#each intervals as s (s)}<option value={s}>{fmtTime(s)}</option>{/each}
+        </select>
+      </label>
+    {/if}
     {#if session.has_data}
       <span class="mono muted">since {fmtClock(session.t_start)}</span>
     {/if}
-    <span class="hint muted">wheel: zoom · shift+wheel: pan · drag: zoom in · double-click: all · click: open in scope</span>
+    <span class="hint muted">line: average · band: min–max · wheel: zoom (in to single samples on recent data) · shift+wheel: pan · drag: zoom in · double-click: all · click: open in scope</span>
   </div>
-  <div class="plots">
-    {#each signals as sig (sig)}
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div class="plots" bind:this={plotsEl} onpointermove={onHover} onpointerleave={() => (hover = null)}>
+    {#each signals as sig, k (sig)}
       {@const info = SIGNAL_INFO[sig]}
-      <div class="row">
+      {#if k > 0}
+        <div
+          class="rsplit"
+          role="separator"
+          aria-orientation="horizontal"
+          title="Drag to resize the plots; double-click: equal heights"
+          use:dragAct={rowSplit(signals[k - 1], sig)}
+          ondblclick={equalize}
+        ></div>
+      {/if}
+      <div class="row" bind:this={rowEls[sig]} style="flex: {weights[sig]} 1 0px">
         <div class="host" bind:this={hosts[sig]}></div>
         <span class="name" style="color: var({info.color})">{info.name}</span>
-        {#if readout && readout.v[sig] != null}
-          <span class="val" style="color: var({info.color})">{fmtSI(readout.v[sig]!, info.unit, 4)}</span>
-        {/if}
       </div>
     {:else}
       <div class="empty">No signals shown.</div>
@@ -297,7 +441,17 @@
     {#if !session.has_data}
       <div class="empty overlay">The session log fills as data arrives: one entry per {fmtTime(session.interval)}.</div>
     {/if}
-    {#if readout}<span class="t">{fmtClock(readout.t)}</span>{/if}
+    {#if readout && hover && tipRows.length}
+      <HoverTip
+        x={hover.x}
+        y={hover.y}
+        boxW={hover.w}
+        boxH={hover.h}
+        title={fmtClockFine(readout.t, avgWin)}
+        note={single ? '1 sample' : `${fmtTime(avgWin)} average`}
+        rows={tipRows}
+      />
+    {/if}
   </div>
 </div>
 
@@ -352,6 +506,28 @@
   .muted {
     color: var(--muted);
   }
+  .src {
+    margin-left: 6px;
+    color: var(--accent);
+  }
+  .ivsel {
+    display: inline-flex;
+    white-space: nowrap;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .ivsel select {
+    padding: 1px 4px;
+    font-size: 12px;
+  }
+  .avgwin {
+    font: 12px ui-monospace, monospace;
+    padding: 1px 8px;
+    border: 1px solid var(--border);
+    border-radius: var(--r-sm);
+  }
   .hint {
     margin-left: auto;
     font-size: 11px;
@@ -370,17 +546,33 @@
   }
   .row {
     position: relative;
-    flex: 1;
     min-height: 60px;
-    border-bottom: 1px solid var(--scope-border);
+  }
+  .rsplit {
+    flex: none;
+    height: 10px;
+    position: relative;
+    z-index: 3;
+    cursor: row-resize;
+    touch-action: none;
+  }
+  .rsplit::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 4px;
+    border-top: 1px solid var(--scope-border);
+  }
+  .rsplit:hover::after,
+  .rsplit:active::after {
+    border-top: 2px solid var(--accent);
   }
   .host {
     position: absolute;
     inset: 0;
   }
-  .name,
-  .val,
-  .t {
+  .name {
     position: absolute;
     font: 600 11px ui-monospace, monospace;
     padding: 1px 6px;
@@ -392,15 +584,6 @@
     top: 4px;
     left: 84px;
     text-transform: uppercase;
-  }
-  .val {
-    top: 4px;
-    right: 12px;
-  }
-  .t {
-    right: 12px;
-    bottom: 44px;
-    font-weight: 400;
   }
   .empty {
     margin: auto;
