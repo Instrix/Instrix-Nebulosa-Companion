@@ -34,7 +34,7 @@ export interface ShowcaseCtx {
   /** Analysis of the active dual marker (else the screen) on this tab, run at once; null closes it */
   analyze(tab: 'histogram' | 'cdf' | 'psd' | 'maxwindow' | null): void;
   meter(scope: 'window' | 'run' | 'selection'): void;
-  bottomTab(t: 'markers' | 'events'): void;
+  bottomTab(t: 'markers' | 'events' | 'serial'): void;
   /** unfolds a sidebar section */
   openSection(id: string): void;
   autoset(): Promise<void>;
@@ -56,7 +56,7 @@ export interface ShowcaseCtx {
     divIndex(): number;
     end(): number;
     trig: TriggerState;
-    bottomTab(): 'markers' | 'events';
+    bottomTab(): 'markers' | 'events' | 'serial';
     meterScope(): string;
     appMode(): 'scope' | 'logger' | 'sca';
     mathOn(): boolean;

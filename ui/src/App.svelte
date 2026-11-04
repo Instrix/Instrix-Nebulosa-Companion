@@ -52,6 +52,7 @@
   import Showcases from './lib/Showcases.svelte';
   import SideChannel from './lib/SideChannel.svelte';
   import SectionNav from './lib/panels/SectionNav.svelte';
+  import SerialList from './lib/SerialList.svelte';
   import ConfigDialog from './lib/ConfigDialog.svelte';
   import { CONFIG_VERSION, SECTION_IDS, listConfigs, defaultConfigName, asConfig, type Config, type SectionId } from './lib/config';
 
@@ -413,7 +414,7 @@
     }
   }
 
-  let bottomTab = $state<'markers' | 'events'>('markers');
+  let bottomTab = $state<'markers' | 'events' | 'serial'>('markers');
   let updating = $state(false);
   let helpOpen = $state(false);
   let helpTab = $state<HelpTab>('start');
@@ -733,10 +734,10 @@
     { id: 'display', icon: 'display', title: 'Display' },
     { id: 'math', icon: 'math', title: 'Math channel' },
     { id: 'calibration', icon: 'calibration', title: 'Calibration' },
+    { id: 'monitor', icon: 'monitor', title: 'Serial monitor' },
   ];
   const LOGGER_SECTIONS = [
     { id: 'logger', icon: 'logger', title: 'Logger' },
-    { id: 'monitor', icon: 'monitor', title: 'Serial monitor' },
     { id: 'output', icon: 'output', title: 'File output' },
   ];
   // only the sections actually in the sidebar for this mode (the logger ones show in Logger)
@@ -844,9 +845,17 @@
   const monitor = new SerialMonitor(
     () => store.tEnd,
     () => serialCfg,
-    () => {
-      // a trigger match freezes the logger on it, if asked
-      if (serialCfg.trigger.hold && appMode === 'logger') lv = { follow: false, last: lv.last, t0: store.tEnd - view.windowS, t1: store.tEnd };
+    (a) => {
+      // a trigger match freezes the view on it, if asked: in the Scope like a
+      // trigger (the match at the trigger position), in the Logger around it
+      if (!serialCfg.trigger.hold) return;
+      if (appMode === 'scope') {
+        view.hold(store);
+        view.end = a.t + (1 - trig.position) * view.windowS;
+      } else if (appMode === 'logger') {
+        const w = lv.follow ? (lv.last > 0 ? lv.last : 60) : lv.t1 - lv.t0;
+        lv = { follow: false, last: lv.last, t0: a.t - w / 2, t1: a.t + w / 2 };
+      }
     },
   );
   /** messages captured since this log started, for the sidecar at stop */
@@ -1518,6 +1527,24 @@
   }
 
   /** fits the screen to a marker: a dual one fills ~80 % of it, a single one is centred */
+  /** a serial message's moment in the Scope: held, at the trigger position */
+  function jumpToSerial(t: number) {
+    view.hold(store);
+    view.end = t + (1 - trig.position) * view.windowS;
+  }
+  /** a serial message's moment in the Logger: centred, the current span kept */
+  function jumpLoggerTo(t: number) {
+    const s0 = store.session;
+    const w = lv.follow ? (lv.last > 0 ? lv.last : Math.max(1, s0.t_end - s0.t_start)) : lv.t1 - lv.t0;
+    lv = { follow: false, last: lv.last, t0: t - w / 2, t1: t + w / 2 };
+  }
+  /** the newest sample's time, reactive (the store's isn't) */
+  let tEndNow = $state(0);
+  /** what relative times in the Scope's lists count from: the trigger shown, else the screen's right edge */
+  const scopeOrigin = $derived(trig.mode !== 'roll' && trig.shown != null ? trig.shown : view.live ? tEndNow : view.end);
+  let loggerMsgsOpen = $state(stored('nebulosa.loggerMsgs', 1) === 1);
+  $effect(() => save('nebulosa.loggerMsgs', loggerMsgsOpen ? 1 : 0));
+
   /** clear the markers, with an Undo toast */
   function clearMarkersUndoable() {
     if (!view.markers.length) return;
@@ -1867,6 +1894,7 @@
 
   function onMeta(m: Meta) {
     store.update(m);
+    tEndNow = m.t_end;
     sess = m.session;
     logging = m.logging;
     if (wallPending != null && (m.session.has_data || m.has_data)) {
@@ -2261,8 +2289,39 @@
       <button class="ghost" onclick={newSession} disabled={!sess.has_data}>New session</button>
     </Section>
 
+
+    <Section id="output" icon="output" title="File output" open={false} summary="{out.kind === 'native' ? 'Nebulosa log' : out.cfg.format.type.toUpperCase()} · {out.cfg.data === 'raw' ? 'every sample' : 'per interval'}">
+        <ExportEditor
+          bind:out
+          link={activeLink}
+          {wallOffset}
+          interval={logInterval}
+          {rateHz}
+          mathOn={mathInfo.on}
+          disabled={!!logging?.active || exporting}
+        />
+        {#if out.kind === 'native' && out.cfg.data === 'raw'}
+          <label>
+            Raw recording limit
+            <select bind:value={rawCapGB} disabled={!!logging?.active}>
+              {#each [1, 5, 20, 100, 500] as g (g)}<option value={g}>{g} GB ({fmtTime((g * 1e9) / 4 / (rateHz || 2e6))} at {fmtRate(rateHz || 2e6)})</option>{/each}
+            </select>
+          </label>
+        {/if}
+
+    </Section>
+    {:else}
+      <TriggerPanel {trig} {available} onlevel50={level50} onarm={() => trig.rearm(store, view)} />
+    {/if}
+
+    <SignalsPanel {available} {signals} bind:shown bind:trace bind:axes bind:bufferMB bufferChoices={BUFFER_CHOICES} {bufferS} {rateHz} onbuffer={applyBuffer} />
+
+    <MathPanel bind:draft={mathDraft} error={mathError} onapply={applyMath} onoff={mathOff} />
+
+    <CalibrationPanel bind:cal ranges={CURRENT_RANGES} note={calNote} onapply={() => applyCal()} onreset={resetCal} />
+
     <Section id="monitor" icon="monitor" title="Serial monitor" tour="monitor" open={false} summary={monitor.open ? `● ${monitor.annotations.length} msg${monitor.matches ? ` · ${monitor.matches} hit` : ''}` : 'off'}>
-      <p class="muted small">Read a serial port and mark its lines on the logger, timed to the measurements. Send, toggle RTS / DTR, trigger on a message. Saved as a <code>.serial.csv</code> next to a log.</p>
+      <p class="muted small">Read a serial port and mark its lines on the plots (Scope and Logger), timed to the measurements. Send, toggle RTS / DTR, trigger on a message. Saved as a <code>.serial.csv</code> next to a log.</p>
       {#if isNative && !monitor.open}
         <div class="mon-row">
           <select bind:value={monitorPort}>
@@ -2312,7 +2371,7 @@
             <input class="mono" placeholder={serialCfg.trigger.regex ? 'regex' : 'text to match'} bind:value={serialCfg.trigger.pattern} />
           </div>
           <label class="mon-chk"><input type="checkbox" bind:checked={serialCfg.trigger.regex} /> Regular expression</label>
-          <label class="mon-chk"><input type="checkbox" bind:checked={serialCfg.trigger.hold} /> Freeze the logger on a match</label>
+          <label class="mon-chk"><input type="checkbox" bind:checked={serialCfg.trigger.hold} /> Freeze the view on a match (Scope: like a trigger)</label>
           <p class="muted small">A match is a red marker. {monitor.matches} so far.</p>
         {/if}
       </details>
@@ -2338,35 +2397,6 @@
         </div>
       {/if}
     </Section>
-
-    <Section id="output" icon="output" title="File output" open={false} summary="{out.kind === 'native' ? 'Nebulosa log' : out.cfg.format.type.toUpperCase()} · {out.cfg.data === 'raw' ? 'every sample' : 'per interval'}">
-        <ExportEditor
-          bind:out
-          link={activeLink}
-          {wallOffset}
-          interval={logInterval}
-          {rateHz}
-          mathOn={mathInfo.on}
-          disabled={!!logging?.active || exporting}
-        />
-        {#if out.kind === 'native' && out.cfg.data === 'raw'}
-          <label>
-            Raw recording limit
-            <select bind:value={rawCapGB} disabled={!!logging?.active}>
-              {#each [1, 5, 20, 100, 500] as g (g)}<option value={g}>{g} GB ({fmtTime((g * 1e9) / 4 / (rateHz || 2e6))} at {fmtRate(rateHz || 2e6)})</option>{/each}
-            </select>
-          </label>
-        {/if}
-    </Section>
-    {:else}
-      <TriggerPanel {trig} {available} onlevel50={level50} onarm={() => trig.rearm(store, view)} />
-    {/if}
-
-    <SignalsPanel {available} {signals} bind:shown bind:trace bind:axes bind:bufferMB bufferChoices={BUFFER_CHOICES} {bufferS} {rateHz} onbuffer={applyBuffer} />
-
-    <MathPanel bind:draft={mathDraft} error={mathError} onapply={applyMath} onoff={mathOff} />
-
-    <CalibrationPanel bind:cal ranges={CURRENT_RANGES} note={calNote} onapply={() => applyCal()} onreset={resetCal} />
 
     {#if error}
       <p class="error">{error}</p>
@@ -2406,6 +2436,16 @@
     {:else if appMode === 'logger'}
       <div class="logger-wrap" data-tour="logger">
         <LoggerView bind:this={logger} {store} session={sess} {signals} {axes} {trace} {wallOffset} bind:lv onopen={openInScope} intervals={LOG_INTERVALS} oninterval={changeLogInterval} onreset={resetView} annotations={monitor.annotations} />
+      </div>
+      <div class="logger-msgs" class:open={loggerMsgsOpen} data-tour="logger-msgs">
+        <button class="msgs-head" onclick={() => (loggerMsgsOpen = !loggerMsgsOpen)} aria-expanded={loggerMsgsOpen}>
+          <span class="chev">{loggerMsgsOpen ? '▾' : '▸'}</span> Serial messages <small class="muted">{monitor.annotations.length.toLocaleString()}</small>
+        </button>
+        {#if loggerMsgsOpen}
+          <div class="msgs-body">
+            <SerialList messages={monitor.annotations} wallClock onjump={jumpLoggerTo} onclear={() => monitor.clear()} onsave={saveMessages} />
+          </div>
+        {/if}
       </div>
     {:else}
     <div class="strip" data-tour="strip">
@@ -2479,7 +2519,7 @@
       <Overview {store} {view} />
     </div>
     <div class="scope-wrap" data-tour="plots">
-      <Scope bind:this={scope} {store} {view} {signals} {axes} {trace} {trig} onmenu={scopeMenu} picking={pickTrigger} onpick={onPickTrigger} />
+      <Scope bind:this={scope} {store} {view} {signals} {axes} {trace} {trig} onmenu={scopeMenu} picking={pickTrigger} onpick={onPickTrigger} annotations={monitor.annotations} />
     </div>
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
@@ -2494,8 +2534,17 @@
       <div class="tabs">
         <button class:on={bottomTab === 'markers'} onclick={() => (bottomTab = 'markers')}>Markers <small>{view.markers.length}</small></button>
         <button class:on={bottomTab === 'events'} onclick={() => (bottomTab = 'events')}>Events <small>{trig.count.toLocaleString()}</small></button>
+        <button class:on={bottomTab === 'serial'} onclick={() => (bottomTab = 'serial')}>Serial <small>{monitor.annotations.length.toLocaleString()}</small></button>
       </div>
-      {#if bottomTab === 'events'}
+      {#if bottomTab === 'serial'}
+        <SerialList
+          messages={monitor.annotations}
+          origin={scopeOrigin}
+          onjump={jumpToSerial}
+          onclear={() => monitor.clear()}
+          onsave={saveMessages}
+        />
+      {:else if bottomTab === 'events'}
         <EventList
           {trig}
           unit={SIGNAL_INFO[trig.source].unit}
@@ -2714,6 +2763,29 @@
     flex: 1;
     min-height: 0;
     padding: 8px 12px 12px;
+  }
+  .logger-msgs {
+    flex: none;
+    padding: 0 12px 10px;
+  }
+  .msgs-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    border: 0;
+    background: none;
+    padding: 2px 0;
+    font-size: 12px;
+    color: var(--text);
+    cursor: pointer;
+  }
+  .msgs-head .chev {
+    color: var(--muted);
+    width: 10px;
+  }
+  .msgs-body {
+    height: min(180px, 24vh);
+    margin-top: 4px;
   }
   .strip {
     display: flex;

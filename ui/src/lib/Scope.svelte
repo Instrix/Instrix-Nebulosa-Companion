@@ -74,6 +74,7 @@
   import type { TriggerState } from './trigger.svelte';
   import { drag as dragAct, store as save } from './drag';
   import HoverTip, { type TipRow } from './HoverTip.svelte';
+  import type { Annotation } from './LoggerView.svelte';
 
   let {
     store,
@@ -84,6 +85,7 @@
     trig,
     onmenu,
     picking = false,
+    annotations = [],
     onpick,
   }: {
     store: SampleStore;
@@ -97,6 +99,8 @@
     /** pick mode: a left-click on a plot reports its spot (to set the trigger) */
     picking?: boolean;
     onpick?: (at: ScopeSpot) => void;
+    /** serial-monitor messages, drawn as markers on the plots */
+    annotations?: Annotation[];
   } = $props();
 
   const MIN_FRAME_MS = 33;
@@ -394,6 +398,43 @@
         ctx.setLineDash([]);
         ctx.globalAlpha = 1;
       }
+
+      // serial-monitor messages: a dashed line each, labelled on the top plot
+      if (annotations.length) {
+        const accent = cssVar('--accent');
+        const muted = cssVar('--muted');
+        const red = cssVar('--danger');
+        const t0 = u.scales.x.min!, t1 = u.scales.x.max!;
+        const labels = sig === signals[0];
+        ctx.font = `${10 * dpr}px ui-monospace, monospace`;
+        ctx.textBaseline = 'top';
+        ctx.textAlign = 'left';
+        let lastLabel = -1e9;
+        for (const a of annotations) {
+          if (a.t < t0 || a.t > t1) continue;
+          const x = xOf(a.t);
+          const col = a.kind === 'trigger' ? red : a.kind === 'tx' ? muted : accent;
+          ctx.strokeStyle = col;
+          ctx.globalAlpha = 0.85;
+          ctx.lineWidth = (a.kind === 'trigger' ? 1.75 : 1) * dpr;
+          ctx.setLineDash(a.kind === 'tx' ? [2 * dpr, 2 * dpr] : [3 * dpr, 3 * dpr]);
+          ctx.beginPath();
+          ctx.moveTo(x, top);
+          ctx.lineTo(x, top + height);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.globalAlpha = 1;
+          if (labels && x - lastLabel > 8 * dpr) {
+            const label = a.text.length > 28 ? a.text.slice(0, 27) + '…' : a.text;
+            const w = ctx.measureText(label).width;
+            ctx.fillStyle = col;
+            ctx.fillRect(x, top + 2 * dpr, w + 6 * dpr, 13 * dpr);
+            ctx.fillStyle = '#0b0c12';
+            ctx.fillText(label, x + 3 * dpr, top + 4 * dpr);
+            lastLabel = x + w + 6 * dpr;
+          }
+        }
+      }
       ctx.restore();
     };
   }
@@ -677,6 +718,7 @@
       view.divIndex,
       store.tStart,
       markersKey(),
+      `${annotations.length}`,
       signals.map((s) => `${axes[s].auto},${axes[s].min},${axes[s].max},${axes[s].log}`).join(';'),
       `${trace.mean}${trace.range}${trace.sigma}`,
       `${trig.mode},${trig.log},${trig.source},${trig.levels().join()},${trig.shown},${trig.logVersion}`,
