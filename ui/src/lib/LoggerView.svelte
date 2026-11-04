@@ -26,6 +26,8 @@
   // moment in the scope (when its samples are still in memory).
   import { onMount } from 'svelte';
   import uPlot from 'uplot';
+  import { themeVar } from './themeVar';
+  import { Glide, union } from './glide';
   import 'uplot/dist/uPlot.min.css';
   import type { Signal } from './nbp';
   import { SIGNAL_INFO, type AxisCfg, type TraceCfg } from './Scope.svelte';
@@ -69,11 +71,13 @@
     annotations?: Annotation[];
   } = $props();
 
-  const MIN_FRAME_MS = 200;
-  // redraw the overlay when the messages change
+  /** new log data redraws no faster than this, nor than twice what a redraw costs; the user's moves at once */
+  const MIN_FRAME_MS = 50;
+  // the messages changed: redraw the overlay once, next frame (a chatty port sends hundreds a second)
+  let annDirty = false;
   $effect(() => {
     void annotations.length;
-    for (const p of plots) p.u.redraw(false, false);
+    annDirty = true;
   });
   let root: HTMLDivElement;
   let hosts: Record<string, HTMLDivElement> = $state({});
@@ -149,9 +153,8 @@
   /** drawn from the sample buffer, not the session log */
   let buffered = $state(false);
 
-  function cssVar(n: string) {
-    return getComputedStyle(root ?? document.documentElement).getPropertyValue(n).trim();
-  }
+  // theme colours, kept per theme (themeVar.ts): read on every frame
+  const cssVar = themeVar;
 
   /** the span lv describes, now */
   function wanted(): [number, number] {
@@ -358,14 +361,18 @@
   function onWheel(u: uPlot) {
     return (e: WheelEvent) => {
       e.preventDefault();
-      const [a, b] = span;
+      // from where the view is going, not where it was last drawn: quick wheel
+      // events each add up instead of starting from the same place
+      const [a, b] = wanted();
       const w = b - a;
+      // by distance: a mouse notch (~100 px) is a step, a trackpad's small deltas a little each
+      const k = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 400 : 1;
       if (e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
-        const d = Math.sign(e.shiftKey ? e.deltaY : e.deltaX) * w * 0.15;
+        const d = (((e.shiftKey ? e.deltaY || e.deltaX : e.deltaX) * k) / Math.max(1, u.over.clientWidth)) * w;
         lv = { follow: false, last: lv.last, t0: a + d, t1: b + d };
       } else {
         const at = u.posToVal(e.offsetX, 'x') - wallOffset;
-        const f = e.deltaY > 0 ? 1.4 : 1 / 1.4;
+        const f = Math.exp(Math.max(-300, Math.min(300, e.deltaY * k)) * 0.0034);
         // down to a few samples (the buffer has them for recent data)
         const nw = Math.max(w * f, 2e-5);
         const frac = (at - a) / w;
@@ -386,30 +393,68 @@
     };
   }
 
+  /** what a redraw costs (asking for the data to drawn), ms, smoothed */
+  let drawCost = 10;
+  /** the view part of the last key: a change there is the user, answered at once */
+  let drawnView = '';
+  let shownSpan = '';
+
+  /** the span on screen, gliding to the wanted one (zoom and pan animate) */
+  const glide = new Glide();
+  /** the span the data last asked for covers */
+  let fetched = '';
+
   function frame(now: number) {
     raf = requestAnimationFrame(frame);
-    if (!plots.length || inflight || now - lastDraw < MIN_FRAME_MS) return;
-    const want = wanted();
-    const key = [
-      lv.follow ? store.session.version : '',
-      want.join(),
+    if (!plots.length) return;
+    const target = wanted();
+    // following, the window scrolls with the log: that mustn't lag
+    const moving = glide.step(now, target, lv.follow);
+    const shown = glide.shown!;
+    const viewKey = [
+      lv.follow ? `follow ${lv.last}` : target.join(),
       signals.map((s) => `${axes[s].auto},${axes[s].min},${axes[s].max},${axes[s].log}`).join(';'),
       plots.map((p) => `${p.u.width}x${p.u.height}`).join(),
       wallOffset,
     ].join('|');
-    if (key === drawnKey) return;
+    const moved = viewKey !== drawnView;
+    // on screen: where the glide is now, with the data there is (the right data follows)
+    const spKey = shown.join();
+    if (lod && spKey !== shownSpan) {
+      shownSpan = spKey;
+      span = shown;
+      for (const { u } of plots) u.setScale('x', { min: shown[0] + wallOffset, max: shown[1] + wallOffset });
+      annDirty = false;
+    }
+    if (annDirty) {
+      annDirty = false;
+      for (const p of plots) p.u.redraw(false, false);
+    }
+    if (inflight) return;
+    const key = `${lv.follow ? store.session.version : ''}|${viewKey}`;
+    // gliding: data for everything the glide crosses, as fine as the end view needs;
+    // arrived: the end view's own, if what's there was for a wider span
+    const want = moving ? union(shown, target) : target;
+    const refine = !moving && !lv.follow && fetched !== target.join();
+    if (key === drawnKey && !refine) return;
+    if (!moved && !refine && now - lastDraw < Math.max(MIN_FRAME_MS, drawCost * 2)) return;
     drawnKey = key;
+    drawnView = viewKey;
     lastDraw = now;
     inflight = true;
-    const bins = Math.max(50, Math.round(plots[0].u.bbox.width / devicePixelRatio));
+    const t0 = performance.now();
+    const px = Math.max(50, Math.round(plots[0].u.bbox.width / devicePixelRatio));
+    const bins = Math.min(8192, Math.round((px * (want[1] - want[0])) / (target[1] - target[0])));
     // zoomed in past the log interval on data the sample buffer still holds: draw from the buffer,
     // down to single samples; else from the session log
     const iv = store.session.interval;
     const fromBuf = (want[1] - want[0]) / bins < iv && want[0] >= store.tStart && want[1] <= store.tEnd;
     (fromBuf ? store.lod(want[0], want[1], bins) : store.sessionLod(want[0], want[1], bins))
       .then((l) => {
+        fetched = want.join();
         lod = l;
-        span = want;
+        const shown = glide.shown!;
+        span = shown;
         // the last block is one interval (or one bin when zoomed out) wide
         // zoomed out, several log intervals merge into one block; from the buffer, a block is a column (or one sample)
         const col = (want[1] - want[0]) / bins;
@@ -427,9 +472,11 @@
           closeSteps(t, cols, width);
           u.batch(() => {
             u.setData([t, ...cols] as uPlot.AlignedData, false);
-            u.setScale('x', { min: want[0] + wallOffset, max: want[1] + wallOffset });
+            u.setScale('x', { min: shown[0] + wallOffset, max: shown[1] + wallOffset });
           });
         }
+        shownSpan = shown.join();
+        drawCost = drawCost * 0.8 + (performance.now() - t0) * 0.2;
       })
       .catch((e) => console.warn('session lod', e))
       .finally(() => (inflight = false));

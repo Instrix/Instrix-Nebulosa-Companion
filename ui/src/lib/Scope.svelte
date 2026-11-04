@@ -67,10 +67,13 @@
   // drag a marker's edges or body, click to make it active, ✕ to delete.
   import { onMount } from 'svelte';
   import uPlot from 'uplot';
+  import { themeVar } from './themeVar';
   import 'uplot/dist/uPlot.min.css';
   import type { Lod, PointValue, SampleStore } from './store';
   import { DIVS_X, DIVS_Y, fmtTime, markerColor, markerName, type Marker, type View } from './view.svelte';
   import { fmtSI, prefixFor } from './si';
+  import { wheelPx, zoomStepper } from './wheel';
+  import { Glide, union } from './glide';
   import type { TriggerState } from './trigger.svelte';
   import { drag as dragAct, store as save } from './drag';
   import HoverTip, { type TipRow } from './HoverTip.svelte';
@@ -103,7 +106,8 @@
     annotations?: Annotation[];
   } = $props();
 
-  const MIN_FRAME_MS = 33;
+  /** live data redraws no faster than this, nor than twice what a redraw costs */
+  const MIN_FRAME_MS = 15;
   const WEIGHTS_KEY = 'nebulosa.plotWeights';
   const MIN_ROW = 60;
 
@@ -214,9 +218,8 @@
       : [],
   );
 
-  function cssVar(name: string) {
-    return getComputedStyle(root ?? document.documentElement).getPropertyValue(name).trim();
-  }
+  // theme colours, kept per theme (themeVar.ts): read on every frame
+  const cssVar = themeVar;
 
   function yRange(sig: Signal) {
     return (_u: uPlot, lo: number | null, hi: number | null): uPlot.Range.MinMax => {
@@ -602,15 +605,20 @@
     return trig.mode !== 'roll' && trig.shown != null ? trig.shown : span[1];
   }
 
+  // the wheel by distance (wheel.ts): a mouse notch is a time/div step, a
+  // trackpad's small deltas add up to steps; panning follows the fingers
+  const zoomSteps = zoomStepper();
+
   function onWheel(u: uPlot) {
     return (e: WheelEvent) => {
       e.preventDefault();
       if (e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
-        const d = e.shiftKey ? e.deltaY : e.deltaX;
-        view.pan(store, Math.sign(d) * 0.1);
-      } else {
-        view.zoom(store, Math.sign(e.deltaY), u.posToVal(e.offsetX, 'x'));
+        const d = wheelPx(e, e.shiftKey ? e.deltaY || e.deltaX : e.deltaX);
+        view.pan(store, d / Math.max(1, u.over.clientWidth));
+        return;
       }
+      const n = zoomSteps(e);
+      if (n) view.zoom(store, n, u.posToVal(e.offsetX, 'x'));
     };
   }
 
@@ -734,14 +742,31 @@
 
   let inflight = false;
   let markerToken = 0;
+  /** what a redraw costs (asking for the data to drawn), ms, smoothed */
+  let drawCost = 8;
+  /** the view part of the last key: a change there is the user, answered at once */
+  let drawnView = '';
+  /** the span the plots' x axis shows */
+  let shownSpan = '';
+
+  /** the span on screen, gliding to the view's (zoom and pan animate) */
+  const glide = new Glide();
+  /** the span the data last asked for covers */
+  let fetched = '';
+  let lastDiv = -1;
 
   function frame(now: number) {
     raf = requestAnimationFrame(frame);
-    if (!plots.length || inflight || now - lastDraw < MIN_FRAME_MS) return;
-    const key = [
-      view.live ? store.version : `${view.end}`,
+    if (!plots.length) return;
+    const target = view.span(store);
+    // live, the window scrolls with the data: that mustn't lag; a zoom glides
+    const zooming = view.divIndex !== lastDiv && lastDiv >= 0;
+    lastDiv = view.divIndex;
+    const moving = glide.step(now, target, view.live && !zooming);
+    const sp = glide.shown!;
+    const viewKey = [
+      view.live ? 'live' : `${view.end}`,
       view.divIndex,
-      store.tStart,
       markersKey(),
       `${annotations.length}:${annotations[annotations.length - 1]?.wall}`,
       signals.map((s) => `${axes[s].auto},${axes[s].min},${axes[s].max},${axes[s].log}`).join(';'),
@@ -749,27 +774,51 @@
       `${trig.mode},${trig.log},${trig.source},${trig.levels().join()},${trig.shown},${trig.logVersion}`,
       plots.map((p) => `${p.u.width}x${p.u.height}`).join(),
     ].join('|');
-    if (key === drawnKey) return;
+    const moved = viewKey !== drawnView;
+    // on screen: where the glide is now, with the data there is (the right data follows)
+    const spKey = `${sp[0]},${sp[1]}`;
+    if (lod && spKey !== shownSpan) {
+      shownSpan = spKey;
+      span = sp;
+      for (const { u } of plots) u.setScale('x', { min: sp[0], max: sp[1] });
+      updateMarkers();
+    }
+    if (inflight) return;
+    // the data: new samples while live; held, only the oldest dropping out of the buffer
+    const key = `${view.live ? store.version : store.tStart}|${viewKey}`;
+    // gliding: data for everything the glide crosses, as fine as the end view needs;
+    // arrived: the end view's own, if what's there was for a wider span
+    const want = moving ? union(sp, target) : target;
+    const refine = !moving && fetched !== `${target[0]},${target[1]}` && !view.live;
+    if (key === drawnKey && !refine) return;
+    // only new samples: paced by what a redraw costs; the user's moves at once
+    if (!moved && !refine && now - lastDraw < Math.max(MIN_FRAME_MS, drawCost * 2)) return;
     drawnKey = key;
+    drawnView = viewKey;
     lastDraw = now;
-    const sp = view.span(store);
-    const bins = Math.max(50, Math.round(plots[0].u.bbox.width / devicePixelRatio));
+    const px = Math.max(50, Math.round(plots[0].u.bbox.width / devicePixelRatio));
+    const bins = Math.min(8192, Math.round((px * (want[1] - want[0])) / (target[1] - target[0])));
     inflight = true;
+    const t0 = performance.now();
     store
-      .lod(sp[0], sp[1], bins)
+      .lod(want[0], want[1], bins)
       .then((l) => {
+        fetched = `${want[0]},${want[1]}`;
         lod = l;
-        span = sp;
+        const now = glide.shown!;
+        shownSpan = `${now[0]},${now[1]}`;
+        span = now;
         for (const { sig, u } of plots) {
           const c = l.ch[sig];
           // a log axis can't show zero or less
           const pos = (a: (number | null)[]) => (axes[sig].log ? a.map((x) => (x != null && x > 0 ? x : null)) : a);
           u.batch(() => {
             u.setData([l.t, pos(c.min), pos(c.max), pos(c.sdLo), pos(c.sdHi), pos(c.avg)] as uPlot.AlignedData, false);
-            u.setScale('x', { min: sp[0], max: sp[1] });
+            u.setScale('x', { min: now[0], max: now[1] });
           });
         }
         updateMarkers();
+        drawCost = drawCost * 0.8 + (performance.now() - t0) * 0.2;
       })
       .catch((e) => console.warn('lod', e))
       .finally(() => (inflight = false));

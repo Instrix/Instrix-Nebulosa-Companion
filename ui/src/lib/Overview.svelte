@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { themeVar } from './themeVar';
+  import { wheelPx, zoomStepper } from './wheel';
   // The whole history at a glance, with a box for the scope window.
   // Drag the box to scroll, click elsewhere to jump there, wheel = time/div.
   // Dragging the box to the right edge goes back to LIVE. On HOLD the time
@@ -24,9 +26,8 @@
   let frozen: [number, number] | null = null;
   let newer = $state('');
 
-  function cssVar(name: string) {
-    return getComputedStyle(wrap ?? document.documentElement).getPropertyValue(name).trim();
-  }
+  // theme colours, kept per theme (themeVar.ts): read on every frame
+  const cssVar = themeVar;
 
   function axisSpan(): [number, number] {
     if (view.live) frozen = null;
@@ -103,10 +104,55 @@
     const nw = !view.live && ahead > 0.05 ? `+${fmtTime(ahead, 2)} ▸` : '';
     if (nw !== newer) newer = nw;
     const x = (t: number) => ((t - t0) / (t1 - t0)) * W;
+
+    // the data (bars, lines, gaps): drawn once per new data into a layer;
+    // each paint copies it and draws the window and markers over it
+    const layerKey = `${lodVersion}|${lodAxis}|${W}x${H}|${document.documentElement.dataset.theme}`;
+    if (layerKey !== drawnLayer) {
+      drawnLayer = layerKey;
+      drawData(L, W, H, bins, dpr, x);
+    }
+    ctx.drawImage(layer, 0, 0);
+
+    // markers
+    for (const m of view.markers) {
+      const col = markerColor(m);
+      ctx.globalAlpha = m.id === view.active ? 0.6 : 0.35;
+      ctx.fillStyle = col;
+      const a0 = x(m.t0);
+      const w = m.t1 == null ? 2 * dpr : Math.max(2 * dpr, x(m.t1) - a0);
+      ctx.fillRect(a0, 0, w, H);
+      ctx.globalAlpha = 1;
+    }
+
+    // window box; dim what's outside it
+    const [w0, w1] = view.span(store);
+    const a = x(w0);
+    const b = x(w1);
+    ctx.fillStyle = '#000000a0';
+    ctx.fillRect(0, 0, a, H);
+    ctx.fillRect(b, 0, W - b, H);
+    ctx.fillStyle = '#ffffff12';
+    ctx.fillRect(a, 0, b - a, H);
+    ctx.strokeStyle = view.live ? cssVar('--live') : cssVar('--hold');
+    ctx.lineWidth = 2 * dpr;
+    ctx.strokeRect(a + dpr, dpr, Math.max(2 * dpr, b - a - 2 * dpr), H - 2 * dpr);
+  }
+
+  /** the data layer: an offscreen canvas the size of the strip */
+  const layer = document.createElement('canvas');
+  let drawnLayer = '';
+
+  function drawData(L: Lod, W: number, H: number, bins: number, dpr: number, x: (t: number) => number) {
+    if (layer.width !== W || layer.height !== H) {
+      layer.width = W;
+      layer.height = H;
+    }
+    const ctx = layer.getContext('2d')!;
+    ctx.clearRect(0, 0, W, H);
     const T = L.t;
     const { min: IMIN, max: IMAX, avg: IAVG } = L.ch.i;
     const VAVG = L.ch.v.avg;
-
     const pad = 4 * dpr;
     const yScale = (lo: (number | null)[], hi: (number | null)[]) => {
       let a = Infinity, b = -Infinity;
@@ -124,11 +170,15 @@
     const I = cssVar('--trace-i');
     const V = cssVar('--trace-v');
     ctx.fillStyle = I + '55';
+    // one path, one fill (not a fillRect per column)
+    ctx.beginPath();
+    const bw = Math.max(dpr, W / bins);
     for (let k = 0; k < T.length; k++) {
       if (IMIN[k] == null) continue;
       const top = yi(IMAX[k]!);
-      ctx.fillRect(x(T[k]), top, Math.max(dpr, W / bins), Math.max(dpr, yi(IMIN[k]!) - top));
+      ctx.rect(x(T[k]), top, bw, Math.max(dpr, yi(IMIN[k]!) - top));
     }
+    ctx.fill();
     const line = (ys: (number | null)[], y: (v: number) => number, col: string) => {
       ctx.strokeStyle = col;
       ctx.lineWidth = dpr;
@@ -150,33 +200,9 @@
     line(VAVG, yv, V + 'aa');
     line(IAVG, yi, I);
 
-    // markers
-    for (const m of view.markers) {
-      const col = markerColor(m);
-      ctx.globalAlpha = m.id === view.active ? 0.6 : 0.35;
-      ctx.fillStyle = col;
-      const a0 = x(m.t0);
-      const w = m.t1 == null ? 2 * dpr : Math.max(2 * dpr, x(m.t1) - a0);
-      ctx.fillRect(a0, 0, w, H);
-      ctx.globalAlpha = 1;
-    }
-
     // gaps: missing samples
     ctx.fillStyle = cssVar('--danger');
     for (const g of L.gaps) ctx.fillRect(x(g) - dpr, H - 6 * dpr, 2 * dpr, 6 * dpr);
-
-    // window box; dim what's outside it
-    const [w0, w1] = view.span(store);
-    const a = x(w0);
-    const b = x(w1);
-    ctx.fillStyle = '#000000a0';
-    ctx.fillRect(0, 0, a, H);
-    ctx.fillRect(b, 0, W - b, H);
-    ctx.fillStyle = '#ffffff12';
-    ctx.fillRect(a, 0, b - a, H);
-    ctx.strokeStyle = view.live ? cssVar('--live') : cssVar('--hold');
-    ctx.lineWidth = 2 * dpr;
-    ctx.strokeRect(a + dpr, dpr, Math.max(2 * dpr, b - a - 2 * dpr), H - 2 * dpr);
   }
 
   function timeAt(e: PointerEvent | WheelEvent) {
@@ -215,10 +241,17 @@
     canvas.releasePointerCapture(e.pointerId);
   }
 
+  const zoomSteps = zoomStepper();
   function onWheel(e: WheelEvent) {
     e.preventDefault();
-    if (e.shiftKey) view.pan(store, Math.sign(e.deltaY) * 0.25);
-    else view.zoom(store, Math.sign(e.deltaY), timeAt(e));
+    // by distance (wheel.ts)
+    if (e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
+      const d = wheelPx(e, e.shiftKey ? e.deltaY || e.deltaX : e.deltaX);
+      view.pan(store, (d / Math.max(1, canvas.clientWidth)) * 2.5);
+      return;
+    }
+    const n = zoomSteps(e);
+    if (n) view.zoom(store, n, timeAt(e));
   }
 
   onMount(() => {

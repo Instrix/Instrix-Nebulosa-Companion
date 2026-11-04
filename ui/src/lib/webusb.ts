@@ -6,6 +6,8 @@
 // TCP / UDP, so Ethernet is native-only for now.
 
 import type { Candidate, Link, LinkEvents } from './device';
+import { CoreLink } from './coreLink';
+import type { HostEvent } from './coreHost';
 import {
   USB_CLASS,
   USB_PID_FS,
@@ -14,17 +16,8 @@ import {
   USB_SUBCLASS,
   USB_VID,
   core,
-  type AnalysisRequest,
-  type AnalysisResult,
-  type Calibration,
-  type ExportCfg,
-  type Meta,
-  type RawSpanStats,
   type Reply,
-  type TrigEvent,
-  type TriggerCfg,
 } from './nbp';
-import { wasmEngine } from './sca';
 
 const FILTERS: USBDeviceFilter[] = [
   { vendorId: USB_VID, productId: USB_PID_HS },
@@ -36,20 +29,22 @@ const META_MS = 40;
 
 export const webUsbAvailable = typeof navigator !== 'undefined' && 'usb' in navigator;
 
-class WebUsbLink implements Link {
-  private pipeline = new core.Pipeline();
-  readonly sca = wasmEngine(() => this.pipeline);
+/**
+ * The USB transfers run here; their bytes go to the core host (a worker), which
+ * parses them, keeps the buffer and sends back Meta and command responses.
+ */
+class WebUsbLink extends CoreLink implements Link {
   private seq = 0;
   private pending: { seq: number; resolve: (r: Reply) => void; reject: (e: Error) => void } | null = null;
   private outEp = 0;
   private closed = false;
-  private timer: ReturnType<typeof setInterval> | undefined;
   description: string;
 
   constructor(
     private dev: USBDevice,
-    private ev: LinkEvents,
+    ev: LinkEvents,
   ) {
+    super(ev);
     this.description = `WebUSB ${dev.productName ?? 'Nebulosa'}${dev.serialNumber ? ' ' + dev.serialNumber : ''}`;
   }
 
@@ -75,15 +70,9 @@ class WebUsbLink implements Link {
     const ins = bulk.filter((e) => e.direction === 'in');
     if (!out || ins.length === 0) throw new Error('NBP interface without bulk endpoints');
     this.outEp = out.endpointNumber;
+    const host = await this.core;
+    await host.call('watch', META_MS);
     ins.forEach((e, src) => void this.readLoop(e.endpointNumber, src));
-    let sent = -1;
-    this.timer = setInterval(() => {
-      const m = this.pipeline.meta() as Meta;
-      if (m.version !== sent) {
-        sent = m.version;
-        this.ev.onMeta(m);
-      }
-    }, META_MS);
     navigator.usb.addEventListener('disconnect', this.onDisconnect);
   }
 
@@ -93,6 +82,7 @@ class WebUsbLink implements Link {
 
   private async readLoop(ep: number, src: number) {
     const inflight: Promise<USBInTransferResult>[] = [];
+    const host = await this.core;
     try {
       for (let i = 0; i < IN_QUEUE; i++) inflight.push(this.dev.transferIn(ep, IN_TRANSFER));
       while (!this.closed) {
@@ -100,8 +90,9 @@ class WebUsbLink implements Link {
         if (!this.closed) inflight.push(this.dev.transferIn(ep, IN_TRANSFER));
         if (r.status !== 'ok') throw new Error(`USB IN ${ep}: ${r.status}`);
         if (r.data && r.data.byteLength) {
-          this.pipeline.push(src, new Uint8Array(r.data.buffer, r.data.byteOffset, r.data.byteLength));
-          this.deliver();
+          // the bytes move to the host (copied once out of the transfer's view)
+          const bytes = new Uint8Array(r.data.buffer.slice(r.data.byteOffset, r.data.byteOffset + r.data.byteLength));
+          host.send('push', [src, bytes], [bytes.buffer]);
         }
       }
     } catch (e) {
@@ -109,8 +100,12 @@ class WebUsbLink implements Link {
     }
   }
 
-  private deliver() {
-    const rs = this.pipeline.take_responses() as { ty: number; status: number; seq: number; payload: number[] }[];
+  protected onHost(e: HostEvent) {
+    if (e.type === 'responses') this.deliver(e.list);
+    else super.onHost(e);
+  }
+
+  private deliver(rs: { ty: number; status: number; seq: number; payload: number[] }[]) {
     for (const r of rs) {
       if (this.pending && this.pending.seq === r.seq) {
         const p = this.pending;
@@ -128,7 +123,7 @@ class WebUsbLink implements Link {
 
   private teardown() {
     this.closed = true;
-    clearInterval(this.timer);
+    void this.closeCore();
     navigator.usb.removeEventListener('disconnect', this.onDisconnect);
     this.pending?.reject(new Error('connection closed'));
     this.pending = null;
@@ -153,66 +148,6 @@ class WebUsbLink implements Link {
     } finally {
       clearTimeout(to);
     }
-  }
-
-  async setBuffer(samples: number) {
-    this.pipeline.set_buffer_samples(samples);
-  }
-
-  async lod(t0: number, t1: number, bins: number) {
-    return this.pipeline.lod(t0, t1, bins);
-  }
-
-  async stats(t0: number, t1: number) {
-    return this.pipeline.stats(t0, t1) as RawSpanStats | null;
-  }
-
-  async valueAt(t: number) {
-    return this.pipeline.value_at(t) as [number, number, number, number] | null;
-  }
-
-  async sessionLod(t0: number, t1: number, bins: number) {
-    return this.pipeline.session_lod(t0, t1, bins);
-  }
-
-  async sessionStats(t0: number, t1: number) {
-    return this.pipeline.session_stats(t0, t1) as RawSpanStats | null;
-  }
-
-  async setLogInterval(s: number) {
-    this.pipeline.set_log_interval(s);
-  }
-
-  async clearSession() {
-    this.pipeline.clear_session();
-  }
-
-  async exportPreview(cfg: ExportCfg, wallOffset: number, rows: number) {
-    return this.pipeline.export_preview(cfg, wallOffset, rows);
-  }
-
-  async setMath(expr: string | null) {
-    return this.pipeline.set_math(expr ?? undefined) ?? null;
-  }
-
-  async setCalibration(c: Calibration) {
-    this.pipeline.set_calibration(c);
-  }
-
-  async setTrigger(c: TriggerCfg) {
-    this.pipeline.set_trigger(c);
-  }
-
-  async events(since: number, max: number) {
-    return this.pipeline.events_since(BigInt(since), max) as TrigEvent[];
-  }
-
-  async clearEvents() {
-    this.pipeline.clear_events();
-  }
-
-  async analyze(t0: number, t1: number, req: AnalysisRequest) {
-    return this.pipeline.analyze(t0, t1, req) as AnalysisResult;
   }
 
   async close() {

@@ -26,6 +26,8 @@ export default defineConfig({
     __APP_COMMIT__: JSON.stringify(commit),
     __APP_BUILT__: JSON.stringify(new Date().toISOString().slice(0, 10)),
   },
+  // the core's worker (ui/src/lib/pipeline.worker.ts) is an ES module: it imports the WASM
+  worker: { format: 'es' },
   build: {
     outDir: '../dist',
     emptyOutDir: true,

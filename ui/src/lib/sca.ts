@@ -1,9 +1,10 @@
 // The side-channel campaign engine behind a link: in the browser builds a
-// WASM Campaign (sca.rs) cutting traces out of the link's pipeline; the
-// desktop app keeps it in Rust (native.ts). One campaign at a time, kept
-// across connections (a new connection can add to it at the same rate).
+// WASM Campaign (sca.rs) in the core host beside the pipeline it cuts traces
+// from (coreLink.ts); the desktop app keeps it in Rust (native.ts). One
+// campaign at a time, kept across connections (a new connection can add to
+// it at the same rate).
 
-import { core, type AlignResult, type ScaConfig, type ScaInfo, type ScaRequest, type ScaResult, type TraceMeta } from './nbp';
+import type { AlignResult, ScaConfig, ScaInfo, ScaRequest, ScaResult, TraceMeta } from './nbp';
 
 export interface ScaEngine {
   /** a new, empty campaign (the old one is dropped) */
@@ -24,49 +25,3 @@ export interface ScaEngine {
   load(bytes: Uint8Array): Promise<ScaInfo | null>;
 }
 
-let campaign: core.Campaign | null = null;
-
-function need(): core.Campaign {
-  if (!campaign) throw new Error('no campaign');
-  return campaign;
-}
-
-/** the engine for a WASM pipeline (WebUSB, demo) */
-export function wasmEngine(pipeline: () => core.Pipeline): ScaEngine {
-  return {
-    async create(cfg) {
-      campaign?.free();
-      campaign = new core.Campaign(cfg);
-    },
-    async add(t0, t1, meta) {
-      return need().add(pipeline(), t0, t1, meta);
-    },
-    async info() {
-      return campaign ? (campaign.info() as ScaInfo) : null;
-    },
-    async align(a, b, maxShift) {
-      return need().align(a, b, maxShift) as AlignResult;
-    },
-    async clearAlign() {
-      campaign?.clear_align();
-    },
-    async query(req) {
-      return need().query(req) as ScaResult;
-    },
-    async exportNpz() {
-      return need().export_npz();
-    },
-    async meta() {
-      return campaign ? (campaign.meta() as TraceMeta[]) : [];
-    },
-    async save() {
-      return need().export_raw();
-    },
-    async load(bytes) {
-      campaign?.free();
-      campaign = new core.Campaign({ samples: 2, source: 'i' } as ScaConfig);
-      campaign.load_raw(bytes);
-      return campaign.info() as ScaInfo;
-    },
-  };
-}
