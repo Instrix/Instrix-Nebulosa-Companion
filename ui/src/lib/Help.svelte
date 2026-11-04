@@ -102,6 +102,7 @@
         ['Del / Backspace', 'Delete the active marker'],
         ['Esc', 'Deselect'],
         ['Drag the trigger line', 'Set the trigger level'],
+        ['Set trigger, then click a plot', 'Trigger on that signal at that level'],
         ['Right-click', 'Menu: markers, trigger here, axis, zoom, export'],
         ['Drag the overview box', 'Move the window through the history'],
       ],

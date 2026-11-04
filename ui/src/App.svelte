@@ -1501,7 +1501,7 @@
     if (e.key === ' ') {
       e.preventDefault();
       toggleLive();
-    } else if (e.key === 'Escape') view.active = null;
+    } else if (e.key === 'Escape') { if (pickTrigger) pickTrigger = false; else view.active = null; }
     else if (e.key === 'Delete' || e.key === 'Backspace') view.remove(view.active);
     else if (e.key === 'm') addSingleMarker();
     else if (e.key === 'd') addDualMarker();
@@ -1610,6 +1610,16 @@
   }
 
   /** puts the trigger on `sig` at `v` (a window: the same width, centred on v) */
+  let pickTrigger = $state(false);
+  /** click-to-set: a plot click sets the trigger source and level there */
+  function onPickTrigger(spot: ScopeSpot) {
+    if (spot.sig && spot.value != null && (!axes[spot.sig].log || spot.value > 0)) {
+      triggerAt(spot.sig, spot.value);
+      toast(`Trigger: ${SIGNAL_INFO[spot.sig].name} at ${fmtSI(spot.value, SIGNAL_INFO[spot.sig].unit, 3)}`);
+    }
+    pickTrigger = false;
+  }
+
   function triggerAt(sig: Signal, v: number) {
     trig.source = sig;
     if (trig.kind === 'window') {
@@ -2413,6 +2423,7 @@
         </span>
       {/if}
       <button class="small autoset" onclick={autoset} disabled={!hasData} title="Trigger, time/div and axes from the signal (like a scope's Autoset)">Autoset</button>
+      <button class="small settrig" class:on={pickTrigger} onclick={() => (pickTrigger = !pickTrigger)} disabled={!hasData} title="Set the trigger source and level by clicking a point on a plot">⌖ {pickTrigger ? 'Click a plot…' : 'Set trigger'}</button>
       <button class="small analyze" onclick={openAnalysis} disabled={!hasData} title="Histogram, CDF, spectrum and worst window over the active dual marker, else the screen (A)"
         >Analyze{view.activeMarker?.t1 != null ? ' marker' : ''}…</button
       >
@@ -2468,7 +2479,7 @@
       <Overview {store} {view} />
     </div>
     <div class="scope-wrap" data-tour="plots">
-      <Scope bind:this={scope} {store} {view} {signals} {axes} {trace} {trig} onmenu={scopeMenu} />
+      <Scope bind:this={scope} {store} {view} {signals} {axes} {trace} {trig} onmenu={scopeMenu} picking={pickTrigger} onpick={onPickTrigger} />
     </div>
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
@@ -2770,6 +2781,11 @@
     overflow: hidden;
     text-overflow: ellipsis;
     max-width: 420px;
+  }
+  .settrig.on {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 16%, transparent);
   }
   .autoset,
   .analyze {

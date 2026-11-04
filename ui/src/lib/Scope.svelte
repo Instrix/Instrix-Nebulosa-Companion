@@ -83,6 +83,8 @@
     trace,
     trig,
     onmenu,
+    picking = false,
+    onpick,
   }: {
     store: SampleStore;
     view: View;
@@ -92,6 +94,9 @@
     trig: TriggerState;
     /** a right-click: on a plot (its signal, the time and value there) or on a marker */
     onmenu?: (e: MouseEvent, at: ScopeSpot) => void;
+    /** pick mode: a left-click on a plot reports its spot (to set the trigger) */
+    picking?: boolean;
+    onpick?: (at: ScopeSpot) => void;
   } = $props();
 
   const MIN_FRAME_MS = 33;
@@ -495,6 +500,7 @@
       u.over.addEventListener('wheel', onWheel(u), { passive: false });
       u.over.addEventListener('dblclick', onDbl(u));
       u.over.addEventListener('contextmenu', onCtx(sig, u));
+      u.over.addEventListener('click', onPick(sig, u));
       // before uPlot's own mousedown (selection): grab a trigger level line
       u.over.addEventListener('mousedown', levelDown(sig, u), { capture: true });
       u.over.addEventListener('mousemove', levelHover(sig, u));
@@ -618,22 +624,35 @@
     return around.find((m) => m.id === view.active) ?? around.sort((a, b) => a.t1! - a.t0 - (b.t1! - b.t0))[0];
   }
 
+  /** the plot spot under a pointer event (signal, value, time) */
+  function spotAt(e: MouseEvent, sig: Signal, u: uPlot): ScopeSpot {
+    // client coordinates: the target can be a child of the overlay (the cursor lines)
+    const r = u.over.getBoundingClientRect();
+    const t = u.posToVal(e.clientX - r.left, 'x');
+    const value = u.posToVal(e.clientY - r.top, 'y');
+    const y = u.scales.y;
+    return {
+      t,
+      sig,
+      value: isFinite(value) ? value : undefined,
+      range: y.min != null && y.max != null ? [y.min, y.max] : undefined,
+      end: span[1],
+      marker: markerAt(t, area.width / (span[1] - span[0])),
+    };
+  }
+
   function onCtx(sig: Signal, u: uPlot) {
     return (e: MouseEvent) => {
-      if (!onmenu) return;
-      // client coordinates: the target can be a child of the overlay (the cursor lines)
-      const r = u.over.getBoundingClientRect();
-      const t = u.posToVal(e.clientX - r.left, 'x');
-      const value = u.posToVal(e.clientY - r.top, 'y');
-      const y = u.scales.y;
-      onmenu(e, {
-        t,
-        sig,
-        value: isFinite(value) ? value : undefined,
-        range: y.min != null && y.max != null ? [y.min, y.max] : undefined,
-        end: span[1],
-        marker: markerAt(t, area.width / (span[1] - span[0])),
-      });
+      if (onmenu) onmenu(e, spotAt(e, sig, u));
+    };
+  }
+
+  /** pick mode: a left-click sets the trigger at the clicked spot */
+  function onPick(sig: Signal, u: uPlot) {
+    return (e: MouseEvent) => {
+      if (!picking || e.button !== 0 || !onpick) return;
+      e.stopPropagation();
+      onpick(spotAt(e, sig, u));
     };
   }
 
@@ -775,7 +794,7 @@
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="scope" bind:this={root} onpointermove={onHover} onpointerleave={() => (hover = null)}>
+<div class="scope" class:picking bind:this={root} onpointermove={onHover} onpointerleave={() => (hover = null)}>
   <div class="markers">
     {#each geo as g (g.m.id)}
       {@const col = markerColor(g.m)}
@@ -879,6 +898,9 @@
 </div>
 
 <style>
+  .scope.picking :global(.u-over) {
+    cursor: crosshair;
+  }
   .scope {
     position: relative;
     width: 100%;
