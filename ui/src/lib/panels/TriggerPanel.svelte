@@ -30,7 +30,7 @@
   }
 </script>
 
-<Section id="trigger" title="Trigger" tour="trigger" summary={{ roll: 'Roll', auto: 'Auto', normal: 'Normal', single: 'Single' }[trig.mode] + (trig.detecting ? ` · ${SIGNAL_INFO[trig.source].sym} ${KIND_LABEL[trig.kind] ?? trig.kind}` : '')}>
+<Section id="trigger" icon="trigger" title="Trigger" tour="trigger" summary={{ roll: 'Roll', auto: 'Auto', normal: 'Normal', single: 'Single' }[trig.mode] + (trig.detecting ? ` · ${SIGNAL_INFO[trig.source].sym} ${KIND_LABEL[trig.kind] ?? trig.kind}` : '')}>
   <div class="seg wide" role="group" aria-label="Display mode">
     {#each [['roll', 'Roll'], ['auto', 'Auto'], ['normal', 'Normal'], ['single', 'Single']] as [m, label] (m)}
       <button class:on={trig.mode === m} onclick={() => setMode(m as TrigMode)}>{label}</button>

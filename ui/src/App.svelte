@@ -1938,7 +1938,7 @@
         <span class="muted small">{SOURCE_NAME[source] ?? ''} · {fmtRate(rateHz)}</span>
       </div>
 
-      <Section id="device" title="Device" tour="device" open={false} summary="{info.link_name} · firmware {info.fw_version_str}">
+      <Section id="device" icon="device" title="Device" tour="device" open={false} summary="{info.link_name} · firmware {info.fw_version_str}">
         <dl>
           <dt>Firmware</dt><dd>{info.fw_version_str} <small class="muted">{info.build}</small></dd>
           <dt>FPGA</dt>
@@ -1960,7 +1960,7 @@
         <BoardPanel {dev} {streaming} bind:board onstop={stop} onstart={start} onnote={(m) => (note = m)} />
       {/if}
 
-      <Section id="acquisition" title="Acquisition" tour="acquisition" summary="{SOURCE_NAME[source] ?? ''} · {fmtRate(rateHz)}{decimMode === 1 && log2n ? ' subsampled' : ''}">
+      <Section id="acquisition" icon="acquisition" title="Acquisition" tour="acquisition" summary="{SOURCE_NAME[source] ?? ''} · {fmtRate(rateHz)}{decimMode === 1 && log2n ? ' subsampled' : ''}">
         <label>
           Source
           <select bind:value={source} disabled={streaming}>
@@ -1998,7 +1998,7 @@
     {/if}
 
     {#if appMode === 'logger'}
-    <Section id="logger" title="Logger" tour="logger-panel" summary={logging?.active || exporting ? '● logging to file' : `${fmtTime(logInterval)} intervals`}>
+    <Section id="logger" icon="logger" title="Logger" tour="logger-panel" summary={logging?.active || exporting ? '● logging to file' : `${fmtTime(logInterval)} intervals`}>
       <label title="Per interval: min, max, mean and σ of every signal. In memory it stays bounded: older intervals merge 10×, then 100×.">
         Interval <span class="muted small">· ~{fmtBytesSize(sess.bytes)} in memory</span>
         <select value={logInterval} onchange={(e) => changeLogInterval(Number((e.currentTarget as HTMLSelectElement).value))}>
@@ -2029,7 +2029,7 @@
       <button class="ghost" onclick={newSession} disabled={!sess.has_data}>New session</button>
     </Section>
 
-    <Section id="monitor" title="Serial monitor" tour="monitor" open={false} summary={monitor.open ? `● ${monitor.annotations.length} msg${monitor.matches ? ` · ${monitor.matches} hit` : ''}` : 'off'}>
+    <Section id="monitor" icon="monitor" title="Serial monitor" tour="monitor" open={false} summary={monitor.open ? `● ${monitor.annotations.length} msg${monitor.matches ? ` · ${monitor.matches} hit` : ''}` : 'off'}>
       <p class="muted small">Read a serial port and mark its lines on the logger, timed to the measurements. Send, toggle RTS / DTR, trigger on a message. Saved as a <code>.serial.csv</code> next to a log.</p>
       {#if isNative && !monitor.open}
         <div class="mon-row">
@@ -2094,7 +2094,7 @@
       {/if}
     </Section>
 
-    <Section id="output" title="File output" open={false} summary="{out.kind === 'native' ? 'Nebulosa log' : out.cfg.format.type.toUpperCase()} · {out.cfg.data === 'raw' ? 'every sample' : 'per interval'}">
+    <Section id="output" icon="output" title="File output" open={false} summary="{out.kind === 'native' ? 'Nebulosa log' : out.cfg.format.type.toUpperCase()} · {out.cfg.data === 'raw' ? 'every sample' : 'per interval'}">
         <ExportEditor
           bind:out
           link={activeLink}

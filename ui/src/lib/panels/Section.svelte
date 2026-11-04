@@ -2,10 +2,12 @@
   // A sidebar section: a header that folds it, with a one-line summary while
   // folded. Open or folded is remembered per section.
   import type { Snippet } from 'svelte';
+  import Icon from './Icon.svelte';
 
   let {
     id,
     title,
+    icon = '',
     summary = '',
     open: initial = true,
     tour,
@@ -15,6 +17,8 @@
     /** remembers open / folded under this name */
     id: string;
     title: string;
+    /** a line-icon name (Icon.svelte) shown before the title */
+    icon?: string;
     /** shown next to the title while folded */
     summary?: string;
     /** open the first time */
@@ -59,6 +63,7 @@
   <div class="head">
     <button class="toggle" onclick={toggle} aria-expanded={open} title={open ? 'Fold' : 'Unfold'}>
       <span class="chev" aria-hidden="true">›</span>
+      {#if icon}<Icon name={icon} />{/if}
       <h2>{title}</h2>
       {#if !open && summary}<span class="sum">{summary}</span>{/if}
     </button>
@@ -95,6 +100,16 @@
     border-radius: var(--r-sm);
   }
   .toggle:hover :global(h2) {
+    color: var(--text);
+  }
+  .toggle :global(.icon) {
+    color: var(--muted);
+    transition: color 0.12s;
+  }
+  .open .toggle :global(.icon) {
+    color: var(--accent);
+  }
+  .toggle:hover :global(.icon) {
     color: var(--text);
   }
   .chev {

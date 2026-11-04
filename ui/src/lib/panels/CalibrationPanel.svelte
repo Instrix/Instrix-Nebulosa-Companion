@@ -21,7 +21,7 @@
   const calNote = $derived(note);
 </script>
 
-<Section id="calibration" title="Calibration" open={false}>
+<Section id="calibration" icon="calibration" title="Calibration" open={false}>
     <div class="cal">
       <p class="muted small">Firmware scaling by default. I = code × full scale / 16384; V = code × scale + offset.</p>
       {#each Array.from({ length: ranges }, (_, r) => r) as r (r)}

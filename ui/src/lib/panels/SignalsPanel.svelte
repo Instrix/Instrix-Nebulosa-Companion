@@ -34,7 +34,7 @@
   } = $props();
 </script>
 
-<Section id="display" title="Display" summary={signals.map((s) => SIGNAL_INFO[s].sym).join(' ') || 'nothing shown'}>
+<Section id="display" icon="display" title="Display" summary={signals.map((s) => SIGNAL_INFO[s].sym).join(' ') || 'nothing shown'}>
   <div class="chips">
     {#each available as s (s)}
       <label class="chip" style="--c: var({SIGNAL_INFO[s].color})">

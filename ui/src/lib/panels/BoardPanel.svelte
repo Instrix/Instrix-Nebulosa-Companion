@@ -176,6 +176,7 @@
 {#if !unsupported}
   <Section
     id="board"
+    icon="board"
     title="Board"
     tour="board"
     summary={!board ? '' : `front end ${supplies === 2 ? 'on' : supplies === 1 ? 'half on' : 'off'}${clockOff != null && Math.abs(clockOff) >= 3 ? ' · clock off' : ''}`}
