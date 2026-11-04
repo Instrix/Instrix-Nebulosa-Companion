@@ -48,6 +48,9 @@
   import instrixIconWhite from './assets/instrix-icon-white.svg';
   import * as boardCmd from './lib/board';
   import LoggerView, { type LogView } from './lib/LoggerView.svelte';
+  import { ViewHistory } from './lib/history.svelte';
+  import CommandPalette, { type Command } from './lib/CommandPalette.svelte';
+  import { SECTION_HELP } from './lib/panels/sectionHelp';
   import ExportEditor, { defaultOutput, type OutputCfg } from './lib/ExportEditor.svelte';
   import { drag, stored, store as save } from './lib/drag';
   import Showcases from './lib/Showcases.svelte';
@@ -714,6 +717,141 @@
     return [lv.last > 0 ? Math.max(s.t_start, s.t_end - lv.last) : s.t_start, s.t_end];
   }
 
+  // ---- moving around: history, the Logger's keys, stepping through things ----------
+
+  /** the Scope's view, as the history keeps it */
+  type ScopeNav = { live: boolean; end: number; div: number };
+  const scopeHist = new ViewHistory<ScopeNav>(
+    (a, b) => a.live === b.live && a.div === b.div && (a.live || Math.abs(a.end - b.end) <= 1e-9 * Math.max(1, Math.abs(a.end))),
+    (s) => {
+      view.divIndex = s.div;
+      if (s.live) view.live = true;
+      else {
+        view.live = false;
+        view.end = s.end;
+      }
+    },
+  );
+  $effect(() => {
+    const s: ScopeNav = { live: view.live, end: view.live ? 0 : view.end, div: view.divIndex };
+    if (hasData) scopeHist.observe(s);
+  });
+  const loggerHist = new ViewHistory<LogView>(
+    (a, b) => a.follow === b.follow && a.last === b.last && (a.follow || (a.t0 === b.t0 && a.t1 === b.t1)),
+    (s) => (lv = { ...s }),
+  );
+  $effect(() => {
+    const s = { ...lv };
+    loggerHist.observe(s);
+  });
+  const hist = $derived(appMode === 'logger' ? loggerHist : scopeHist);
+  function navBack() {
+    if (appMode !== 'sca' && !hist.back()) toast('Nothing to go back to');
+  }
+  function navForward() {
+    if (appMode !== 'sca') hist.forward();
+  }
+
+  /** the Logger at [t0, t1], not following */
+  function loggerSet(t0: number, t1: number) {
+    lv = { follow: false, last: lv.last, t0, t1 };
+  }
+  function loggerPan(frac: number) {
+    const [a, b] = loggerSpan();
+    const d = (b - a) * frac;
+    loggerSet(a + d, b + d);
+  }
+  function loggerZoom(f: number) {
+    const [a, b] = loggerSpan();
+    const c = (a + b) / 2;
+    const w = Math.max((b - a) * f, 2e-5);
+    loggerSet(c - w / 2, c + w / 2);
+  }
+  /** following the newest entries, or staying where the view is */
+  function toggleFollow() {
+    if (lv.follow) loggerSet(...loggerSpan());
+    else lv = { ...lv, follow: true };
+  }
+  /** the start of the session, at the span shown */
+  function loggerHome() {
+    const [a, b] = loggerSpan();
+    const s0 = store.session.t_start;
+    loggerSet(s0, s0 + (b - a));
+  }
+
+  /** the Scope at the oldest samples the buffer holds */
+  function scopeHome() {
+    if (store.empty) return;
+    view.live = false;
+    view.end = store.tStart + view.windowS;
+  }
+
+  /** where "next" counts from in the Scope: the trigger position on screen */
+  function scopeRef() {
+    const [a, b] = view.span(store);
+    return b - (1 - trig.position) * (b - a);
+  }
+
+  /** the next (dir 1) or previous (-1) of `ts` (sorted) after / before `ref`, or null */
+  function stepIn(ts: (k: number) => number, n: number, ref: number, dir: number, eps: number): number | null {
+    let lo = 0, hi = n;
+    while (lo < hi) {
+      const m = (lo + hi) >> 1;
+      if (ts(m) <= ref + (dir > 0 ? eps : -eps)) lo = m + 1;
+      else hi = m;
+    }
+    const k = dir > 0 ? lo : lo - 1;
+    return k >= 0 && k < n ? k : null;
+  }
+
+  /** N / Shift+N: the next / previous trigger event */
+  function stepEvent(dir: number) {
+    const ev = trig.events;
+    if (!ev.length) return toast(trig.detecting ? 'No events yet' : 'No events: choose a trigger mode, or turn on Log events in Roll');
+    const k = stepIn((i) => ev[i].t, ev.length, scopeRef(), dir, view.windowS * 1e-4);
+    if (k == null) return toast(dir > 0 ? 'No later event' : 'No earlier event');
+    jumpToEvent(ev[k]);
+  }
+
+  /** , / . : the previous / next serial message */
+  function stepSerial(dir: number) {
+    const ms = monitor.annotations;
+    if (!ms.length) return toast('No serial messages');
+    if (appMode === 'logger') {
+      const [a, b] = loggerSpan();
+      const k = stepIn((i) => ms[i].t, ms.length, (a + b) / 2, dir, (b - a) * 1e-4);
+      if (k == null) return toast(dir > 0 ? 'No later message' : 'No earlier message');
+      jumpLoggerTo(ms[k].t);
+    } else {
+      const k = stepIn((i) => ms[i].t, ms.length, scopeRef(), dir, view.windowS * 1e-4);
+      if (k == null) return toast(dir > 0 ? 'No later message' : 'No earlier message');
+      jumpToSerial(ms[k].t);
+    }
+  }
+
+  /** < / > : the previous / next marker, centred (the zoom kept) */
+  function stepMarker(dir: number) {
+    const ms = [...view.markers].sort((a, b) => a.t0 - b.t0);
+    if (!ms.length) return toast('No markers: double-click a plot, or drag across one');
+    const cur = ms.findIndex((m) => m.id === view.active);
+    const k = cur < 0 ? (dir > 0 ? 0 : ms.length - 1) : (cur + dir + ms.length) % ms.length;
+    const m = ms[k];
+    view.active = m.id;
+    view.hold(store);
+    const mid = m.t1 == null ? m.t0 : (m.t0 + m.t1) / 2;
+    view.end = mid + view.windowS / 2;
+  }
+
+  /** a moment of the Scope in the Logger: the long view around it */
+  function showInLogger(t: number) {
+    if (!store.session.has_data) return toast('The session log is empty');
+    setAppMode('logger');
+    const s0 = store.session;
+    const cur = lv.follow ? (lv.last > 0 ? lv.last : s0.t_end - s0.t_start) : lv.t1 - lv.t0;
+    const w = Math.min(Math.max(cur, 10), 600);
+    loggerSet(t - w / 2, t + w / 2);
+  }
+
   /** a moment of the logger in the scope: its raw samples, if still in memory */
   function openInScope(t: number) {
     if (store.empty || t < store.tStart || t > store.tEnd) {
@@ -1161,6 +1299,78 @@
 
   // ---- showcases: the demo device plays a real load, a guide walks through it ----------
   let showcasesOpen = $state(false);
+
+  // ---- Ctrl+K: find a setting or an action -------------------------------------
+  let paletteOpen = $state(false);
+
+  /** goes to a settings section: the view it is in, the panel shown, the section open and in view */
+  function gotoSection(id: string) {
+    if (!info) return toast('Connect a device first (or try the demo device)');
+    if (LOGGER_SECTIONS.some((x) => x.id === id) && appMode !== 'logger') setAppMode('logger');
+    else if (appMode === 'sca') setAppMode('scope');
+    if (!leftOpen) toggleSide('left');
+    requestAnimationFrame(() => {
+      dispatchEvent(new CustomEvent('nebulosa:open-section', { detail: id }));
+      requestAnimationFrame(() => {
+        const el = document.querySelector(`[data-sec="${id}"]`);
+        el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        el?.classList.add('flash');
+        setTimeout(() => el?.classList.remove('flash'), 700);
+      });
+    });
+  }
+
+  /** everything the search finds: actions, views, the settings sections and each option in them */
+  function commands(): Command[] {
+    const live = appMode !== 'sca';
+    const c: Command[] = [
+      { group: 'View', label: 'Scope', hint: 'Ctrl 1', run: () => setAppMode('scope') },
+      { group: 'View', label: 'Logger', hint: 'Ctrl 2', keywords: 'long term session', run: () => setAppMode('logger') },
+      { group: 'View', label: 'Side-channel', hint: 'Ctrl 3', keywords: 'sca cpa aes power analysis', run: () => setAppMode('sca') },
+      { group: 'Action', label: streaming ? 'Stop the stream' : 'Start the stream', disabled: !dev, keywords: 'run acquisition', run: () => (streaming ? stop() : start()) },
+      { group: 'Action', label: appMode === 'logger' ? (lv.follow ? 'Hold (stay here)' : 'Live (follow the newest)') : view.live ? 'Hold' : 'Live', hint: 'Space', disabled: !live, keywords: 'follow freeze pause', run: () => (appMode === 'logger' ? toggleFollow() : toggleLive()) },
+      { group: 'Action', label: 'Back to the view before', hint: 'Alt ←', disabled: !live, keywords: 'history previous undo zoom', run: navBack },
+      { group: 'Action', label: 'Forward', hint: 'Alt →', disabled: !live, keywords: 'history next', run: navForward },
+      { group: 'Action', label: 'Reset view', keywords: 'zoom axes default', run: resetView },
+      { group: 'Action', label: 'Show everything', keywords: 'fit all zoom out whole', disabled: !hasData, run: () => (appMode === 'logger' ? (lv = { follow: true, last: 0, t0: 0, t1: 0 }) : fitAll()) },
+      { group: 'Action', label: 'Go to the oldest data', hint: 'Home', disabled: !live || !hasData, keywords: 'start beginning', run: () => (appMode === 'logger' ? loggerHome() : scopeHome()) },
+      { group: 'Action', label: 'Go to the newest data', hint: 'End', disabled: !live, keywords: 'now live end', run: () => (appMode === 'logger' ? (lv = { ...lv, follow: true }) : (view.live = true)) },
+      { group: 'Action', label: 'Autoset', disabled: !hasData, keywords: 'automatic scale trigger', run: () => (setAppMode('scope'), autoset()) },
+      { group: 'Action', label: 'Add a marker', hint: 'M', disabled: !hasData, run: () => (setAppMode('scope'), addSingleMarker()) },
+      { group: 'Action', label: 'Add a dual marker', hint: 'D', disabled: !hasData, keywords: 'window measure delta', run: () => (setAppMode('scope'), addDualMarker()) },
+      { group: 'Action', label: 'Next marker', hint: '>', disabled: !view.markers.length, run: () => (setAppMode('scope'), stepMarker(1)) },
+      { group: 'Action', label: 'Previous marker', hint: '<', disabled: !view.markers.length, run: () => (setAppMode('scope'), stepMarker(-1)) },
+      { group: 'Action', label: 'Clear the markers', disabled: !view.markers.length, run: clearMarkersUndoable },
+      { group: 'Action', label: 'Next trigger event', hint: 'N', keywords: 'event trigger step', run: () => (setAppMode('scope'), stepEvent(1)) },
+      { group: 'Action', label: 'Previous trigger event', hint: 'Shift N', keywords: 'event trigger step', run: () => (setAppMode('scope'), stepEvent(-1)) },
+      { group: 'Action', label: 'Next serial message', hint: '.', keywords: 'uart message step', run: () => stepSerial(1) },
+      { group: 'Action', label: 'Previous serial message', hint: ',', keywords: 'uart message step', run: () => stepSerial(-1) },
+      { group: 'Action', label: 'Show this moment in the Logger', hint: 'L', disabled: !store.session.has_data, keywords: 'long term context', run: () => showInLogger(scopeRef()) },
+      { group: 'Action', label: 'Analyze…', hint: 'A', disabled: !hasData, keywords: 'histogram cdf spectrum fft worst window', run: openAnalysis },
+      { group: 'Action', label: 'Export samples as CSV…', disabled: !hasData, keywords: 'save csv export', run: exportCsv },
+      { group: 'Action', label: 'Save the plots as PNG…', disabled: !hasData, keywords: 'image screenshot picture', run: exportPng },
+      { group: 'Action', label: 'Set the trigger by clicking a plot', disabled: !hasData, keywords: 'trigger level pick', run: () => (setAppMode('scope'), (pickTrigger = true)) },
+      { group: 'Action', label: 'Start logging to file', disabled: !isNative || !dev || !!logging?.active || exporting, keywords: 'record save log file every sample', run: () => (setAppMode('logger'), startLog()) },
+      { group: 'Action', label: 'Hide / show the settings panel', hint: '[', keywords: 'sidebar left', run: () => toggleSide('left') },
+      { group: 'Action', label: 'Hide / show the meter', hint: ']', keywords: 'sidebar right panel', run: () => toggleSide('right') },
+      { group: 'Action', label: 'Configurations…', keywords: 'profiles save load settings', run: () => (configOpen = true) },
+      { group: 'Action', label: 'Theme: dark', keywords: 'appearance colours', run: () => setTheme('dark') },
+      { group: 'Action', label: 'Theme: light', keywords: 'appearance colours', run: () => setTheme('light') },
+      { group: 'Action', label: 'Try the demo device', disabled: !!dev, keywords: 'connect synthetic', run: startDemo },
+      { group: 'Action', label: 'Disconnect', disabled: !dev, run: disconnect },
+      { group: 'Help', label: 'Help', hint: 'F1', keywords: 'keys manual', run: () => openHelp('start') },
+      { group: 'Help', label: 'Keys and mouse', keywords: 'shortcuts keyboard', run: () => openHelp('keys') },
+      { group: 'Help', label: 'Walkthrough', keywords: 'tour', run: startTour },
+      { group: 'Help', label: 'Tutorials and showcases', keywords: 'learn examples', run: () => (showcasesOpen = true) },
+    ];
+    for (const sec of [...SCOPE_SECTIONS, ...LOGGER_SECTIONS]) {
+      c.push({ group: 'Settings', label: sec.title, detail: SECTION_HELP[sec.id]?.intro, run: () => gotoSection(sec.id) });
+      // each option of the section (as its help lists them): found by its name and what it does
+      for (const it of SECTION_HELP[sec.id]?.items ?? [])
+        c.push({ group: 'Option', label: it.name, detail: sec.title, keywords: `${it.text} ${(it.list ?? []).flat().join(' ')}`, run: () => gotoSection(sec.id) });
+    }
+    return c;
+  }
   let showcase = $state.raw<{ s: Showcase; steps: TourStep[] } | null>(null);
   /** the newest sample when the showcase's load started: data before it is another load */
   let scenarioSince = 0;
@@ -1539,6 +1749,12 @@
   function onKey(e: KeyboardEvent) {
     // Ctrl / ⌘ + − 0: the UI scale (the browser zooms by itself)
     if (e.ctrlKey || e.metaKey) {
+      // Ctrl / ⌘ + K: find a setting or an action
+      if (e.key === 'k' || e.key === 'K') {
+        e.preventDefault();
+        paletteOpen = true;
+        return;
+      }
       // Ctrl / ⌘ + 1 / 2 / 3: Scope / Logger / Side-channel
       if (e.key === '1' || e.key === '2' || e.key === '3') {
         setAppMode(e.key === '2' ? 'logger' : e.key === '3' ? 'sca' : 'scope');
@@ -1555,23 +1771,75 @@
     }
     const tag = (e.target as HTMLElement).tagName;
     if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+    // Alt + ← / →: back / forward through the views shown
+    if (e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+      e.preventDefault();
+      if (e.key === 'ArrowLeft') navBack();
+      else navForward();
+      return;
+    }
+    // everywhere
+    if (e.key === '?' || e.key === 'F1') {
+      e.preventDefault();
+      openHelp('start');
+      return;
+    }
+    if (e.key === '[') return toggleSide('left');
+    if (e.key === ']') return toggleSide('right');
+    if (e.key === 'Escape') {
+      if (pickTrigger) pickTrigger = false;
+      else view.active = null;
+      return;
+    }
+    // the rest moves the view on screen: the Logger's keys in the Logger, the Scope's in the Scope
+    if (appMode === 'sca') return;
+    const page = e.shiftKey ? 1 : 0.1;
+    if (appMode === 'logger') {
+      if (e.key === ' ') {
+        e.preventDefault();
+        toggleFollow();
+      } else if (e.key === 'ArrowLeft') loggerPan(-page);
+      else if (e.key === 'ArrowRight') loggerPan(page);
+      else if (e.key === '+' || e.key === '=') loggerZoom(1 / 1.5);
+      else if (e.key === '-') loggerZoom(1.5);
+      else if (e.key === 'Home') loggerHome();
+      else if (e.key === 'End') lv = { ...lv, follow: true };
+      else if (e.key === ',') stepSerial(-1);
+      else if (e.key === '.') stepSerial(1);
+      else return;
+      e.preventDefault();
+      return;
+    }
     if (e.key === ' ') {
       e.preventDefault();
       toggleLive();
-    } else if (e.key === 'Escape') { if (pickTrigger) pickTrigger = false; else view.active = null; }
-    else if (e.key === 'Delete' || e.key === 'Backspace') view.remove(view.active);
+    } else if (e.key === 'Delete' || e.key === 'Backspace') view.remove(view.active);
     else if (e.key === 'm') addSingleMarker();
     else if (e.key === 'd') addDualMarker();
     else if (e.key === 'a' && hasData) openAnalysis();
+    else if (e.key === 'l') showInLogger(scopeRef());
+    else if (e.key === 'n') stepEvent(1);
+    else if (e.key === 'N') stepEvent(-1);
+    else if (e.key === '.') stepSerial(1);
+    else if (e.key === ',') stepSerial(-1);
+    else if (e.key === '>') stepMarker(1);
+    else if (e.key === '<') stepMarker(-1);
     else if (e.key === '+' || e.key === '=') view.zoom(store, -1);
     else if (e.key === '-') view.zoom(store, 1);
-    else if (e.key === 'ArrowLeft') view.pan(store, -0.1);
-    else if (e.key === 'ArrowRight') view.pan(store, 0.1);
-    else if (e.key === '?' || e.key === 'F1') {
-      e.preventDefault();
-      openHelp('start');
-    } else if (e.key === '[') toggleSide('left');
-    else if (e.key === ']') toggleSide('right');
+    else if (e.key === 'ArrowLeft') view.pan(store, -page);
+    else if (e.key === 'ArrowRight') view.pan(store, page);
+    else if (e.key === 'Home') scopeHome();
+    else if (e.key === 'End') view.live = true;
+    else return;
+    if (e.key !== ' ') e.preventDefault();
+  }
+
+  /** the mouse's back / forward buttons: through the views shown */
+  function onMouseNav(e: MouseEvent) {
+    if (e.button !== 3 && e.button !== 4) return;
+    e.preventDefault();
+    if (e.button === 3) navBack();
+    else navForward();
   }
 
   /** fits the screen to a marker: a dual one fills ~80 % of it, a single one is centred */
@@ -1658,6 +1926,7 @@
     return [
       { head: dual ? `${markerName(m)} · Δt ${fmtTime(m.t1! - m.t0)}` : markerName(m) },
       { label: 'Zoom to it', run: () => zoomToMarker(id) },
+      { label: 'Show in the Logger', disabled: !store.session.has_data, run: () => showInLogger(m.t1 == null ? m.t0 : (m.t0 + m.t1) / 2) },
       ...(dual
         ? [
             { label: 'Analyze…', run: () => analyzeMarker(id) },
@@ -1731,6 +2000,8 @@
       { label: 'Zoom in here', hint: '+', disabled: view.divIndex === 0, run: () => (holdAt(at), view.zoom(store, -1, at.t)) },
       { label: 'Zoom out', hint: '−', disabled: view.divIndex === TIME_DIVS.length - 1, run: () => view.zoom(store, 1, at.t) },
       { label: 'Autoset', disabled: !hasData, run: autoset },
+      { label: 'Show in the Logger', hint: 'L', disabled: !store.session.has_data, run: () => showInLogger(at.t) },
+      { label: 'Back', hint: 'Alt ←', disabled: !scopeHist.canBack, run: navBack },
       { label: 'Reset view', run: resetView },
     );
     if (at.sig) {
@@ -1904,6 +2175,9 @@
   }
 
   function reset() {
+    // another device (or none): the views before don't apply to it
+    scopeHist.clear();
+    loggerHist.clear();
     hasData = false;
     store.attach(null);
     setLink(null);
@@ -2101,13 +2375,16 @@
   });
 </script>
 
-<svelte:window onkeydown={onKey} />
+<svelte:window onkeydown={onKey} onmouseup={onMouseNav} />
 <ContextMenu />
 
 {#if updating && dev}
   <Updater {dev} onclose={() => (updating = false)} onrestart={() => { updating = false; boardRestarts(); }} />
 {/if}
 
+{#if paletteOpen}
+  <CommandPalette commands={commands()} onclose={() => (paletteOpen = false)} />
+{/if}
 {#if helpOpen}
   <Help bind:tab={helpTab} {info} link={dev?.link.description ?? ''} onclose={() => (helpOpen = false)} ontour={startTour} />
 {/if}
@@ -2208,6 +2485,7 @@
           <span class="dot"></span><span class="muted">Not connected</span>
         {/if}
       {/if}
+      <button class="ghost find" onclick={() => (paletteOpen = true)} title="Find a setting or action (Ctrl K)" aria-label="Find a setting or action">⌕ <kbd>Ctrl K</kbd></button>
       <button class="ghost" onclick={() => (showcasesOpen = true)} title="Tutorials and showcases: hands-on lessons and real measurements on the demo device" data-tour="showcases">Learn</button>
       <button class="ghost side-btn" onclick={() => (configOpen = true)} title="Configurations: save, load and apply setting profiles" aria-label="Configurations" data-tour="config">⚙</button>
       <button class="ghost side-btn" onclick={(e) => scaleMenu(e)} title="Appearance: UI scale (Ctrl + / −), theme" aria-label="UI scale"
@@ -2514,16 +2792,17 @@
       </div>
     {:else if appMode === 'logger'}
       <div class="logger-wrap" data-tour="logger">
-        <LoggerView bind:this={logger} {store} session={sess} {signals} {axes} {trace} {wallOffset} bind:lv onopen={openInScope} intervals={LOG_INTERVALS} oninterval={changeLogInterval} onreset={resetView} annotations={monitor.annotations} />
+        <LoggerView bind:this={logger} {store} session={sess} {signals} {axes} {trace} {wallOffset} bind:lv onopen={openInScope} intervals={LOG_INTERVALS} oninterval={changeLogInterval} onreset={resetView} annotations={monitor.annotations} onback={navBack} onforward={navForward} canBack={loggerHist.canBack} canForward={loggerHist.canForward} />
       </div>
-      <div class="logger-msgs" class:open={loggerMsgsOpen} data-tour="logger-msgs">
-        <button class="msgs-head" onclick={() => (loggerMsgsOpen = !loggerMsgsOpen)} aria-expanded={loggerMsgsOpen}>
-          <span class="chev">{loggerMsgsOpen ? '▾' : '▸'}</span> Serial messages <small class="muted">{monitor.annotations.length.toLocaleString()}</small>
-        </button>
+      <!-- the same tab bar as under the Scope (the Logger has one list: the serial messages) -->
+      <div class="markers-wrap logger-msgs" class:folded={!loggerMsgsOpen} data-tour="logger-msgs" style={loggerMsgsOpen ? 'height: min(240px, 26vh)' : ''}>
+        <div class="tabs">
+          <button class="on" onclick={() => (loggerMsgsOpen = true)}>Serial <small>{monitor.annotations.length.toLocaleString()}</small></button>
+          <span class="sp"></span>
+          <button class="fold" onclick={() => (loggerMsgsOpen = !loggerMsgsOpen)} aria-expanded={loggerMsgsOpen} title={loggerMsgsOpen ? 'Fold the list' : 'Show the list'}>{loggerMsgsOpen ? '▾' : '▸'}</button>
+        </div>
         {#if loggerMsgsOpen}
-          <div class="msgs-body">
-            <SerialList messages={monitor.annotations} wallClock onjump={jumpLoggerTo} onclear={() => monitor.clear()} onsave={saveMessages} />
-          </div>
+          <SerialList messages={monitor.annotations} wallClock onjump={jumpLoggerTo} onclear={() => monitor.clear()} onsave={saveMessages} />
         {/if}
       </div>
     {:else}
@@ -2546,6 +2825,10 @@
       <button class="small analyze" onclick={openAnalysis} disabled={!hasData} title="Histogram, CDF, spectrum and worst window over the active dual marker, else the screen (A)"
         >Analyze{view.activeMarker?.t1 != null ? ' marker' : ''}…</button
       >
+      <span class="navbtns">
+        <button class="ghost small" onclick={navBack} disabled={!scopeHist.canBack} title="Back to the view before (Alt ←, the mouse's back button)" aria-label="Back">◀</button>
+        <button class="ghost small" onclick={navForward} disabled={!scopeHist.canForward} title="Forward again (Alt →)" aria-label="Forward">▶</button>
+      </span>
       <button class="ghost small" onclick={resetView} title="Plots back as they first were: equal heights, axes on auto, mean and min–max, 100 ms/div, live">Reset view</button>
       {#if autosetNote}<span class="autoset-note" role="status">{autosetNote}</span>{/if}
       <div class="tdiv">
@@ -2843,28 +3126,34 @@
     min-height: 0;
     padding: 8px 12px 12px;
   }
-  .logger-msgs {
-    flex: none;
-    padding: 0 12px 10px;
-  }
-  .msgs-head {
-    display: flex;
+  .find {
+    display: inline-flex;
     align-items: center;
     gap: 6px;
+  }
+  .find kbd {
+    font: 10px ui-monospace, monospace;
+    padding: 0 5px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--muted);
+  }
+  .tabs .sp {
+    flex: 1;
+  }
+  .tabs button.fold {
     border: 0;
     background: none;
-    padding: 2px 0;
-    font-size: 12px;
-    color: var(--text);
-    cursor: pointer;
-  }
-  .msgs-head .chev {
+    padding: 3px 8px;
     color: var(--muted);
-    width: 10px;
   }
-  .msgs-body {
-    height: min(180px, 24vh);
-    margin-top: 4px;
+  .logger-msgs.folded .tabs button.on {
+    border-radius: var(--r);
+    border-bottom: 1px solid var(--border);
+  }
+  .navbtns {
+    display: inline-flex;
+    gap: 2px;
   }
   .strip {
     display: flex;

@@ -50,6 +50,10 @@
     oninterval,
     onreset,
     annotations = [],
+    onback,
+    onforward,
+    canBack = false,
+    canForward = false,
   }: {
     store: SampleStore;
     /** the session log's state (reactive) */
@@ -69,6 +73,11 @@
     onreset?: () => void;
     /** serial-monitor messages, drawn as vertical markers */
     annotations?: Annotation[];
+    /** back / forward through the views shown (the app keeps the history) */
+    onback?: () => void;
+    onforward?: () => void;
+    canBack?: boolean;
+    canForward?: boolean;
   } = $props();
 
   /** new log data redraws no faster than this, nor than twice what a redraw costs; the user's moves at once */
@@ -242,11 +251,11 @@
   }
 
   /** jump the view to a clock time (HH:MM[:SS]) or a duration into the session (1m30s, 90s, 2:05) */
-  function jumpTo(text: string) {
+  function jumpTo(text: string): boolean {
     const s = session;
-    if (!s.has_data) return;
+    if (!s.has_data) return false;
     const v = text.trim();
-    if (!v) return;
+    if (!v) return false;
     let target: number | null = null;
     // HH:MM:SS (three parts) is a wall clock time today
     const hms = v.match(/^(\d{1,2}):(\d{2}):(\d{2})$/);
@@ -265,10 +274,27 @@
       else if (dur && (dur[1] || dur[2] || dur[3])) secs = Number(dur[1] ?? 0) * 3600 + Number(dur[2] ?? 0) * 60 + Number(dur[3] ?? 0);
       if (isFinite(secs)) target = s.t_start + secs;
     }
-    if (target == null || !isFinite(target)) return;
+    if (target == null || !isFinite(target)) return false;
     const cur = lv.follow ? (lv.last > 0 ? lv.last : s.t_end - s.t_start) : Math.max(1e-3, lv.t1 - lv.t0);
     const t = Math.max(s.t_start, Math.min(s.t_end, target));
     lv = { follow: false, last: lv.last, t0: t - cur / 2, t1: t + cur / 2 };
+    return true;
+  }
+
+  // "go to": a small box under the binoculars button, open only while used
+  let gotoOpen = $state(false);
+  let gotoBad = $state(false);
+  let gotoEl = $state<HTMLInputElement>();
+  $effect(() => {
+    if (gotoOpen) gotoEl?.focus();
+  });
+  function onGotoKey(e: KeyboardEvent) {
+    e.stopPropagation();
+    if (e.key === 'Escape') gotoOpen = false;
+    else if (e.key === 'Enter') {
+      if (jumpTo((e.currentTarget as HTMLInputElement).value)) gotoOpen = false;
+      else gotoBad = true;
+    } else gotoBad = false;
   }
 
   function build() {
@@ -544,8 +570,14 @@
 
 <div class="logger" bind:this={root}>
   <div class="bar">
-    <button class="badge" class:live={lv.follow} onclick={() => (lv = { ...lv, follow: true })} title="Follow the newest entries">
-      {lv.follow ? 'FOLLOW' : 'PAUSED'}
+    <!-- as the Scope's: LIVE follows the newest entries, HOLD stays put (Space either way) -->
+    <button
+      class="badge"
+      class:live={lv.follow}
+      onclick={() => (lv = lv.follow ? { follow: false, last: lv.last, t0: span[0], t1: span[1] } : { ...lv, follow: true })}
+      title={lv.follow ? 'Following the newest entries: click (or Space) to stay here' : 'Staying here: click (or Space) to follow the newest entries'}
+    >
+      {lv.follow ? 'LIVE' : 'HOLD'}
     </button>
     <div class="seg">
       {#each LAST as [s, label] (s)}
@@ -572,12 +604,43 @@
     {#if session.has_data}
       <span class="mono muted">since {fmtClock(session.t_start)}</span>
     {/if}
-    <input
-      class="goto mono"
-      placeholder="go to…"
-      title="Jump to a clock time (HH:MM:SS) or a time into the session (e.g. 1m30s)"
-      onkeydown={(e) => e.key === 'Enter' && jumpTo((e.currentTarget as HTMLInputElement).value)}
-    />
+    <span class="gotowrap">
+      <button
+        class="ghost small icon"
+        class:on={gotoOpen}
+        onclick={() => ((gotoOpen = !gotoOpen), (gotoBad = false))}
+        disabled={!session.has_data}
+        title="Go to a clock time (HH:MM:SS) or a time into the session (1m30s, 90s, 2:05, 1h)"
+        aria-label="Go to a time"
+        aria-expanded={gotoOpen}
+      >
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="6.5" cy="15.5" r="3.5" />
+          <circle cx="17.5" cy="15.5" r="3.5" />
+          <path d="M3 15.5 5 6.5a1.5 1.5 0 0 1 3 0v5.5M21 15.5 19 6.5a1.5 1.5 0 0 0-3 0v5.5M10 12.5h4" />
+        </svg>
+      </button>
+      {#if gotoOpen}
+        <span class="gotopop">
+          <input
+            bind:this={gotoEl}
+            class="goto mono"
+            class:bad={gotoBad}
+            placeholder="14:32:05, 1m30s…"
+            aria-label="Time to go to"
+            onkeydown={onGotoKey}
+            onblur={() => (gotoOpen = false)}
+          />
+          <span class="gotohint">{gotoBad ? 'Not a time in this session' : 'Enter: go · Esc: close'}</span>
+        </span>
+      {/if}
+    </span>
+    {#if onback}
+      <span class="navbtns">
+        <button class="ghost small" onclick={onback} disabled={!canBack} title="Back to the view before (Alt ←, the mouse's back button)" aria-label="Back">◀</button>
+        <button class="ghost small" onclick={onforward} disabled={!canForward} title="Forward again (Alt →)" aria-label="Forward">▶</button>
+      </span>
+    {/if}
     <button class="ghost small reset" onclick={() => onreset?.()} title="Plots back as they first were: equal heights, axes on auto, all of the session, following">Reset view</button>
     <span class="hint muted">line: average · band: min–max · wheel: zoom (in to single samples on recent data) · shift+wheel: pan · drag: zoom in · double-click: all · click: open in scope</span>
   </div>
@@ -632,6 +695,10 @@
     gap: 12px;
     font-size: 12px;
     flex-wrap: wrap;
+  }
+  .navbtns {
+    display: inline-flex;
+    gap: 2px;
   }
   .badge {
     font: 600 11px ui-monospace, monospace;
@@ -696,8 +763,44 @@
     margin-left: auto;
     font-size: 11px;
   }
-  .goto {
-    width: 72px;
+  .gotowrap {
+    position: relative;
+    display: inline-flex;
+  }
+  .icon {
+    display: inline-flex;
+    align-items: center;
+    padding: 3px 6px;
+  }
+  .icon.on {
+    color: var(--accent);
+    border-color: var(--accent);
+  }
+  .gotopop {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    z-index: 20;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 6px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--r);
+    box-shadow: 0 8px 24px #0008;
+  }
+  .gotohint {
+    font-size: 11px;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  /* (beats the app's full-width inputs) */
+  .bar .goto.bad {
+    border-color: var(--danger, #e5484d);
+  }
+  .bar .goto {
+    width: 170px;
     padding: 2px 6px;
     font-size: 12px;
   }

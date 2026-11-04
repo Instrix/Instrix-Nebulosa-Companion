@@ -92,8 +92,13 @@
       [
         ['Space', 'Live / Hold'],
         ['Wheel', 'Time per division (around the pointer when held)'],
-        ['Shift + wheel, ← →', 'Pan'],
+        ['Shift + wheel, ← →', 'Pan (Shift + ← → a whole screen)'],
         ['+ / −', 'Zoom in / out'],
+        ['Home / End', 'The oldest samples held / back to live'],
+        ['N / Shift + N', 'Next / previous trigger event'],
+        [', / .', 'Previous / next serial message'],
+        ['< / >', 'Previous / next marker'],
+        ['L', 'This moment in the Logger'],
         ['Drag across a plot', 'Dual marker (a window: Δt, mean, ∫)'],
         ['Ctrl (⌘) + drag across a plot', 'Zoom in on that span (holds the view)'],
         ['Double-click a plot', 'Single marker'],
@@ -111,11 +116,21 @@
     [
       'Logger',
       [
-        ['Wheel', 'Zoom'],
-        ['Shift + wheel', 'Pan'],
+        ['Space', 'Live (follow the newest) / Hold'],
+        ['Wheel, + / −', 'Zoom'],
+        ['Shift + wheel, ← →', 'Pan (Shift + ← → a whole screen)'],
+        ['Home / End', 'The start of the session / back to live'],
+        [', / .', 'Previous / next serial message'],
         ['Drag', 'Zoom in on a span'],
         ['Double-click', 'Everything'],
         ['Click', 'Open that moment in the scope'],
+      ],
+    ],
+    [
+      'Both',
+      [
+        ['Ctrl K', 'Find a setting or an action'],
+        ['Alt ← / Alt →, the mouse’s back / forward', 'Back / forward through the views shown'],
       ],
     ],
     [
