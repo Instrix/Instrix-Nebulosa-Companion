@@ -474,7 +474,7 @@
         const d = (((e.shiftKey ? e.deltaY || e.deltaX : e.deltaX) * k) / Math.max(1, u.over.clientWidth)) * w;
         lv = { follow: false, last: lv.last, t0: a + d, t1: b + d };
       } else {
-        const at = u.posToVal(e.offsetX, 'x') - wallOffset;
+        const at = u.posToVal(e.clientX - u.over.getBoundingClientRect().left, 'x') - wallOffset;
         const f = Math.exp(Math.max(-300, Math.min(300, e.deltaY * k)) * 0.0034);
         // down to a few samples (the buffer has them for recent data)
         const nw = Math.max(w * f, 2e-5);
@@ -490,7 +490,7 @@
       const x0 = e.clientX;
       const up = (ev: MouseEvent) => {
         window.removeEventListener('mouseup', up);
-        if (Math.abs(ev.clientX - x0) < 3 && ev.button === 0) onopen(u.posToVal(e.offsetX, 'x') - wallOffset);
+        if (Math.abs(ev.clientX - x0) < 3 && ev.button === 0) onopen(u.posToVal(e.clientX - u.over.getBoundingClientRect().left, 'x') - wallOffset);
       };
       window.addEventListener('mouseup', up);
     };

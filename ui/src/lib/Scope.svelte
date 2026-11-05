@@ -486,7 +486,9 @@
           legend: { show: false },
           // room for the top and bottom y labels, so they stay off the neighbouring plots
           padding: [12, 8, last ? 0 : 12, 0],
-          cursor: { drag: { x: true, y: false, setScale: false }, points: { show: false }, sync: { key: SYNC_KEY } },
+          // uPlot's own double-click resets the x scale to the data's, before ours reads the time under
+          // the pointer: the single marker landed off (the double-click is ours: a single marker)
+          cursor: { drag: { x: true, y: false, setScale: false }, points: { show: false }, sync: { key: SYNC_KEY }, bind: { dblclick: () => null } },
           series: [
             {},
             { ...edge },
@@ -623,7 +625,7 @@
         return;
       }
       const n = zoomSteps(e);
-      if (n) view.zoom(store, n, u.posToVal(e.offsetX, 'x'));
+      if (n) view.zoom(store, n, u.posToVal(e.clientX - u.over.getBoundingClientRect().left, 'x'));
     };
   }
 
@@ -685,7 +687,7 @@
     return (e: MouseEvent) => {
       e.preventDefault();
       view.hold(store);
-      view.addSingle(u.posToVal(e.offsetX, 'x'));
+      view.addSingle(u.posToVal(e.clientX - u.over.getBoundingClientRect().left, 'x'));
     };
   }
 
