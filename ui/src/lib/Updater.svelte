@@ -7,6 +7,7 @@
   import type { Device } from './device';
   import { core, hex } from './nbp';
   import * as up from './updater';
+  import UpdateProgress from './UpdateProgress.svelte';
 
   let {
     dev,
@@ -24,10 +25,18 @@
   let error = $state('');
   let file = $state<{ name: string; kind: 'firmware' | 'gateware'; data: Uint8Array; summary: string } | null>(null);
   let busy = $state(false);
-  let stage = $state('');
-  let pct = $state(0);
   let result = $state<up.Outcome | null>(null);
-  let cancelled = false;
+  let cancelled = $state(false);
+  /** the progress dialog: shown from Install until it's closed */
+  let prog = $state<{
+    title: string;
+    kind: 'firmware' | 'gateware';
+    stage: string;
+    done: number;
+    total: number;
+    started: number;
+    outcome: { ok: boolean; msg: string; note?: string } | null;
+  } | null>(null);
 
   async function load() {
     error = '';
@@ -74,23 +83,50 @@
     cancelled = false;
     error = '';
     result = null;
+    const kind = file.kind;
+    prog = {
+      title: `Installing ${file.name}`,
+      kind,
+      stage: 'Erasing',
+      done: 0,
+      total: 0,
+      started: performance.now(),
+      outcome: null,
+    };
     try {
       await dev.stop().catch(() => undefined); // board commands answer BUSY while a stream runs
       const progress: up.Progress = (s, d, t) => {
-        stage = s;
-        pct = t ? Math.round((d / t) * 100) : 0;
+        if (prog) {
+          prog.stage = s;
+          prog.done = d;
+          prog.total = t;
+        }
       };
-      const r = file.kind === 'firmware'
+      const r = kind === 'firmware'
         ? await up.installFirmware(dev, file.data, progress, () => cancelled)
         : await up.installGateware(dev, file.data, progress, () => cancelled);
       result = r;
       if (r.info) info = r.info;
-      if (r.ok && file.kind === 'firmware') onrestart();
+      if (prog)
+        prog.outcome = {
+          ok: r.ok,
+          msg: r.msg || core.status_name(r.status),
+          note: r.ok && kind === 'firmware' ? 'The board restarts to install it; the app reconnects when it is back.' : undefined,
+        };
+      if (r.ok && kind === 'firmware') setTimeout(closeProgress, 3000); // the reconnect starts then
     } catch (e) {
       error = e instanceof up.Cancelled ? 'Cancelled. The active firmware and gateware are untouched.' : String(e);
+      if (prog) prog.outcome = { ok: false, msg: error };
     } finally {
       busy = false;
     }
+  }
+
+  function closeProgress() {
+    if (!prog) return;
+    const restart = prog.outcome?.ok && prog.kind === 'firmware';
+    prog = null;
+    if (restart) onrestart();
   }
 
   async function revertIt() {
@@ -158,14 +194,6 @@
         {/if}
       </div>
 
-      {#if busy}
-        <div class="prog">
-          <div class="bar"><div style="width: {pct}%"></div></div>
-          <span>{stage} {pct}%</span>
-          <button class="ghost small" onclick={() => (cancelled = true)}>Cancel</button>
-        </div>
-      {/if}
-
       {#if result}
         <p class={result.ok ? 'ok' : 'error'}>
           {result.ok ? '✓' : '✕'} {result.msg || core.status_name(result.status)}
@@ -184,6 +212,15 @@
     {#if error}<p class="error">{error}</p>{/if}
   </div>
 </div>
+
+{#if prog}
+  <UpdateProgress
+    {...prog}
+    cancelling={cancelled && !prog.outcome}
+    oncancel={() => (cancelled = true)}
+    onclose={closeProgress}
+  />
+{/if}
 
 <style>
   .backdrop {
@@ -261,24 +298,6 @@
   }
   .chosen button {
     margin-left: auto;
-  }
-  .prog {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    font-size: 13px;
-  }
-  .bar {
-    flex: 1;
-    height: 8px;
-    border-radius: var(--r-sm);
-    background: var(--border);
-    overflow: hidden;
-  }
-  .bar div {
-    height: 100%;
-    background: var(--accent);
-    transition: width 0.2s;
   }
   .more {
     display: flex;
