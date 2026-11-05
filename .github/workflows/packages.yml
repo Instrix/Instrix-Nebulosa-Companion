@@ -3,6 +3,8 @@
 # and release.yml (tags); can also be run on its own from the Actions tab.
 #
 #   Linux    .deb, .rpm, .AppImage                       (x86_64, arm64)
+#            Electron (Chromium) on the Rust backend: WebKitGTK draws the plots
+#            too slowly, so Linux doesn't use Tauri (electron/, src-tauri/src/server.rs)
 #   Windows  NSIS setup .exe, .msi, portable .exe (zip)   (x64; arm64: no .msi, WiX has no ARM64)
 #   macOS    .dmg, .app (zip)                             (universal: Apple silicon + Intel)
 #
@@ -75,8 +77,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev libayatana-appindicator3-dev \
-            librsvg2-dev libudev-dev patchelf xdg-utils file
+          sudo apt-get install -y libudev-dev rpm
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -92,11 +93,26 @@ jobs:
         with:
           node-version: 22
           cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            electron/package-lock.json
       - run: npm ci
 
       # beforeBuildCommand builds the core to WASM and the UI first
-      - name: Build
+      - name: Build (Tauri)
+        if: runner.os != 'Linux'
         run: npx tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+
+      # Linux: the UI, the backend alone (no Tauri, no WebKitGTK), the Electron shell
+      - name: Build (Electron)
+        if: runner.os == 'Linux'
+        run: |
+          npm run build:ui
+          cargo build --release --locked -p nebulosa-companion --no-default-features --features server --bin nebulosa-backend
+          cd electron
+          npm ci
+          npm pkg set version=$(node -p "require('../src-tauri/tauri.conf.json').version")
+          npx electron-builder --linux deb rpm AppImage --publish never
 
       - name: Collect the packages
         shell: bash
@@ -109,9 +125,10 @@ jobs:
           N=nebulosa-companion_${VER}
           case "${{ runner.os }}" in
             Linux)
-              cp $B/deb/*.deb           "$OUT/${N}_${{ matrix.deb-arch }}.deb"
-              cp $B/rpm/*.rpm           "$OUT/${N}_${{ matrix.rpm-arch }}.rpm"
-              cp $B/appimage/*.AppImage "$OUT/${N}_${{ matrix.deb-arch }}.AppImage"
+              E=target/electron
+              cp $E/*.deb      "$OUT/${N}_${{ matrix.deb-arch }}.deb"
+              cp $E/*.rpm      "$OUT/${N}_${{ matrix.rpm-arch }}.rpm"
+              cp $E/*.AppImage "$OUT/${N}_${{ matrix.deb-arch }}.AppImage"
               ;;
             Windows)
               A=${{ matrix.win-arch }}

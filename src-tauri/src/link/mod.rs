@@ -10,7 +10,6 @@ use nbp_core::{msg, Calibration, Frame, Meta, Pipeline};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tauri::ipc::{Channel, InvokeResponseBody};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
@@ -31,7 +30,7 @@ pub enum Event {
     Closed { reason: String },
 }
 
-pub type Events = Channel<InvokeResponseBody>;
+pub use crate::events::Events;
 
 pub(crate) fn send_meta(ch: &Events, m: Meta) -> bool {
     send_json(ch, &Event::Meta(m))
@@ -39,7 +38,7 @@ pub(crate) fn send_meta(ch: &Events, m: Meta) -> bool {
 
 fn send_json(ch: &Events, e: &Event) -> bool {
     match serde_json::to_string(e) {
-        Ok(s) => ch.send(InvokeResponseBody::Json(s)).is_ok(),
+        Ok(s) => ch.json(s),
         Err(_) => true,
     }
 }

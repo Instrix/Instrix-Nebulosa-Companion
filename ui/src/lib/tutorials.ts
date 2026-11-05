@@ -643,7 +643,7 @@ export const TUTORIALS: Showcase[] = [
         {
           target: 'capture-window',
           title: 'Before and after',
-          body: '<b>Before</b>: how much from before the trigger a capture starts with. It comes out of memory — the sample buffer for every sample, the session log per interval — and the shaded band at the right of the plots shows it. <b>After</b>: how long it goes on.',
+          body: '<b>Before</b>: how much from before the trigger a capture starts with. It comes out of memory — the sample buffer for every sample, the session log per interval — and the shaded band at the right of the plots shows it. <b>After</b>: how long it goes on — or tick <b>No end</b> to keep going until you stop it.',
           enter: () => c.capture({ pre: 2, post: 2 }),
         },
         {

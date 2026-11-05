@@ -14,7 +14,7 @@ use nbp_core::{msg, Calibration};
 use nebulosa_companion_lib::files;
 use nebulosa_companion_lib::link::{Conn, Target};
 use std::time::Duration;
-use tauri::ipc::{Channel, InvokeResponseBody};
+use nebulosa_companion_lib::events::Events;
 
 const PRE: f64 = 3.0;
 const POST: f64 = 2.0;
@@ -62,7 +62,7 @@ async fn main() {
         let (host, port) = target_s.split_once(':').map_or((target_s.clone(), None), |(h, p)| (h.to_string(), p.parse().ok()));
         Target::Tcp { host, port }
     };
-    let events = Channel::new(|_: InvokeResponseBody| Ok(()));
+    let events = Events::none();
     // 16 Mi samples: 8 s at 2 MS/s, room for the 3 s before
     let mut c = Conn::open(target, events, 1 << 24, Calibration::default()).await.expect("connect");
     println!("connected: {}", c.description);

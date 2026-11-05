@@ -8,8 +8,7 @@ use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tauri::ipc::Channel;
-use tauri::State;
+use crate::events::Events;
 
 #[derive(Default)]
 pub struct SerialState(Mutex<Option<Open>>);
@@ -31,7 +30,6 @@ pub struct PortInfo {
     pub label: String,
 }
 
-#[tauri::command]
 pub async fn serial_list() -> Result<Vec<PortInfo>, String> {
     let ports = serialport::available_ports().map_err(|e| e.to_string())?;
     Ok(ports
@@ -85,9 +83,9 @@ fn apply(cfg: &PortCfg, b: serialport::SerialPortBuilder) -> serialport::SerialP
     })
 }
 
+impl SerialState {
 /// Opens `path` with `cfg`; what it receives goes to `on_data`.
-#[tauri::command]
-pub async fn serial_open(state: State<'_, SerialState>, path: String, cfg: PortCfg, on_data: Channel<Vec<u8>>) -> Result<(), String> {
+pub async fn serial_open(&self, path: String, cfg: PortCfg, on_data: Events) -> Result<(), String> {
     let mut port = apply(&cfg, serialport::new(&path, cfg.baud).timeout(Duration::from_millis(50))).open().map_err(|e| format!("{path}: {e}"))?;
     // control lines (ignored by ports that don't have them)
     let _ = port.write_request_to_send(cfg.rts);
@@ -101,7 +99,7 @@ pub async fn serial_open(state: State<'_, SerialState>, path: String, cfg: PortC
             match reader.read(&mut buf) {
                 Ok(0) => {}
                 Ok(n) => {
-                    if on_data.send(buf[..n].to_vec()).is_err() {
+                    if !on_data.bytes(buf[..n].to_vec()) {
                         break;
                     }
                 }
@@ -110,28 +108,26 @@ pub async fn serial_open(state: State<'_, SerialState>, path: String, cfg: PortC
             }
         }
     });
-    *state.0.lock().unwrap() = Some(Open { port, stop });
+    *self.0.lock().unwrap() = Some(Open { port, stop });
     Ok(())
 }
 
-#[tauri::command]
-pub async fn serial_write(state: State<'_, SerialState>, data: Vec<u8>) -> Result<(), String> {
-    let mut g = state.0.lock().unwrap();
+pub async fn serial_write(&self, data: Vec<u8>) -> Result<(), String> {
+    let mut g = self.0.lock().unwrap();
     let o = g.as_mut().ok_or("no serial port open")?;
     o.port.write_all(&data).and_then(|_| o.port.flush()).map_err(|e| e.to_string())
 }
 
 /// Toggle the RTS / DTR control lines while open (e.g. to reset a board).
-#[tauri::command]
-pub async fn serial_signals(state: State<'_, SerialState>, rts: bool, dtr: bool) -> Result<(), String> {
-    let mut g = state.0.lock().unwrap();
+pub async fn serial_signals(&self, rts: bool, dtr: bool) -> Result<(), String> {
+    let mut g = self.0.lock().unwrap();
     let o = g.as_mut().ok_or("no serial port open")?;
     o.port.write_request_to_send(rts).map_err(|e| e.to_string())?;
     o.port.write_data_terminal_ready(dtr).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-pub async fn serial_close(state: State<'_, SerialState>) -> Result<(), String> {
-    state.0.lock().unwrap().take();
+pub async fn serial_close(&self) -> Result<(), String> {
+    self.0.lock().unwrap().take();
     Ok(())
+}
 }

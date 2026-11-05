@@ -1227,8 +1227,17 @@
     capture[which] = v;
     el.value = durText(which, v);
   }
+  /** After, before No end was ticked: back when it's unticked */
+  let lastPost = 5;
+  const noEndBlocked = $derived(!streamed && out.cfg.data === 'raw');
+  function setNoEnd(on: boolean) {
+    if (on) {
+      if (capture.post) lastPost = capture.post;
+      capture.post = 0;
+    } else capture.post = Math.min(lastPost || 5, postMax);
+  }
   function durText(which: 'pre' | 'post', v: number) {
-    return v ? fmtDur(v) : which === 'pre' ? 'none' : 'until stopped';
+    return v ? fmtDur(v) : which === 'pre' ? 'none' : '∞';
   }
   /** what stops a capture from arming, if anything */
   const armBlock = $derived.by(() => {
@@ -2625,16 +2634,14 @@
     // drag a recording / log onto the window to open it (desktop app)
     let dropOff: (() => void) | undefined;
     if (isNative) {
-      import('@tauri-apps/api/webview').then(({ getCurrentWebview }) => {
-        getCurrentWebview()
-          .onDragDropEvent((e) => {
-            if (e.payload.type !== 'drop') return;
-            const path = e.payload.paths.find((p) => /\.(nbrec|nblog)$/i.test(p));
-            if (path) openRecording(path);
-          })
+      import('./lib/ipc').then(({ onDropPaths }) =>
+        onDropPaths((paths) => {
+          const path = paths.find((p) => /\.(nbrec|nblog)$/i.test(p));
+          if (path) openRecording(path);
+        })
           .then((un) => (dropOff = un))
-          .catch(() => undefined);
-      });
+          .catch(() => undefined),
+      );
     }
     const t = setInterval(refreshMeter, 250);
     const wd = setInterval(watchdog, 2000);
@@ -3006,7 +3013,10 @@
           </label>
           <label title="How long it goes on after the trigger: any duration, or until stopped (leave it empty){streamed ? '' : `; in the browser up to ${fmtTime(postMax)}`}">
             After
-            <input class="dur" list="dur-post" value={durText('post', capture.post)} disabled={capState === 'armed' || !!capturing} onchange={(e) => setDur('post', e.currentTarget)} onfocus={(e) => e.currentTarget.select()} />
+            <input class="dur" list="dur-post" value={durText('post', capture.post)} disabled={capState === 'armed' || !!capturing || capture.post === 0} onchange={(e) => setDur('post', e.currentTarget)} onfocus={(e) => e.currentTarget.select()} />
+          </label>
+          <label class="check noend" title={noEndBlocked ? 'In the browser, every sample needs an end (it must fit the sample buffer). The desktop app, or the session log, can go on until stopped.' : 'Go on after the trigger until you stop it (■ Stop capture): the window before, then everything after'}>
+            <input type="checkbox" checked={capture.post === 0} disabled={capState === 'armed' || !!capturing || (noEndBlocked && capture.post !== 0)} onchange={(e) => setNoEnd(e.currentTarget.checked)} /> No end
           </label>
           <datalist id="dur-pre">{#each PRE_CHOICES.filter((v) => v <= preMax) as v (v)}<option value={durText('pre', v)}></option>{/each}</datalist>
           <datalist id="dur-post">{#each POST_CHOICES.filter((v) => v <= postMax && (v || streamed || out.cfg.data !== 'raw')) as v (v)}<option value={durText('post', v)}></option>{/each}</datalist>

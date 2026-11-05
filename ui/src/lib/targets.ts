@@ -122,20 +122,19 @@ interface WebSerial {
 
 /** the desktop app's serial ports */
 export async function nativeSerialPorts(): Promise<{ path: string; label: string }[]> {
-  const { invoke } = await import('@tauri-apps/api/core');
+  const { invoke } = await import('./ipc');
   return invoke('serial_list');
 }
 
 /** SimpleSerial on a serial port, in the desktop app */
 export async function nativeSerialTarget(path: string, baud: number): Promise<Target> {
-  const { Channel, invoke } = await import('@tauri-apps/api/core');
-  const ch = new Channel<number[]>();
+  const { channel, invoke } = await import('./ipc');
   const ss = new SimpleSerial(
     `${path} · ${baud} Bd`,
     (b) => invoke('serial_write', { data: Array.from(b) }),
     () => invoke('serial_close'),
   );
-  ch.onmessage = (b) => ss.feed(Uint8Array.from(b));
+  const ch = channel<number[] | Uint8Array>((b) => ss.feed(Uint8Array.from(b)));
   await invoke('serial_open', { path, cfg: { baud, data_bits: 8, parity: 'none', stop_bits: 1, flow: 'none', rts: false, dtr: false }, onData: ch });
   return ss;
 }

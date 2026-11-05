@@ -9,13 +9,35 @@ license.workspace = true
 name = "nebulosa_companion_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+# The desktop app (Tauri: Windows, macOS)
+[[bin]]
+name = "nebulosa-companion"
+path = "src/main.rs"
+required-features = ["tauri-app"]
+
+# The backend alone, serving the UI and a WebSocket on localhost (Linux: the
+# Electron shell in electron/ runs it); no Tauri, no WebKitGTK linked
+[[bin]]
+name = "nebulosa-backend"
+path = "src/bin/nebulosa-backend.rs"
+required-features = ["server"]
+
+[features]
+default = ["tauri-app"]
+tauri-app = ["dep:tauri", "dep:tauri-plugin-dialog", "dep:tauri-build"]
+server = ["dep:axum", "dep:tower-http", "dep:getrandom"]
+
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
+tauri-build = { version = "2", features = [], optional = true }
 
 [dependencies]
 nbp-core = { path = "../crates/nbp-core" }
-tauri = { version = "2", features = [] }
-tauri-plugin-dialog = "2"
+tauri = { version = "2", features = [], optional = true }
+tauri-plugin-dialog = { version = "2", optional = true }
+axum = { version = "0.8", features = ["ws"], optional = true }
+tower-http = { version = "0.6", features = ["fs"], optional = true }
+getrandom = { version = "0.3", optional = true }
+dirs = "6"
 fs2 = "0.4"
 hdf5-pure = "0.47"
 serde = { version = "1", features = ["derive"] }

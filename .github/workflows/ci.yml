@@ -42,6 +42,8 @@ jobs:
 
       - name: Rust tests (core and backend)
         run: cargo test --workspace --locked
+      - name: Backend alone (the Linux app's)
+        run: cargo build --locked -p nebulosa-companion --no-default-features --features server --bin nebulosa-backend
 
       - name: Install UI dependencies
         run: npm ci

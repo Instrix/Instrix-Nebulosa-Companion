@@ -1,0 +1,87 @@
+{
+  "name": "nebulosa-companion",
+  "productName": "Nebulosa Companion",
+  "version": "0.1.0",
+  "description": "INSTRIX Nebulosa companion app",
+  "author": "INSTRIX",
+  "license": "UNLICENSED",
+  "private": true,
+  "main": "main.cjs",
+  "homepage": "https://github.com/Instrix/Instrix-Nebulosa-Companion",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --linux --publish never"
+  },
+  "devDependencies": {
+    "electron": "44.9.3",
+    "electron-builder": "26.17.0"
+  },
+  "build": {
+    "appId": "com.instrix.nebulosa.companion",
+    "productName": "Nebulosa Companion",
+    "executableName": "nebulosa-companion",
+    "directories": {
+      "output": "../target/electron"
+    },
+    "files": [
+      "main.cjs",
+      "preload.cjs",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../target/release/nebulosa-backend",
+        "to": "nebulosa-backend"
+      },
+      {
+        "from": "../dist",
+        "to": "dist"
+      },
+      {
+        "from": "../src-tauri/icons/icon.png",
+        "to": "icon.png"
+      }
+    ],
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb",
+        "rpm"
+      ],
+      "category": "Development",
+      "icon": "../src-tauri/icons/icon.png",
+      "synopsis": "Nebulosa power profiler companion",
+      "artifactName": "nebulosa-companion_${version}_${arch}.${ext}",
+      "desktop": {
+        "entry": {
+          "StartupWMClass": "nebulosa-companion"
+        }
+      },
+      "maintainer": "INSTRIX",
+      "vendor": "INSTRIX"
+    },
+    "deb": {
+      "depends": [
+        "libgtk-3-0",
+        "libnotify4",
+        "libnss3",
+        "libxss1",
+        "libxtst6",
+        "xdg-utils",
+        "libatspi2.0-0",
+        "libuuid1",
+        "libsecret-1-0",
+        "libudev1"
+      ],
+      "fpm": [
+        "../udev/99-nebulosa.rules=/usr/lib/udev/rules.d/99-nebulosa.rules"
+      ]
+    },
+    "copyright": "\u00a9 INSTRIX",
+    "rpm": {
+      "fpm": [
+        "../udev/99-nebulosa.rules=/usr/lib/udev/rules.d/99-nebulosa.rules"
+      ]
+    }
+  }
+}

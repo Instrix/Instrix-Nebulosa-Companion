@@ -12,7 +12,10 @@
     "build": "tauri build",
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "test": "cargo test -p nbp-core",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "backend": "cargo build --release -p nebulosa-companion --no-default-features --features server --bin nebulosa-backend",
+    "linux": "npm run build:ui && npm run backend && cd electron && npm start",
+    "linux:dist": "npm run build:ui && npm run backend && cd electron && npx electron-builder --linux deb rpm AppImage --publish never"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.4",

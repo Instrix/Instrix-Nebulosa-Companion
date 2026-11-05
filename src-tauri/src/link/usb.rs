@@ -54,7 +54,7 @@ pub(crate) async fn open(
         .map_err(|e| e.to_string())?
         .find(|d| is_nbp(d) && dev_id(d) == id)
         .ok_or("device gone; refresh the list")?;
-    let dev = info.open().map_err(|e| format!("open: {e} (permissions? see udev/)"))?;
+    let dev = info.open().map_err(|e| no_driver(format!("open: {e}")).unwrap_or_else(|e| if cfg!(windows) { e } else { format!("{e} (permissions? see udev/)") }))?;
     let cfg = dev.active_configuration().map_err(|e| e.to_string())?;
     let alt = cfg
         .interface_alt_settings()
@@ -70,7 +70,9 @@ pub(crate) async fn open(
     if in_eps.is_empty() {
         return Err("no IN endpoint".into());
     }
-    let iface = dev.claim_interface(alt.interface_number()).map_err(|e| format!("claim: {e}"))?;
+    let iface = dev
+        .claim_interface(alt.interface_number())
+        .map_err(|e| no_driver(format!("claim: {e}")).unwrap_or_else(|e| e))?;
 
     let tasks = in_eps
         .iter()
@@ -100,3 +102,17 @@ pub(crate) async fn open(
     let speed = info.speed().map(|s| format!(" {s:?}")).unwrap_or_default();
     Ok((Writer::Usb { iface, ep: out_ep }, tasks, format!("USB {id}{speed}")))
 }
+
+/// Windows with no WinUSB driver on the board (firmware without MS OS 2.0
+/// descriptors): say what to do, not the USB stack's words.
+fn no_driver(e: String) -> Result<String, String> {
+    if cfg!(windows) && (e.contains("determine driver") || e.contains("not supported") || e.contains("driver")) {
+        Ok(format!(
+            "Windows has no driver for the board yet. Once per PC: run Zadig (zadig.akeo.ie), \
+             Options › List All Devices, pick Nebulosa, driver WinUSB, Install Driver; then connect again. ({e})"
+        ))
+    } else {
+        Err(e)
+    }
+}
+

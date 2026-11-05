@@ -30,8 +30,8 @@ export async function setScale(v: number) {
     /* storage unavailable */
   }
   if (!canScale) return;
-  const { getCurrentWebview } = await import('@tauri-apps/api/webview');
-  await getCurrentWebview().setZoom(v);
+  const { setZoom } = await import('./ipc');
+  await setZoom(v);
 }
 
 /** one step bigger (+1) or smaller (−1) */

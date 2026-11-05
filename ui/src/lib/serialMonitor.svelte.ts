@@ -72,9 +72,8 @@ function splitLines(buf: string, mode: SerialConfig['rxNewline']): [string[], st
 
 async function openPort(cfg: SerialConfig, onBytes: (b: Uint8Array) => void, path?: string): Promise<MonitorHandle> {
   if (isNative) {
-    const { Channel, invoke } = await import('@tauri-apps/api/core');
-    const ch = new Channel<number[]>();
-    ch.onmessage = (b) => onBytes(Uint8Array.from(b));
+    const { channel, invoke } = await import('./ipc');
+    const ch = channel<number[] | Uint8Array>((b) => onBytes(Uint8Array.from(b)));
     const portCfg = {
       baud: cfg.baud,
       data_bits: cfg.dataBits,

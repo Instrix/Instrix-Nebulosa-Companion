@@ -2,6 +2,7 @@
 // and the browser build (WebUSB) implement Link; Device adds the typed
 // commands on top, the same for both.
 
+import { shellKind } from './ipc';
 import type { ScaEngine } from './sca';
 import {
   CMD,
@@ -117,4 +118,5 @@ export class Device {
   }
 }
 
-export const isNative = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+/** the desktop app (Tauri, or the Linux Chromium shell): the Rust backend owns the device */
+export const isNative = shellKind !== 'web';

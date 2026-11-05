@@ -14,7 +14,7 @@ use nebulosa_companion_lib::files;
 use nebulosa_companion_lib::link::{Conn, Target};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tauri::ipc::{Channel, InvokeResponseBody};
+use nebulosa_companion_lib::events::{Events, Msg};
 
 fn rss_mb() -> f64 {
     let s = std::fs::read_to_string("/proc/self/statm").unwrap_or_default();
@@ -61,15 +61,15 @@ async fn main() {
     // the pipeline directly) and reporting a closed connection
     let metas = Arc::new(Mutex::new(0u64));
     let m2 = metas.clone();
-    let events = Channel::new(move |b: InvokeResponseBody| {
-        if let InvokeResponseBody::Json(s) = b {
+    let events = Events::new(move |b: Msg| {
+        if let Msg::Json(s) = b {
             if s.contains("\"event\":\"meta\"") {
                 *m2.lock().unwrap() += 1;
             } else if s.contains("\"event\":\"closed\"") {
                 eprintln!("connection closed: {s}");
             }
         }
-        Ok(())
+        true
     });
 
     let mut c = Conn::open(target, events, 1 << 24, Calibration::default()).await.expect("connect");

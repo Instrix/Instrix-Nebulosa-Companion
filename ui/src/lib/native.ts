@@ -1,7 +1,7 @@
 // Native transport: the Rust backend (src-tauri) owns USB / TCP / UDP and
 // runs the receive pipeline; batches arrive on a Tauri channel.
 
-import { Channel, invoke } from '@tauri-apps/api/core';
+import { channel as ipcChannel, invoke, pickOpen, pickSave as ipcPickSave } from './ipc';
 import type { Candidate, Link, LinkEvents } from './device';
 import type { ScaEngine } from './sca';
 import { hex, type ExportCfg, type AnalysisRequest, type AnalysisResult, type Calibration, type Info, type Meta, type RawSpanStats, type Reply, type TrigEvent, type TriggerCfg, type AlignResult, type ScaInfo, type ScaResult, type TraceMeta } from './nbp';
@@ -124,12 +124,10 @@ class NativeLink implements Link {
 }
 
 function channel(ev: LinkEvents) {
-  const events = new Channel<Event>();
-  events.onmessage = (m) => {
+  return ipcChannel<Event>((m) => {
     if (m.event === 'meta') ev.onMeta(m);
     else ev.onClosed(m.reason);
-  };
-  return events;
+  });
 }
 
 async function open(target: Target, ev: LinkEvents): Promise<Link> {
@@ -168,18 +166,11 @@ export async function openRecording(path: string, ev: LinkEvents): Promise<{ lin
 }
 
 export async function pickRecording(): Promise<string | null> {
-  const { open: dialog } = await import('@tauri-apps/plugin-dialog');
-  const p = await dialog({
-    multiple: false,
-    directory: false,
-    filters: [{ name: 'Nebulosa recording or log', extensions: ['nbrec', 'nblog'] }],
-  });
-  return typeof p === 'string' ? p : null;
+  return pickOpen([{ name: 'Nebulosa recording or log', extensions: ['nbrec', 'nblog'] }]);
 }
 
 export async function pickSave(defaultPath: string, name: string, ext: string): Promise<string | null> {
-  const { save } = await import('@tauri-apps/plugin-dialog');
-  return save({ defaultPath, filters: [{ name, extensions: [ext] }] });
+  return ipcPickSave(defaultPath, [{ name, extensions: [ext] }]);
 }
 
  // ---- logging ----------------------------------------------------------------

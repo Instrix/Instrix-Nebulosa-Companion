@@ -5,6 +5,7 @@
 <script lang="ts">
   // Help: getting started, keys and mouse, troubleshooting, about. ? or F1.
   import { isNative } from './device';
+  import { shellKind } from './ipc';
   import { hex, type Info } from './nbp';
   // INSTRIX brand logos (Instrix-Docs/brand/logo): the white one only on the dark theme
   import logo from '../assets/instrix-horizontal.svg';
@@ -196,7 +197,7 @@
         <dl>
           <dt>Version</dt><dd>{__APP_VERSION__}{#if __APP_COMMIT__}{' '}<small class="muted">({__APP_COMMIT__})</small>{/if}</dd>
           <dt>Built</dt><dd>{__APP_BUILT__}</dd>
-          <dt>Runs as</dt><dd>{isNative ? 'Desktop app (Tauri)' : 'Browser (WebUSB)'}</dd>
+          <dt>Runs as</dt><dd>{shellKind === 'tauri' ? 'Desktop app (Tauri)' : shellKind === 'ws' ? 'Desktop app (Chromium)' : 'Browser (WebUSB)'}</dd>
           {#if info}
             <dt>Device</dt><dd>{link}</dd>
             <dt>Firmware</dt><dd>{info.fw_version_str} <small class="muted">{info.build}</small></dd>

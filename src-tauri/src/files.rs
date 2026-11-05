@@ -13,14 +13,13 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread::JoinHandle;
-use tauri::{AppHandle, Manager};
 
 pub const EXT: &str = "nbrec";
 pub const LOG_EXT: &str = "nblog";
 
 /// ~/Documents/Nebulosa (created on demand)
-pub fn recordings_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    let base = app.path().document_dir().or_else(|_| app.path().home_dir()).map_err(|e| e.to_string())?;
+pub fn recordings_dir() -> Result<PathBuf, String> {
+    let base = dirs::document_dir().or_else(dirs::home_dir).ok_or("no Documents or home folder")?;
     let d = base.join("Nebulosa");
     std::fs::create_dir_all(&d).map_err(|e| format!("{}: {e}", d.display()))?;
     Ok(d)
