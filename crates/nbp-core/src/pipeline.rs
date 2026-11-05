@@ -391,8 +391,13 @@ impl Pipeline {
 
     /// The export's last chunks; it stops.
     pub fn stop_export(&mut self) -> Vec<crate::export::Chunk> {
-        self.session.close();
+        // what has finished goes to every file; the interval still being built
+        // ends this one's rows, but stays open in the session log (closing it
+        // would split it there, for the log and any other file)
         self.feed_session();
+        if let (Some((crate::export::Data::Summary, _, out)), Some(e)) = (&mut self.export, self.session.partial()) {
+            out.push(crate::export::Chunk::Entries(vec![e]));
+        }
         let v = self.take_export(true);
         self.export = None;
         v
@@ -437,10 +442,14 @@ impl Pipeline {
 
     /// The log file's last bytes; logging stops.
     pub fn stop_logging(&mut self) -> Option<(Vec<u8>, LoggingStatus)> {
-        self.session.close();
-        let done = self.session.take_pending();
+        // as stop_export: finished entries to every file, the open one ends
+        // this file only (an export running beside it keeps getting entries)
+        self.log.as_ref()?;
+        self.feed_session();
         let mut w = self.log.take()?;
-        w.add(&done);
+        if let Some(e) = self.session.partial() {
+            w.add(&[e]);
+        }
         let entries = w.entries;
         let last = w.finish();
         Some((last, LoggingStatus { active: false, entries, bytes: 0 }))

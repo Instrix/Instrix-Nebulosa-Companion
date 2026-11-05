@@ -395,6 +395,13 @@ impl SessionLog {
         }
     }
 
+    /// The interval being built, so far, as an entry (left open): the last
+    /// row of a file that stops in the middle of it.
+    pub fn partial(&self) -> Option<LogEntry> {
+        let (_, t0, m, d) = self.cur.as_ref()?;
+        (m.n() > 0).then(|| LogEntry::from_m(*t0, *d, m))
+    }
+
     /// The interval being built ends (the next began, or the stream stopped).
     pub fn close(&mut self) {
         if let Some((_, t0, m, d)) = self.cur.take() {

@@ -2,6 +2,7 @@
 //! recordings folder, opening a recording for playback, CSV export, saving
 //! bytes (PNG).
 
+use std::collections::VecDeque;
 use crate::link::{Events, RecSink, SharedPipeline, Sink};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -311,22 +312,49 @@ pub fn start_export(
     let p2 = path.clone();
     let header = header_json.to_string();
     let data = cfg.data;
+    // started from before now (a triggered capture): what memory still holds
+    // since then is handed to the writer whole, not through the live queue,
+    // which a few seconds of every sample would overflow
+    let mut p = pipe.lock().unwrap();
+    p.start_export_from(data, from);
+    let backlog = if from.is_some() { p.take_export(false) } else { Vec::new() };
     let thread = std::thread::spawn(move || -> Result<u64, String> {
         let mut x = Exporter::new(cfg.clone(), cal, wall_offset);
-        let res = if matches!(cfg.format, Format::Hdf5) { write_h5(&p2, &mut x, &header, rx) } else { write_text(&p2, &mut x, rx) };
+        let chunks = BacklogFirst { backlog: backlog.into_iter(), waiting: VecDeque::new(), rx };
+        let res = if matches!(cfg.format, Format::Hdf5) { write_h5(&p2, &mut x, &header, chunks) } else { write_text(&p2, &mut x, chunks) };
         if let Err(e) = &res {
             *err2.lock().unwrap() = Some(e.clone());
         }
         res.map(|_| x.rows)
     });
     let dropped: Arc<AtomicU64> = Arc::default();
-    let mut p = pipe.lock().unwrap();
-    p.start_export_from(data, from);
     *sink.lock().unwrap() = Some(ChunkSinkInner { tx, dropped: dropped.clone() });
     Ok(ExportWriter { path, thread, error, dropped })
 }
 
-fn write_text(path: &Path, x: &mut Exporter, rx: mpsc::Receiver<Chunk>) -> Result<(), String> {
+/// An export's chunks in order: the backlog (from before it started), then
+/// the live ones. While the backlog is written, the live ones are taken off
+/// the queue as they come and kept here, so the stream never finds it full.
+struct BacklogFirst {
+    backlog: std::vec::IntoIter<Chunk>,
+    waiting: VecDeque<Chunk>,
+    rx: mpsc::Receiver<Chunk>,
+}
+
+impl Iterator for BacklogFirst {
+    type Item = Chunk;
+    fn next(&mut self) -> Option<Chunk> {
+        let catching_up = self.backlog.len() > 0 || !self.waiting.is_empty();
+        if catching_up {
+            while let Ok(c) = self.rx.try_recv() {
+                self.waiting.push_back(c);
+            }
+        }
+        self.backlog.next().or_else(|| self.waiting.pop_front()).or_else(|| self.rx.recv().ok())
+    }
+}
+
+fn write_text(path: &Path, x: &mut Exporter, rx: impl Iterator<Item = Chunk>) -> Result<(), String> {
     let f = std::fs::File::create(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let mut w = std::io::BufWriter::with_capacity(8 << 20, f);
     w.write_all(&x.header()).map_err(|e| e.to_string())?;
@@ -341,7 +369,7 @@ fn write_text(path: &Path, x: &mut Exporter, rx: mpsc::Receiver<Chunk>) -> Resul
 }
 
 /// HDF5: one f64 dataset per field (unlimited, chunked), appended a chunk at a time.
-fn write_h5(path: &Path, x: &mut Exporter, header: &str, rx: mpsc::Receiver<Chunk>) -> Result<(), String> {
+fn write_h5(path: &Path, x: &mut Exporter, header: &str, rx: impl Iterator<Item = Chunk>) -> Result<(), String> {
     use hdf5_pure::{AttrValue, File, FileAccessProperties, FileBuilder, MaxExtent, SyncPolicy};
     let e = |e: hdf5_pure::Error| e.to_string();
     // dataset names from the labels: unique, no '/'
