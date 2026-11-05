@@ -30,7 +30,7 @@
     tour?: string;
     /** buttons at the header's right */
     actions?: Snippet;
-    /** ⤢ pops it out into a floating window (moved, resized, still live; its contents flow into columns) */
+    /** ⤢ pops it out into a floating window (moved, still live; a fixed size, its contents flow into columns) */
     popout?: boolean;
     children: Snippet;
   } = $props();
@@ -92,15 +92,17 @@
 
   // ---- popped out: a floating window -------------------------------------------
   // The same body (its controls, their state) moves into the window and back:
-  // nothing is drawn twice. Where it was and its size are remembered.
-  /** auto: its height follows its contents (until the reader resizes it) */
-  type Win = { x: number; y: number; w: number; h: number; auto?: boolean };
+  // nothing is drawn twice. Where it was is remembered.
+  // A fixed width (two columns of controls); its height follows its contents,
+  // within the screen (taller contents scroll). No corner to drag.
+  const WIN_W = 600;
+  type Win = { x: number; y: number; w: number; h: number };
   const fkey = () => `nebulosa.section.${id}.float`;
   function loadWin(): { on: boolean; win: Win } {
-    const d = { on: false, win: { x: 300, y: 72, w: 600, h: 0, auto: true } };
+    const d = { on: false, win: { x: 300, y: 72, w: WIN_W, h: 0 } };
     try {
       const v = JSON.parse(localStorage.getItem(fkey()) ?? 'null');
-      if (v?.win && typeof v.win.x === 'number' && v.win.h > 0) return { on: !!v.on && popout, win: v.win };
+      if (v?.win && typeof v.win.x === 'number' && v.win.h > 0) return { on: !!v.on && popout, win: { x: v.win.x, y: v.win.y, w: WIN_W, h: v.win.h } };
     } catch {
       /* storage unavailable */
     }
@@ -126,8 +128,8 @@
   }
   function clamp() {
     const W = innerWidth, H = innerHeight;
-    win.w = Math.min(Math.max(320, win.w), W - 16);
-    win.h = Math.min(Math.max(200, win.h), H - 16);
+    win.w = Math.min(WIN_W, W - 16);
+    win.h = Math.min(Math.max(120, win.h), H - 16);
     win.x = Math.min(Math.max(8, win.x), W - win.w - 8);
     win.y = Math.min(Math.max(8, win.y), H - win.h - 8);
   }
@@ -146,18 +148,14 @@
     // the contents' own height (the scroll area is at least as tall as the window), with its padding and border
     const h = Math.min(innerHeight - 100, head + bodyEl.offsetHeight + 28 + 2);
     if (Math.abs(h - win.h) < 2) return;
-    lastFit = h;
     win.h = h;
     clamp();
     saveWin();
   }
-  // its height follows its contents (another mode shows more, say) until the reader resizes it
-  let pressing = false;
-  /** the height fitHeight last set (a resize to it is ours, not the reader's) */
-  let lastFit = -1;
+  // its height follows its contents (another mode shows more, say)
   $effect(() => {
     if (!floating || !bodyEl || !winEl) return;
-    const ro = new ResizeObserver(() => win.auto !== false && requestAnimationFrame(fitHeight));
+    const ro = new ResizeObserver(() => requestAnimationFrame(fitHeight));
     ro.observe(bodyEl);
     return () => ro.disconnect();
   });
@@ -180,25 +178,9 @@
     if (floating && winBody) winBody.appendChild(bodyEl);
     else if (bodyEl.parentElement !== secEl) secEl.appendChild(bodyEl);
   });
-  // its size, as the reader drags the corner
-  $effect(() => {
-    if (!winEl) return;
-    const ro = new ResizeObserver(() => {
-      if (!winEl) return;
-      const w = winEl.offsetWidth, h = winEl.offsetHeight;
-      if (w === win.w && h === win.h) return;
-      // the reader dragging the corner: from now on its size is theirs
-      if (pressing && !(h === lastFit && w === win.w)) win.auto = false;
-      win.w = w;
-      win.h = h;
-      saveWin();
-    });
-    ro.observe(winEl);
-    return () => ro.disconnect();
-  });
   $effect(() => {
     if (!floating) return;
-    const on = () => clamp();
+    const on = () => (clamp(), fitHeight());
     addEventListener('resize', on);
     return () => removeEventListener('resize', on);
   });
@@ -275,7 +257,7 @@
     use:portal
     bind:this={winEl}
     style="left: {win.x}px; top: {win.y}px; width: {win.w}px; height: {win.h}px; z-index: {z}"
-    onpointerdown={() => (raise(), (pressing = true), addEventListener('pointerup', () => (pressing = false), { once: true }))}
+    onpointerdown={raise}
     onkeydown={winKey}
   >
     <div class="whead" role="presentation" onpointerdown={dragWin}>
@@ -428,10 +410,8 @@
     border: 1px solid var(--border) !important;
     border-radius: var(--r-lg);
     box-shadow: 0 18px 50px #0009;
-    resize: both;
     overflow: hidden;
-    min-width: 320px;
-    min-height: 200px;
+    min-height: 120px;
   }
   .fwin:global(.flash) {
     animation: sec-flash 0.6s ease-out;

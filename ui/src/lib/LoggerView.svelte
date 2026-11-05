@@ -27,6 +27,7 @@
 </script>
 
 <script lang="ts">
+  import { steadyLinear, steadyLog } from './yAuto';
   // The logger: the session log on a wall-clock axis, one plot per signal
   // (min–max band and mean per interval). Wheel: zoom, shift+wheel: pan,
   // drag: zoom to it, double-click: the whole session, click: open that
@@ -205,18 +206,27 @@
     return end > start ? [start, end] : [end - 1, end];
   }
 
+  /** what each auto axis shows now (kept steady: yAuto.ts) */
+  const yShown: Record<string, [number, number]> = {};
+  // Autoset, Show all: fit at once
+  $effect(() => {
+    const refit = () => {
+      for (const k in yShown) delete yShown[k];
+    };
+    addEventListener('nebulosa:yfit', refit);
+    return () => removeEventListener('nebulosa:yfit', refit);
+  });
   function yRange(sig: Signal) {
     return (_u: uPlot, lo: number | null, hi: number | null): uPlot.Range.MinMax => {
       const cfg = axes[sig];
       if (cfg.log) {
         if (!cfg.auto) return [Math.max(cfg.min, 1e-15), Math.max(cfg.max, 2e-15)];
         if (lo == null || hi == null || !(hi > 0)) return [1e-9, 1];
-        return [Math.max(lo, hi * 1e-9, 1e-15) / 1.5, hi * 1.5];
+        return (yShown[sig + 'log'] = steadyLog(yShown[sig + 'log'] ?? null, Math.max(lo, hi * 1e-9, 1e-15), hi));
       }
       if (!cfg.auto) return [cfg.min, cfg.max];
       if (lo == null || hi == null || !isFinite(lo) || !isFinite(hi)) return [0, 1];
-      const pad = Math.max((hi - lo) * 0.08, Math.abs(hi) * 1e-3, 1e-12);
-      return [lo - pad, hi + pad];
+      return (yShown[sig] = steadyLinear(yShown[sig] ?? null, lo, hi));
     };
   }
 
@@ -360,7 +370,7 @@
             { ...hidden, paths: steps },
             { ...hidden, paths: steps },
             { ...hidden, paths: steps },
-            trace.mean ? { stroke: col, width: 1.25, paths: steps, points: { show: false } } : { ...hidden },
+            trace.mean ? { stroke: col, width: 1, paths: steps, points: { show: false } } : { ...hidden },
           ],
           bands,
           axes: [

@@ -254,6 +254,7 @@
   /** the whole recording on screen */
   function fitAll() {
     if (store.empty) return;
+    dispatchEvent(new Event('nebulosa:yfit'));
     const len = store.tEnd - store.tStart;
     let k = TIME_DIVS.findIndex((d) => d * 10 >= len);
     if (k < 0) k = TIME_DIVS.length - 1;
@@ -574,6 +575,7 @@
    */
   async function autoset() {
     if (store.empty) return;
+    dispatchEvent(new Event('nebulosa:yfit'));
     error = '';
     const t1 = store.tEnd;
     const t0 = Math.max(store.tStart, t1 - 4);
@@ -2846,7 +2848,8 @@
         <button onclick={fitAll}>Show all</button>
       </section>
     {:else if info}
-      <!-- always in reach: start / stop, and what is streaming -->
+      <!-- always in reach: start / stop, what is streaming, and the sections (one sticky header, nothing slides over Start) -->
+      <div class="sidetop">
       <div class="runbar">
         {#if streaming}
           <button class="danger" onclick={stop}>■ Stop</button>
@@ -2855,8 +2858,8 @@
         {/if}
         <span class="muted small">{SOURCE_NAME[source] ?? ''} · {fmtRate(rateHz)}</span>
       </div>
-
       <SectionNav items={navSections} />
+      </div>
 
       <Section id="device" icon="device" title="Device" tour="device" open={false} summary="{info.link_name} · firmware {info.fw_version_str}">
         <dl>
@@ -4059,11 +4062,18 @@
   .muted {
     color: var(--muted);
   }
-  .runbar {
+  .sidetop {
     position: sticky;
     top: -8px;
-    z-index: 4;
-    margin: -8px -16px 0;
+    z-index: 6;
+    margin-top: -8px;
+    background: var(--panel);
+  }
+  .sidetop > :global(.snav) {
+    position: static;
+  }
+  .runbar {
+    margin: 0 -16px;
     padding: 10px 16px;
     background: var(--panel);
     border-bottom: 1px solid var(--border);

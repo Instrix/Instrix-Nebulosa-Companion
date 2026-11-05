@@ -54,6 +54,7 @@
 </script>
 
 <script lang="ts">
+  import { steadyLinear, steadyLog } from './yAuto';
   // The scope screen: one plot per visible signal, stacked, sharing the time
   // axis (the view's span, 10 divisions labelled from its right edge), the
   // crosshair and the markers. Every frame (at most ~30 / s) reduces the
@@ -221,19 +222,27 @@
   // theme colours, kept per theme (themeVar.ts): read on every frame
   const cssVar = themeVar;
 
+  /** what each auto axis shows now (kept steady: yAuto.ts) */
+  const yShown: Record<string, [number, number]> = {};
+  // Autoset, Show all: fit at once
+  $effect(() => {
+    const refit = () => {
+      for (const k in yShown) delete yShown[k];
+    };
+    addEventListener('nebulosa:yfit', refit);
+    return () => removeEventListener('nebulosa:yfit', refit);
+  });
   function yRange(sig: Signal) {
     return (_u: uPlot, lo: number | null, hi: number | null): uPlot.Range.MinMax => {
       const cfg = axes[sig];
       if (cfg.log) {
         if (!cfg.auto) return [Math.max(cfg.min, 1e-15), Math.max(cfg.max, 2e-15)];
         if (lo == null || hi == null || !(hi > 0)) return [1e-9, 1];
-        const a = Math.max(lo, hi * 1e-9, 1e-15);
-        return [a / 1.5, hi * 1.5];
+        return (yShown[sig + 'log'] = steadyLog(yShown[sig + 'log'] ?? null, Math.max(lo, hi * 1e-9, 1e-15), hi));
       }
       if (!cfg.auto) return [cfg.min, cfg.max];
       if (lo == null || hi == null || !isFinite(lo) || !isFinite(hi)) return [0, 1];
-      const pad = Math.max((hi - lo) * 0.08, Math.abs(hi) * 1e-3, 1e-12);
-      return [lo - pad, hi + pad];
+      return (yShown[sig] = steadyLinear(yShown[sig] ?? null, lo, hi));
     };
   }
 
@@ -490,7 +499,7 @@
             { ...hidden },
             // zoomed in to single samples: a dot on each
             trace.mean
-              ? { stroke: col, width: 1.5, points: { show: () => !!lod?.raw, size: 5, fill: col, stroke: col } }
+              ? { stroke: col, width: 1, points: { show: () => !!lod?.raw, size: 5, fill: col, stroke: col } }
               : { ...hidden },
           ],
           bands,
@@ -754,6 +763,10 @@
   /** what the plotted data was fetched for: its span and s per column */
   let fetched = { a: NaN, b: NaN, res: NaN };
   let lastDiv = -1;
+  /** data that came in since the last frame: drawn with the frame's span, one redraw */
+  let pending: Lod | null = null;
+  /** how long the pending data took to fetch, ms */
+  let fetchMs = 0;
 
   function frame(now: number) {
     raf = requestAnimationFrame(frame);
@@ -784,7 +797,25 @@
     const moved = viewKey !== drawnView;
     // on screen: where the glide is now, with the data there is (the right data follows)
     const spKey = `${sp[0]},${sp[1]}`;
-    if (lod && spKey !== shownSpan) {
+    if (pending) {
+      // new data and the span in one redraw per plot
+      const l = (lod = pending);
+      pending = null;
+      const t0 = performance.now();
+      shownSpan = spKey;
+      span = sp;
+      for (const { sig, u } of plots) {
+        const c = l.ch[sig];
+        // a log axis can't show zero or less
+        const pos = (a: (number | null)[]) => (axes[sig].log ? a.map((x) => (x != null && x > 0 ? x : null)) : a);
+        u.batch(() => {
+          u.setData([l.t, pos(c.min), pos(c.max), pos(c.sdLo), pos(c.sdHi), pos(c.avg)] as uPlot.AlignedData, false);
+          u.setScale('x', { min: sp[0], max: sp[1] });
+        });
+      }
+      updateMarkers();
+      drawCost = drawCost * 0.8 + (fetchMs + performance.now() - t0) * 0.2;
+    } else if (lod && spKey !== shownSpan) {
       shownSpan = spKey;
       span = sp;
       for (const { u } of plots) u.setScale('x', { min: sp[0], max: sp[1] });
@@ -814,21 +845,9 @@
       .lod(want[0], want[1], bins)
       .then((l) => {
         fetched = { a: want[0], b: want[1], res: (want[1] - want[0]) / bins };
-        lod = l;
-        const now = glide.shown!;
-        shownSpan = `${now[0]},${now[1]}`;
-        span = now;
-        for (const { sig, u } of plots) {
-          const c = l.ch[sig];
-          // a log axis can't show zero or less
-          const pos = (a: (number | null)[]) => (axes[sig].log ? a.map((x) => (x != null && x > 0 ? x : null)) : a);
-          u.batch(() => {
-            u.setData([l.t, pos(c.min), pos(c.max), pos(c.sdLo), pos(c.sdHi), pos(c.avg)] as uPlot.AlignedData, false);
-            u.setScale('x', { min: now[0], max: now[1] });
-          });
-        }
-        updateMarkers();
-        drawCost = drawCost * 0.8 + (performance.now() - t0) * 0.2;
+        // drawn by the next frame, with its span
+        pending = l;
+        fetchMs = performance.now() - t0;
       })
       .catch((e) => console.warn('lod', e))
       .finally(() => (inflight = false));

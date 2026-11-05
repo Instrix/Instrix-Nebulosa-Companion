@@ -10,3 +10,12 @@ license = "UNLICENSED"
 [profile.release]
 lto = true
 codegen-units = 1
+
+# `tauri dev` builds unoptimized, and the core then decodes 6-8x slower (a
+# third of a core at 2 MS/s), so the plots stutter. Optimize the core and
+# the dependencies in dev builds too; only the app crate stays quick to rebuild.
+[profile.dev.package.nbp-core]
+opt-level = 3
+
+[profile.dev.package."*"]
+opt-level = 3

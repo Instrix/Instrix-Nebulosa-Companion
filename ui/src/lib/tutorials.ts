@@ -513,7 +513,7 @@ export const TUTORIALS: Showcase[] = [
     id: 't-windows',
     title: 'Bigger panels',
     blurb: 'Open a busy settings section in its own window: everything at once, moved off the plots, changed while you watch.',
-    features: ['⤢ Own window', 'Move / resize', 'Live', 'Dock'],
+    features: ['⤢ Own window', 'Move', 'Live', 'Dock'],
     scenario: 'iot',
     steps: (c) => {
       let snap = { x: 0, y: 0, w: 0, h: 0, level: 0 };
@@ -565,20 +565,6 @@ export const TUTORIALS: Showcase[] = [
             snap = { ...snap, level: c.look.trig.level };
           },
           done: () => Math.abs(c.look.trig.level - snap.level) > 1e-9,
-        },
-        {
-          target: 'win-trigger',
-          title: 'Any size',
-          body: 'Its bottom-right corner resizes it; the columns rearrange to fit.',
-          task: 'Drag the window’s <b>bottom-right corner</b>.',
-          enter: () => {
-            const r = w();
-            if (r) snap = { ...snap, w: r.w, h: r.h };
-          },
-          done: () => {
-            const r = w();
-            return !!r && (Math.abs(r.w - snap.w) > 10 || Math.abs(r.h - snap.h) > 10);
-          },
         },
         {
           target: 'win-trigger',
