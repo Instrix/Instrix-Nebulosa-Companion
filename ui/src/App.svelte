@@ -2100,8 +2100,8 @@
         toggleFollow();
       } else if (e.key === 'ArrowLeft') loggerPan(-page);
       else if (e.key === 'ArrowRight') loggerPan(page);
-      else if (e.key === '+' || e.key === '=') loggerZoom(1 / 1.5);
-      else if (e.key === '-') loggerZoom(1.5);
+      else if (e.key === '+' || e.key === '=' || e.key === 'ArrowUp') loggerZoom(1 / 1.5);
+      else if (e.key === '-' || e.key === 'ArrowDown') loggerZoom(1.5);
       else if (e.key === 'Home') loggerHome();
       else if (e.key === 'End') lv = { ...lv, follow: true };
       else if (e.key === ',') stepSerial(-1);
@@ -2124,8 +2124,8 @@
     else if (e.key === ',') stepSerial(-1);
     else if (e.key === '>') stepMarker(1);
     else if (e.key === '<') stepMarker(-1);
-    else if (e.key === '+' || e.key === '=') view.zoom(store, -1);
-    else if (e.key === '-') view.zoom(store, 1);
+    else if (e.key === '+' || e.key === '=' || e.key === 'ArrowUp') view.zoom(store, -1);
+    else if (e.key === '-' || e.key === 'ArrowDown') view.zoom(store, 1);
     else if (e.key === 'ArrowLeft') view.pan(store, -page);
     else if (e.key === 'ArrowRight') view.pan(store, page);
     else if (e.key === 'Home') scopeHome();

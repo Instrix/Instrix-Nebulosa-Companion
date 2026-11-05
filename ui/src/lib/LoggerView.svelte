@@ -35,6 +35,7 @@
   import { onMount } from 'svelte';
   import uPlot from 'uplot';
   import { themeVar } from './themeVar';
+  import { chip, chipWidth } from './chip';
   import { Glide, union } from './glide';
   import 'uplot/dist/uPlot.min.css';
   import type { Signal } from './nbp';
@@ -278,14 +279,9 @@
       ctx.lineTo(x, ct + height);
       ctx.stroke();
       ctx.setLineDash([]);
-      if (top && x - lastLabel > 8) {
+      if (top && x - lastLabel > 8 * devicePixelRatio) {
         const label = a.text.length > 28 ? a.text.slice(0, 27) + '…' : a.text;
-        const w = ctx.measureText(label).width;
-        ctx.fillStyle = col + 'ee';
-        ctx.fillRect(x, ct + 2, w + 6, 13);
-        ctx.fillStyle = '#0b0c12';
-        ctx.fillText(label, x + 3, ct + 4);
-        lastLabel = x + w + 6;
+        lastLabel = x + chip(ctx, x, ct + 2 * devicePixelRatio, label, col, devicePixelRatio);
       }
     }
     ctx.restore();
@@ -478,12 +474,8 @@
     ctx.textBaseline = 'top';
     ctx.textAlign = 'left';
     const label = (x: number, text: string, col: string) => {
-      const w = ctx.measureText(text).width + 6 * dpr;
-      x = Math.max(left, Math.min(x, left + width - w));
-      ctx.fillStyle = col;
-      ctx.fillRect(x, ct + 2 * dpr, w, 13 * dpr);
-      ctx.fillStyle = '#0b0c12';
-      ctx.fillText(text, x + 3 * dpr, ct + 4 * dpr);
+      const w = chipWidth(ctx, text, dpr);
+      chip(ctx, Math.max(left, Math.min(x, left + width - w)), ct + 2 * dpr, text, col, dpr);
     };
     const span = (a: number, b: number, col: string) => {
       const x0 = Math.max(left, X(a)), x1 = Math.min(left + width, X(b));
@@ -504,14 +496,14 @@
       ctx.moveTo(x, ct);
       ctx.lineTo(x, ct + height);
       ctx.stroke();
-      if (top) label(Math.max(left, X(c.t - c.pre)), c.label, acc + 'ee');
+      if (top) label(Math.max(left, X(c.t - c.pre)), c.label, acc);
     }
     // waiting: what a capture would start with if it fired now
     if (rolling && preS > 0) {
       const end = store.session.t_end;
       const hold = cssVar('--hold') || '#e8b339';
       span(end - preS, end, hold + (rolling === 'armed' ? '30' : '18'));
-      if (top && end - preS + wallOffset < xMax) label(Math.max(left, X(end - preS)), `${rolling === 'armed' ? 'armed' : 'watching'} · ${fmtTime(preS)} before`, hold + 'dd');
+      if (top && end - preS + wallOffset < xMax) label(Math.max(left, X(end - preS)), `${rolling === 'armed' ? 'armed' : 'watching'} · ${fmtTime(preS)} before`, hold);
     }
     if (showTrig && trig && sig === trig.source) {
       const col = cssVar('--trig') || '#ff8c42';

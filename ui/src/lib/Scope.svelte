@@ -69,6 +69,7 @@
   import { onMount } from 'svelte';
   import uPlot from 'uplot';
   import { themeVar } from './themeVar';
+  import { chip } from './chip';
   import 'uplot/dist/uPlot.min.css';
   import type { Lod, PointValue, SampleStore } from './store';
   import { DIVS_X, DIVS_Y, fmtTime, markerColor, markerName, type Marker, type View } from './view.svelte';
@@ -448,12 +449,7 @@
           ctx.globalAlpha = 1;
           if (labels && x - lastLabel > 8 * dpr) {
             const label = a.text.length > 28 ? a.text.slice(0, 27) + '…' : a.text;
-            const w = ctx.measureText(label).width;
-            ctx.fillStyle = col;
-            ctx.fillRect(x, top + 2 * dpr, w + 6 * dpr, 13 * dpr);
-            ctx.fillStyle = '#0b0c12';
-            ctx.fillText(label, x + 3 * dpr, top + 4 * dpr);
-            lastLabel = x + w + 6 * dpr;
+            lastLabel = x + chip(ctx, x, top + 2 * dpr, label, col, dpr);
           }
         }
       }
