@@ -249,6 +249,42 @@
     for (const c of cols) c.push(c[n - 1]);
   }
 
+  /**
+   * The min–max band of blocks narrower than a pixel or two, as a line per pixel column: drawn as a
+   * fill, such a block is a sliver too faint to see (a short spike in a long view vanished).
+   */
+  function drawPeaks(u: uPlot, col: string) {
+    if (!trace.range) return;
+    const [t, lo, hi] = u.data as unknown as [number[], (number | null)[], (number | null)[]];
+    if (!t || t.length < 2) return;
+    const dpr = devicePixelRatio;
+    const { left, top, width, height } = u.bbox;
+    // per pixel column: the lowest and highest of the narrow blocks in it
+    const cols = new Map<number, [number, number]>();
+    for (let k = 0; k + 1 < t.length; k++) {
+      const a = lo[k], b = hi[k];
+      if (a == null || b == null) continue;
+      const x0 = u.valToPos(t[k], 'x', true), x1 = u.valToPos(t[k + 1], 'x', true);
+      if (x1 < left || x0 > left + width || x1 - x0 >= 2 * dpr) continue;
+      const ya = u.valToPos(a, 'y', true), yb = u.valToPos(b, 'y', true);
+      if (!Number.isFinite(ya) || !Number.isFinite(yb)) continue;
+      const x = Math.floor(x0);
+      const c = cols.get(x);
+      if (c) cols.set(x, [Math.min(c[0], yb), Math.max(c[1], ya)]);
+      else cols.set(x, [yb, ya]);
+    }
+    if (!cols.size) return;
+    const ctx = u.ctx;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(left, top, width, height);
+    ctx.clip();
+    ctx.fillStyle = col;
+    ctx.globalAlpha = 0.45;
+    for (const [x, [y0, y1]] of cols) if (y1 - y0 >= 1) ctx.fillRect(x, y0, Math.max(1, Math.round(dpr)), y1 - y0);
+    ctx.restore();
+  }
+
   const annColor = () => cssVar('--accent') || '#4da3ff';
   /** vertical lines for serial messages in view; labels on the top plot */
   function drawAnnotations(u: uPlot, top: boolean) {
@@ -374,7 +410,8 @@
             { ...axis, size: 78, ...(log ? { splits: logSplits } : {}), values: siValues(SIGNAL_INFO[sig].unit), stroke: col },
           ],
           hooks: {
-            draw: [(u) => drawAnnotations(u, idx === 0), (u) => drawCapture(u, sig, idx === 0)],
+            // the capture's line sits on the event that fired it: the peaks over it, so that shows
+            draw: [(u) => drawCapture(u, sig, idx === 0), (u) => drawPeaks(u, col), (u) => drawAnnotations(u, idx === 0)],
             setSelect: [
               (u) => {
                 if (u.select.width > 3) {
