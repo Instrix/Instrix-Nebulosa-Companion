@@ -476,7 +476,7 @@ mod tests {
         let mut x = Exporter::new(c, Default::default(), 0.0);
         let (tx, rx) = mpsc::sync_channel(8);
         let p2 = path.clone();
-        let h = std::thread::spawn(move || write_text(&p2, &mut x, rx).map(|_| x.rows));
+        let h = std::thread::spawn(move || write_text(&p2, &mut x, rx.into_iter()).map(|_| x.rows));
         tx.send(chunk(0)).unwrap();
         drop(tx);
         assert_eq!(h.join().unwrap().unwrap(), 65536);
@@ -496,7 +496,7 @@ mod tests {
         let mut x = Exporter::new(cfg(Format::Hdf5), Default::default(), 0.0);
         let (tx, rx) = mpsc::sync_channel(8);
         let p2 = path.clone();
-        let h = std::thread::spawn(move || write_h5(&p2, &mut x, "{\"a\":1}", rx).map(|_| x.rows));
+        let h = std::thread::spawn(move || write_h5(&p2, &mut x, "{\"a\":1}", rx.into_iter()).map(|_| x.rows));
         for k in 0..3 {
             tx.send(chunk(k)).unwrap();
         }
