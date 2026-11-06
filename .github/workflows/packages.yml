@@ -46,6 +46,7 @@ jobs:
           - name: Linux x64
             os: ubuntu-22.04
             runner: [self-hosted, Linux, X64]
+            self-hosted: true
             target: x86_64-unknown-linux-gnu
             bundles: deb,rpm,appimage
             rust-targets: wasm32-unknown-unknown
@@ -111,11 +112,11 @@ jobs:
       # GitHub's runners: a prebuilt wasm-pack. Self-hosted: no sudo there (the
       # action installs its helpers with apt-get and waits on a password), so
       # cargo install, once: it stays in the runner's ~/.cargo/bin
-      - if: runner.environment != 'self-hosted'
+      - if: ${{ !matrix.self-hosted }}
         uses: taiki-e/install-action@v2
         with:
           tool: wasm-pack
-      - if: runner.environment == 'self-hosted'
+      - if: ${{ matrix.self-hosted }}
         name: wasm-pack (self-hosted)
         shell: bash
         run: command -v wasm-pack >/dev/null || cargo install --locked wasm-pack
