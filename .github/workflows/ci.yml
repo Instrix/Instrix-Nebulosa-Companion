@@ -34,9 +34,17 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@v2
+      # GitHub's runners: a prebuilt wasm-pack. Self-hosted: no sudo there (the
+      # action installs its helpers with apt-get and waits on a password), so
+      # cargo install, once: it stays in the runner's ~/.cargo/bin
+      - if: runner.environment != 'self-hosted'
+        uses: taiki-e/install-action@v2
         with:
           tool: wasm-pack
+      - if: runner.environment == 'self-hosted'
+        name: wasm-pack (self-hosted)
+        shell: bash
+        run: command -v wasm-pack >/dev/null || cargo install --locked wasm-pack
 
       - uses: actions/setup-node@v4
         with:
