@@ -393,6 +393,20 @@ mod example_tests {
         assert_eq!(e.len(), 3, "charge {e:?}");
         assert!(e[0].label.as_deref().unwrap().starts_with("40.0 µC"), "{e:?}");
 
+        // events: groups of 3 bursts 1.5 ms apart (10 mA, 0.4 ms: 4 µC each), every 100 ms
+        let mut i = Vec::new();
+        for _ in 0..4 {
+            for _ in 0..3 {
+                i.extend(flat(40, 0.010));
+                i.extend(flat(110, 0.0));
+            }
+            i.extend(flat(10000 - 450, 0.0));
+        }
+        let v = flat(i.len(), 3.3);
+        let e = run(example!("03-events.py"), dt, &i, &v);
+        let labels: Vec<_> = e.iter().map(|e| e.label.clone().unwrap()).collect();
+        assert_eq!(labels, vec!["3 bursts, 12.0 µC"; 4], "events {labels:?}");
+
         // brown-out: dips to 2.8 V for 100 µs (twice) and 20 µs (twice)
         let mut v = Vec::new();
         for w in [10, 2, 10, 2] {
@@ -401,7 +415,7 @@ mod example_tests {
         }
         v.extend(flat(100, 3.3));
         let i = flat(v.len(), 0.001);
-        let e = run(example!("03-brownout.py"), dt, &i, &v);
+        let e = run(example!("04-brownout.py"), dt, &i, &v);
         assert_eq!(e.len(), 2, "brownout {e:?}");
 
         // heartbeat: a 1 ms burst every 100 ms; one 250 ms late; then none for 400 ms
@@ -412,7 +426,7 @@ mod example_tests {
             i.extend(flat(gap - 10, 0.0));
         }
         let v = flat(i.len(), 3.3);
-        let e = run(example!("04-heartbeat.py"), dt4, &i, &v);
+        let e = run(example!("05-heartbeat.py"), dt4, &i, &v);
         let labels: Vec<_> = e.iter().map(|e| e.label.clone().unwrap()).collect();
         assert_eq!(labels.len(), 2, "heartbeat {labels:?}");
         assert!(labels[0].starts_with("late") && labels[1] == "missed", "{labels:?}");
@@ -423,7 +437,7 @@ mod example_tests {
             i[k] += 0.005;
         }
         let v = flat(i.len(), 3.3);
-        let e = run(example!("05-spike.py"), dt, &i, &v);
+        let e = run(example!("06-spike.py"), dt, &i, &v);
         assert_eq!(e.len(), 3, "spike {e:?}");
 
         // dI/dt: two slow ramps to 30 mA (3 A/s), two steps in 100 µs (300 A/s); all down slowly
@@ -435,7 +449,7 @@ mod example_tests {
             i.extend((0..1000).map(|k| 0.030 * (1.0 - k as f32 / 1000.0)));
         }
         let v = flat(i.len(), 3.3);
-        let e = run(example!("06-slew.py"), dt, &i, &v);
+        let e = run(example!("07-slew.py"), dt, &i, &v);
         assert_eq!(e.len(), 2, "slew {e:?}");
 
         // ripple: 10 kHz for 30 ms, 200 kHz for 30 ms, 10 kHz again
@@ -448,7 +462,7 @@ mod example_tests {
             })
             .collect();
         let i = flat(v.len(), 0.001);
-        let e = run(example!("07-ripple.py"), dt6, &i, &v);
+        let e = run(example!("08-ripple.py"), dt6, &i, &v);
         let labels: Vec<_> = e.iter().map(|e| e.label.clone().unwrap()).collect();
         assert_eq!(labels.len(), 2, "ripple {labels:?}");
         assert!(labels[0].contains("(out)") && !labels[1].contains("(out)"), "{labels:?}");
