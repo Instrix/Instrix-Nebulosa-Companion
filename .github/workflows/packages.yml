@@ -98,7 +98,7 @@ jobs:
       - name: System libraries (Linux)
         if: runner.os == 'Linux'
         run: |
-          PKGS="libudev-dev rpm"
+          PKGS="build-essential pkg-config libudev-dev rpm"
           if ! dpkg -s $PKGS >/dev/null 2>&1; then
             sudo -n apt-get update && sudo -n apt-get install -y $PKGS || { echo "::error::install on the runner: sudo apt-get install $PKGS"; exit 1; }
           fi
