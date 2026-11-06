@@ -42,6 +42,32 @@ export function scriptScan(python: string, code: string, t0: number, t1: number,
   return invoke<ScanResult>('script_scan', { req: { python, code, t0, t1, max, block, timeoutMs } });
 }
 
+export interface CheckResult {
+  /** it loaded: Python's version */
+  info: ScriptInfo | null;
+  /** why not, or the dry run's traceback */
+  error: string | null;
+  /** samples of the dry run (0: none), and the time they cover, s */
+  n: number;
+  span: number;
+  found: number;
+  /** the first triggers it found */
+  events: Found[];
+  out: string;
+  ms: number;
+}
+
+/** Checks a script: it loads, and a dry run on [t0, t1) (`block`, or the backend's own samples). */
+export function scriptCheck(python: string, code: string, t0: number, t1: number, block: string | null) {
+  return invoke<CheckResult>('script_check', { req: { python, code, t0, t1, max: 1_000_000, block, timeoutMs: 10_000 } });
+}
+
+/** the line of the script a traceback or syntax error points at */
+export function errorLine(err: string): number | null {
+  const all = [...err.matchAll(/"<trigger script>", line (\d+)/g)];
+  return all.length ? +all[all.length - 1][1] : null;
+}
+
 /** the trigger starts over: the script's reset(), if it has one */
 export function scriptReset(python: string, code: string) {
   return invoke<void>('script_reset', { python, code });

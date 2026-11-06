@@ -1,76 +1,47 @@
 <script lang="ts">
-  // The Script trigger type (desktop app): a Python function that gets the
-  // samples in blocks as they come and says where the triggers are. The code
-  // is edited as a draft and applied.
-  import { SCRIPT_EXAMPLE, type TriggerState } from '../trigger.svelte';
+  // The Script trigger type in the panel (desktop app): which script runs, how
+  // it's doing, and the editor (a dialog of its own) to write one.
+  import { scriptName } from '../scriptExamples';
+  import type { TriggerState } from '../trigger.svelte';
+  import ScriptEditor from './ScriptEditor.svelte';
 
   let { trig }: { trig: TriggerState } = $props();
 
-  // svelte-ignore state_referenced_locally
-  let draft = $state(trig.scriptCode);
-  const dirty = $derived(draft !== trig.scriptCode);
-  let file: HTMLInputElement | undefined = $state();
+  let editing = $state(false);
   let checking = $state(false);
 
-  async function apply() {
-    trig.scriptCode = draft;
+  async function reload() {
     checking = true;
     await trig.loadScript();
     checking = false;
   }
 
-  function keydown(e: KeyboardEvent) {
-    // Ctrl / ⌘ + Enter applies; Tab indents (it's Python)
-    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-      e.preventDefault();
-      void apply();
-    } else if (e.key === 'Tab' && !e.shiftKey) {
-      e.preventDefault();
-      const el = e.currentTarget as HTMLTextAreaElement;
-      const { selectionStart: a, selectionEnd: b } = el;
-      draft = draft.slice(0, a) + '    ' + draft.slice(b);
-      requestAnimationFrame(() => el.setSelectionRange(a + 4, a + 4));
-    }
-    e.stopPropagation(); // the app's keys (Space, arrows) aren't for here
-  }
-
-  async function open(e: Event) {
-    const f = (e.currentTarget as HTMLInputElement).files?.[0];
-    if (f) draft = await f.text();
-    (e.currentTarget as HTMLInputElement).value = '';
-  }
-
-  function save() {
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(new Blob([draft], { type: 'text/x-python' }));
-    a.download = 'trigger.py';
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
-  }
-
   const r = $derived(trig.script);
+  const name = $derived(scriptName(trig.scriptCode));
   const fmtSamples = (n: number) => (n >= 1e9 ? `${(n / 1e9).toFixed(2)} G` : n >= 1e6 ? `${(n / 1e6).toFixed(1)} M` : n >= 1e3 ? `${(n / 1e3).toFixed(0)} k` : String(n));
+  /** the error's first and last lines: the whole traceback is in the editor */
+  const short = $derived(r.error ? r.error.split('\n').filter((l) => l.trim()).slice(-2).join('\n') : '');
 </script>
 
 <div class="script">
-  <textarea class="code" spellcheck="false" rows="14" bind:value={draft} onkeydown={keydown} aria-label="Trigger script (Python)"></textarea>
+  <div class="which">
+    <span class="name" title="The script the trigger runs">{name}</span>
+    <span class="muted">{trig.scriptCode.split('\n').length} lines{trig.scriptDraft !== trig.scriptCode ? ' · a draft in the editor' : ''}</span>
+  </div>
   <div class="row buttons">
-    <button class="primary small" onclick={apply} disabled={checking} title="Use this code (Ctrl + Enter)">{dirty ? 'Apply' : 'Reload'}</button>
-    <button class="ghost small" onclick={() => file?.click()} title="Open a .py file">Open…</button>
-    <button class="ghost small" onclick={save} title="Save the code as a .py file">Save…</button>
-    <button class="ghost small" onclick={() => (draft = SCRIPT_EXAMPLE)} title="Put back the example">Example</button>
-    <input bind:this={file} type="file" accept=".py,text/x-python,text/plain" hidden onchange={open} />
+    <button class="primary small" onclick={() => (editing = true)} title="Write the script, try examples, check it">Edit script…</button>
+    <button class="ghost small" onclick={reload} disabled={checking} title="Start the script's Python again (its globals start over)">Restart</button>
   </div>
   <label title="The Python interpreter: empty for python3 (python on Windows), or a path, e.g. a virtual environment's">
     Python
-    <input placeholder="python3" bind:value={trig.python} onchange={apply} spellcheck="false" />
+    <input placeholder="python3" bind:value={trig.python} onchange={reload} spellcheck="false" />
   </label>
 
   <p class="status" aria-live="polite">
     {#if checking}
       Starting Python…
     {:else if r.info}
-      Python {r.info.python}{r.info.numpy ? ` · numpy ${r.info.numpy}` : ' · no numpy (lists)'}
+      Python {r.info.python}{r.info.numpy ? ` · numpy ${r.info.numpy}` : ' · no numpy'}
     {/if}
     {#if r.blocks || r.failed}
       <br /><b>{r.found.toLocaleString()} found</b> in {fmtSamples(r.samples)} samples
@@ -83,9 +54,8 @@
     {:else if !trig.detecting}
       <br /><span class="muted">Runs while the trigger detects (Auto, Normal, Single, Log events, or the Logger watching).</span>
     {/if}
-    {#if dirty}<br /><span class="muted">Edited: Apply to use it.</span>{/if}
   </p>
-  {#if r.error}<pre class="err">{r.error}</pre>{/if}
+  {#if r.error}<button class="err" onclick={() => (editing = true)} title="Open the editor: the whole message, and the line">{short}</button>{/if}
   {#if r.out}
     <details>
       <summary>Printed</summary>
@@ -94,21 +64,26 @@
   {/if}
 </div>
 
+{#if editing}
+  <ScriptEditor {trig} onclose={() => (editing = false)} />
+{/if}
+
 <style>
   .script {
     display: flex;
     flex-direction: column;
     gap: 6px;
   }
-  .code {
-    width: 100%;
-    box-sizing: border-box;
-    font: 12px/1.45 ui-monospace, monospace;
-    tab-size: 4;
-    resize: vertical;
-    white-space: pre;
-    overflow: auto;
-    min-height: 10em;
+  .which {
+    display: flex;
+    flex-direction: column;
+    padding: 6px 8px;
+    border: 1px solid var(--border);
+    border-radius: var(--r);
+    font-size: 12px;
+  }
+  .name {
+    font-weight: 600;
   }
   .buttons {
     flex-wrap: wrap;
@@ -121,6 +96,17 @@
   .bad {
     color: var(--danger);
   }
+  .err {
+    text-align: left;
+    white-space: pre-wrap;
+    font: 11px/1.4 ui-monospace, monospace;
+    color: var(--danger);
+    border: 1px solid var(--danger);
+    background: none;
+    border-radius: var(--r);
+    padding: 6px;
+    cursor: pointer;
+  }
   pre {
     margin: 0;
     max-height: 12em;
@@ -130,9 +116,5 @@
     border-radius: var(--r);
     background: var(--scope-bg, var(--bg));
     white-space: pre-wrap;
-  }
-  .err {
-    color: var(--danger);
-    border: 1px solid var(--danger);
   }
 </style>

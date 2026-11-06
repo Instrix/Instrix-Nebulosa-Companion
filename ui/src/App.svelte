@@ -354,6 +354,9 @@
     activeLink = l;
   }
 
+  // the samples a trigger script check runs on
+  trig.dataFor = () => ({ link: activeLink, tStart: store.tStart, tEnd: store.tEnd });
+
   // any trigger setting change: to the core, and start over
   $effect(() => {
     const cfg = trig.cfg();
@@ -870,6 +873,8 @@
   }
 
   const SOURCE_NAME: Record<number, string> = { [SRC.STUB_RANDOM]: 'Stub: random', [SRC.STUB_PATTERN]: 'Stub: pattern', [SRC.AD7387]: 'ADC' };
+  /** the ADCs behind the "ADC" source: 4× RS1473 on gateware 0x4E42000A on (the ADC2 board), else the AD7387 */
+  const adcName = $derived(info && info.fpga_id >= 0x4e42000a ? 'ADC (4× RS1473XTQC16)' : 'ADC (AD7387)');
   const LOG_INTERVALS = [0.001, 0.01, 0.1, 1, 10];
   const SCOPE_SECTIONS = [
     { id: 'device', icon: 'device', title: 'Device' },
@@ -2605,6 +2610,11 @@
       clearData();
       lastBytes = { t: 0, bytes: 0 };
       await dev!.start();
+      // again, now it streams: firmware without 8cf753a puts its own data source (the board's
+      // "FPGA pattern", and its decimation) back at STREAM_START, and the stub came out
+      // whatever was chosen here. A source set while streaming stays.
+      await dev!.setSource(source);
+      await applyDecimation();
       streaming = true;
     });
   }
@@ -2899,7 +2909,7 @@
           <select bind:value={source} disabled={streaming}>
             <option value={SRC.STUB_RANDOM}>Stub: random</option>
             <option value={SRC.STUB_PATTERN}>Stub: pattern</option>
-            <option value={SRC.AD7387}>ADC (AD7387)</option>
+            <option value={SRC.AD7387}>{adcName}</option>
           </select>
         </label>
         {#if info.caps & CAP.DECIM}

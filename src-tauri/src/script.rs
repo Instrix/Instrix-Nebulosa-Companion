@@ -325,6 +325,137 @@ pub fn unbase64(s: &str) -> Result<Vec<u8>, String> {
 }
 
 #[cfg(test)]
+mod example_tests {
+    use super::*;
+
+    /// an example script on samples (dt s apart, from 0), fed in uneven blocks: what it found
+    fn run(code: &str, dt: f64, i: &[f32], v: &[f32]) -> Vec<Found> {
+        let mut h = ScriptHost::default();
+        let mut found = Vec::new();
+        let mut a = 0;
+        for (k, len) in [7777usize, 1, 3001, 12345].iter().cycle().enumerate() {
+            if a >= i.len() || k > 100_000 {
+                break;
+            }
+            let b = (a + len).min(i.len());
+            let block = nbp_core::trigger::encode_block(dt, &[(a as f64 * dt, (b - a) as u32)], &i[a..b], &v[a..b], None);
+            let s = h.scan("", code, &block, Duration::from_secs(20)).unwrap();
+            assert!(s.error.is_none(), "{}", s.error.unwrap());
+            found.extend(s.events);
+            a = b;
+        }
+        found
+    }
+
+    fn have_numpy() -> bool {
+        Command::new(interpreter("")).args(["-c", "import numpy"]).output().is_ok_and(|o| o.status.success())
+    }
+
+    macro_rules! example {
+        ($f:literal) => {
+            include_str!(concat!("../../ui/src/lib/script-examples/", $f))
+        };
+    }
+
+    /// n samples of `x`
+    fn flat(n: usize, x: f32) -> Vec<f32> {
+        vec![x; n]
+    }
+
+    #[test]
+    fn examples_find_what_they_say() {
+        if !have_numpy() {
+            return;
+        }
+        let dt = 1e-5;
+        // edge: 5 pulses to 30 mA; between them it wobbles around HIGH without going below LOW
+        let mut i = Vec::new();
+        for _ in 0..5 {
+            i.extend(flat(500, 0.0));
+            i.extend(flat(300, 0.030));
+            for k in 0..200 {
+                i.push(if k % 2 == 0 { 0.019 } else { 0.021 });
+            }
+        }
+        let v = flat(i.len(), 3.3);
+        let e = run(example!("01-edge.py"), dt, &i, &v);
+        assert_eq!(e.len(), 5, "edge {e:?}");
+
+        // charge: 3 bursts of 20 mA for 2 ms (40 µC), 3 of 0.5 ms (10 µC)
+        let mut i = Vec::new();
+        for w in [200, 50, 200, 50, 200, 50] {
+            i.extend(flat(1000, 0.0));
+            i.extend(flat(w, 0.020));
+        }
+        i.extend(flat(100, 0.0));
+        let v = flat(i.len(), 3.3);
+        let e = run(example!("02-charge.py"), dt, &i, &v);
+        assert_eq!(e.len(), 3, "charge {e:?}");
+        assert!(e[0].label.as_deref().unwrap().starts_with("40.0 µC"), "{e:?}");
+
+        // brown-out: dips to 2.8 V for 100 µs (twice) and 20 µs (twice)
+        let mut v = Vec::new();
+        for w in [10, 2, 10, 2] {
+            v.extend(flat(3000, 3.3));
+            v.extend(flat(w, 2.8));
+        }
+        v.extend(flat(100, 3.3));
+        let i = flat(v.len(), 0.001);
+        let e = run(example!("03-brownout.py"), dt, &i, &v);
+        assert_eq!(e.len(), 2, "brownout {e:?}");
+
+        // heartbeat: a 1 ms burst every 100 ms; one 250 ms late; then none for 400 ms
+        let dt4 = 1e-4;
+        let mut i = Vec::new();
+        for gap in [1000, 1000, 1000, 1000, 1000, 2500, 1000, 1000, 4000] {
+            i.extend(flat(10, 0.020));
+            i.extend(flat(gap - 10, 0.0));
+        }
+        let v = flat(i.len(), 3.3);
+        let e = run(example!("04-heartbeat.py"), dt4, &i, &v);
+        let labels: Vec<_> = e.iter().map(|e| e.label.clone().unwrap()).collect();
+        assert_eq!(labels.len(), 2, "heartbeat {labels:?}");
+        assert!(labels[0].starts_with("late") && labels[1] == "missed", "{labels:?}");
+
+        // spikes: noise around 5 mA, three single-sample spikes of +5 mA
+        let mut i: Vec<f32> = (0..30000).map(|k| 0.005 + 1e-4 * (((k * 7919) % 101) as f32 / 50.0 - 1.0)).collect();
+        for k in [5000, 15000, 25000] {
+            i[k] += 0.005;
+        }
+        let v = flat(i.len(), 3.3);
+        let e = run(example!("05-spike.py"), dt, &i, &v);
+        assert_eq!(e.len(), 3, "spike {e:?}");
+
+        // dI/dt: two slow ramps to 30 mA (3 A/s), two steps in 100 µs (300 A/s); all down slowly
+        let mut i = Vec::new();
+        for up in [1000, 10, 1000, 10] {
+            i.extend(flat(500, 0.0));
+            i.extend((0..up).map(|k| 0.030 * k as f32 / up as f32));
+            i.extend(flat(200, 0.030));
+            i.extend((0..1000).map(|k| 0.030 * (1.0 - k as f32 / 1000.0)));
+        }
+        let v = flat(i.len(), 3.3);
+        let e = run(example!("06-slew.py"), dt, &i, &v);
+        assert_eq!(e.len(), 2, "slew {e:?}");
+
+        // ripple: 10 kHz for 30 ms, 200 kHz for 30 ms, 10 kHz again
+        let dt6 = 1e-6;
+        let v: Vec<f32> = (0..90_000)
+            .map(|k| {
+                let t = k as f64 * dt6;
+                let f = if (30_000..60_000).contains(&k) { 200e3 } else { 10e3 };
+                (3.3 + 0.005 * (2.0 * std::f64::consts::PI * f * t).sin()) as f32
+            })
+            .collect();
+        let i = flat(v.len(), 0.001);
+        let e = run(example!("07-ripple.py"), dt6, &i, &v);
+        let labels: Vec<_> = e.iter().map(|e| e.label.clone().unwrap()).collect();
+        assert_eq!(labels.len(), 2, "ripple {labels:?}");
+        assert!(labels[0].contains("(out)") && !labels[1].contains("(out)"), "{labels:?}");
+    }
+}
+
+#[cfg(test)]
 mod block_tests {
     #[test]
     fn base64_and_block_end() {

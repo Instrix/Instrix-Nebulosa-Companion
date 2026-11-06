@@ -250,6 +250,11 @@ async fn script_scan(state: State<'_, AppState>, req: crate::api::ScanReq) -> Re
 }
 
 #[tauri::command]
+async fn script_check(state: State<'_, AppState>, req: crate::api::ScanReq) -> Result<crate::api::CheckResult, String> {
+    state.script_check(req).await
+}
+
+#[tauri::command]
 async fn script_reset(state: State<'_, AppState>, python: String, code: String) -> Result<(), String> {
     state.script_reset(python, code).await
 }
@@ -305,7 +310,7 @@ pub fn run() {
         .manage(AppState::default())
         .manage(SerialState::default())
         .invoke_handler(tauri::generate_handler![
-            list_usb, discover, connect, disconnect, recordings_dir, list_recordings, start_recording, stop_recording, start_logging, stop_logging, export_preview, start_export, stop_export, set_log_interval, clear_session, session_lod, session_stats, disk_status, open_log, open_recording, export_csv, count_samples, save_bytes, request, set_buffer, set_calibration, set_trigger, set_math, analyze, sca_new, sca_add, sca_info, sca_align, sca_clear_align, sca_query, sca_meta, sca_export, sca_save, sca_load, query_events, clear_events, inject_events, script_load, script_scan, script_reset, script_stop, query_lod, query_stats, query_value, serial_open, serial_write, serial_signals, serial_close, serial_list
+            list_usb, discover, connect, disconnect, recordings_dir, list_recordings, start_recording, stop_recording, start_logging, stop_logging, export_preview, start_export, stop_export, set_log_interval, clear_session, session_lod, session_stats, disk_status, open_log, open_recording, export_csv, count_samples, save_bytes, request, set_buffer, set_calibration, set_trigger, set_math, analyze, sca_new, sca_add, sca_info, sca_align, sca_clear_align, sca_query, sca_meta, sca_export, sca_save, sca_load, query_events, clear_events, inject_events, script_load, script_scan, script_check, script_reset, script_stop, query_lod, query_stats, query_value, serial_open, serial_write, serial_signals, serial_close, serial_list
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -83,7 +83,7 @@ export const SECTION_HELP: Record<string, SectionHelp> = {
           ['Runt', 'a pulse that crosses Low but turns back before High (below: mirrored): a weak or failed transition'],
           ['Rise / fall time', 'the time from one level to the other, any or only longer / shorter / between: a slow edge, a sagging supply'],
           ['Interval', 'the time since the previous edge, any or only longer / shorter / between: a missed or early period'],
-          ['Script (Python)', 'desktop app: your own detector. trigger(data) gets the samples in blocks as they come (I, V, P, math as numpy arrays) and returns the trigger times, with labels if you like (in the Events tab and the CSV). Its globals live on between blocks'],
+          ['Script (Python)', 'desktop app: your own detector. trigger(data) gets the samples in blocks as they come (I, V, P, math as numpy arrays) and returns the trigger times, with labels if you like (in the Events tab and the CSV). Its globals live on between blocks. Edit script… opens the editor: examples to start from, scripts saved by name, .py files, Check (a dry run on the latest samples) and Apply'],
         ],
       },
       { name: 'Edge / When / Above-Below', text: "The type's direction: rise, fall or either for Edge; rise, fall or either for Rise / fall time and Interval; enter, exit or both for Window; above or below for Pulse, Timeout and Runt.", at: ['$.axis:has(button[title="Either"])', 'When', 'Above'] },

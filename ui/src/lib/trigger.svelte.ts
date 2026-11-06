@@ -19,7 +19,8 @@
 
 import { isNative, type Link } from './device';
 import type { Signal, TrigEvent, TriggerCfg, TriggerKind, WidthCond } from './nbp';
-import { scriptLoad, scriptReset, scriptScan, type ScriptInfo } from './script';
+import { scriptCheck, scriptLoad, scriptReset, scriptScan, type CheckResult, type ScriptInfo } from './script';
+import { SCRIPT_EXAMPLES } from './scriptExamples';
 import type { SampleStore } from './store';
 import type { View } from './view.svelte';
 
@@ -68,44 +69,8 @@ export const EVENT_LABEL: Record<TrigEvent['what'], string> = {
   c: '✎ script',
 };
 
-/** the script's starting point */
-export const SCRIPT_EXAMPLE = `# A trigger of your own. trigger(data) gets the new samples as they come,
-# a block at a time, and returns where the triggers are: a list of times
-# (s), or (time, label) pairs; labels show in the event list and the CSV.
-# Or dicts: {"t": .., "label": .., "width": .., "peak": .., "mean": .., "integral": ..}
-#
-#   data.t   times (s)          data.i  current (A)    data.v  voltage (V)
-#   data.p   power (W)          data.m  math channel (None without one)
-#   data.dt  s per sample       data.runs  [(t0, count)]: stretches without a gap
-#
-# numpy arrays (np) if numpy is installed. Globals live on between blocks:
-# keep what you need across the edge of a block. reset(), if there is one,
-# runs when the trigger starts over.
-#
-# This one: a current burst over 20 mA whose voltage dips by more than
-# 15 mV below the block's median, labelled with the burst's peak.
-
-LEVEL = 0.020   # A
-DIP = 0.015     # V
-last = None     # the previous block's last current sample
-
-def reset():
-    global last
-    last = None
-
-def trigger(data):
-    global last
-    i, v = data.i, data.v
-    prev = np.concatenate(([i[0] if last is None else last], i[:-1]))
-    last = i[-1]
-    starts = np.flatnonzero((prev < LEVEL) & (i >= LEVEL))
-    found = []
-    for k in starts:
-        burst = slice(k, k + int(1e-3 / data.dt))       # the next 1 ms
-        if np.median(v) - v[burst].min() > DIP:
-            found.append((data.t[k], f"{i[burst].max() * 1e3:.1f} mA"))
-    return found
-`;
+/** the script's starting point: the first example */
+export const SCRIPT_EXAMPLE = SCRIPT_EXAMPLES[0]?.code ?? 'def trigger(data):\n    return []\n';
 
 /** samples per block, at most */
 const MAX_BLOCK = 500_000;
@@ -141,8 +106,9 @@ const SAVED = [
   'measure', 'minVal', 'maxVal', 'every', 'qualOn', 'qualSource', 'qualPolarity', 'qualLevel',
   'seqOn', 'seqSource', 'seqSlope', 'seqLevel', 'seqDelay', 'seqWithin', 'scriptCode',
 ] as const;
-/** kept here only, not in a saved config: a config from someone else shouldn't name a program to run */
-const LOCAL_ONLY = ['python'] as const;
+/** kept here only, not in a saved config: a config from someone else shouldn't name a program
+ * to run; the editor's draft is this computer's */
+const LOCAL_ONLY = ['python', 'scriptDraft'] as const;
 
 export class TriggerState {
   mode = $state<TrigMode>('roll');
@@ -181,8 +147,11 @@ export class TriggerState {
   seqLevel = $state(0.01);
   seqDelay = $state(0);
   seqWithin = $state(0);
-  /** the Script type (Python, desktop): its code (applied) */
+  /** the Script type (Python, desktop): its code (applied), and the editor's (not applied yet) */
   scriptCode = $state(SCRIPT_EXAMPLE);
+  scriptDraft = $state(SCRIPT_EXAMPLE);
+  /** the samples a check runs on: the link, and the buffer's span (set by the app) */
+  dataFor: () => { link: Link | null; tStart: number; tEnd: number } = () => ({ link: null, tStart: 0, tEnd: 0 });
   /** the interpreter (empty: python3, or python on Windows) */
   python = $state('');
   script = $state<ScriptRun>({ info: null, error: '', blocks: 0, samples: 0, found: 0, failed: 0, skipped: 0, behind: 0, msPerM: 0, out: '' });
@@ -279,9 +248,12 @@ export class TriggerState {
 
 
   cfg(): TriggerCfg {
-    if (this.kind === 'script')
+    if (this.kind === 'script') {
+      // a new script starts the trigger over (its events, the core's log)
+      void this.scriptCode;
       // the script does it all: nothing of the core's on top
       return { enabled: this.detecting && isNative, source: this.source, kind: { type: 'script' }, hysteresis: 0, holdoff: 0, filter: 0, every: 1, qual: null, seq: null };
+    }
     return {
       enabled: this.detecting,
       source: this.source,
@@ -448,6 +420,24 @@ export class TriggerState {
       this.broken = this.python + '\0' + this.scriptCode;
       return false;
     }
+  }
+
+  /** Checks `code` without touching the running script: it loads, and a dry run on the last `span` s of samples. */
+  async checkScript(code: string, span = 1): Promise<CheckResult> {
+    const { link, tStart, tEnd } = this.dataFor();
+    const t1 = tEnd, t0 = Math.max(tStart, tEnd - span);
+    try {
+      const block = link && !link.nativePipeline && t1 > t0 ? await link.sampleBlock(t0, t1, 1_000_000) : null;
+      return await scriptCheck(this.python, code, t0, t1, block);
+    } catch (e) {
+      return { info: null, error: String(e), n: 0, span: 0, found: 0, events: [], out: '', ms: 0 };
+    }
+  }
+
+  /** Uses `code` from now on: it loads (or says why not); the trigger starts over with it. */
+  async applyScript(code: string): Promise<boolean> {
+    this.scriptCode = code;
+    return this.loadScript();
   }
 
   /**

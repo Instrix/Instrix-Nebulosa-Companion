@@ -9,7 +9,9 @@
 #   app ← {"ok": true}
 #
 # The script's module stays loaded between blocks: its globals keep state
-# (the last sample of the previous block, a running count...).
+# (the last sample of the previous block, a running count...). Its namespace
+# has np (numpy, if installed), math and Runs (stretches where a condition
+# holds, followed across blocks).
 import contextlib
 import io
 import json
@@ -90,6 +92,84 @@ class Data:
         return f"Data({len(self)} samples from {self.t[0] if len(self) else 0:.6f} s)"
 
 
+class Run:
+    """a stretch where the condition held: t0 (s, its first sample), t1 (s, the first
+    sample after it), width (s), n (samples); per signal its mean, min and max
+    (i_mean, i_min, i_max, v_..., p_...); charge (C, the integral of i) and energy (J)"""
+
+    def __init__(self, t0, dt):
+        self.t0, self.t1, self.dt, self.n = t0, t0, dt, 0
+        self.si = self.sv = self.sp = 0.0
+        self.i_min = self.v_min = self.p_min = math.inf
+        self.i_max = self.v_max = self.p_max = -math.inf
+
+    def add(self, i, v, p):
+        if not len(i):
+            return
+        self.n += len(i)
+        self.si += float(i.sum())
+        self.sv += float(v.sum())
+        self.sp += float(p.sum())
+        self.i_min, self.i_max = min(self.i_min, float(i.min())), max(self.i_max, float(i.max()))
+        self.v_min, self.v_max = min(self.v_min, float(v.min())), max(self.v_max, float(v.max()))
+        self.p_min, self.p_max = min(self.p_min, float(p.min())), max(self.p_max, float(p.max()))
+
+    width = property(lambda r: r.t1 - r.t0)
+    charge = property(lambda r: r.si * r.dt)
+    energy = property(lambda r: r.sp * r.dt)
+    i_mean = property(lambda r: r.si / r.n if r.n else math.nan)
+    v_mean = property(lambda r: r.sv / r.n if r.n else math.nan)
+    p_mean = property(lambda r: r.sp / r.n if r.n else math.nan)
+
+    def __repr__(self):
+        return f"Run({self.t0:.6f} s, {self.width * 1e3:.3f} ms, {self.n} samples)"
+
+
+class Runs:
+    """Stretches where a condition holds, followed across blocks:
+        bursts = Runs()
+        for r in bursts.feed(data, data.i > 0.005): ...   # the ones that ended in this block
+    `current` is the one still going (or None); reset() forgets it. Needs numpy."""
+
+    def __init__(self):
+        self.current = None
+
+    def reset(self):
+        self.current = None
+
+    def feed(self, data, mask):
+        if np is None:
+            raise RuntimeError("Runs needs numpy: pip install numpy")
+        mask = np.asarray(mask, dtype=bool)
+        n = len(mask)
+        if n == 0:
+            return []
+        if n != len(data):
+            raise ValueError(f"the condition has {n} values, the block {len(data)} samples")
+        x = mask.astype(np.int8)
+        d = np.diff(np.concatenate(([1 if self.current is not None else 0], x, [0])))
+        starts = list(np.flatnonzero(d == 1))
+        ends = list(np.flatnonzero(d == -1))
+        segs = []
+        if self.current is not None:
+            segs.append((self.current, 0, ends.pop(0)))
+        for a, b in zip(starts, ends):
+            segs.append((None, a, b))
+        out = []
+        self.current = None
+        for run, a, b in segs:
+            if run is None:
+                run = Run(float(data.t[a]), data.dt)
+            run.add(data.i[a:b], data.v[a:b], data.p[a:b])
+            if b == n and mask[-1]:
+                run.t1 = float(data.t[-1]) + data.dt
+                self.current = run  # still going
+            else:
+                run.t1 = float(data.t[b]) if b < n else float(data.t[-1]) + data.dt
+                out.append(run)
+        return out
+
+
 def events(r):
     """what trigger() returned, as events: None, a time, or a list of times,
     (time, label) pairs or dicts {t, label, width, peak, mean, integral}"""
@@ -121,7 +201,7 @@ def events(r):
 
 def main():
     init = json.loads(stdin.readline() or b"{}")
-    ns = {"__name__": "nebulosa_trigger", "np": np, "math": math}
+    ns = {"__name__": "nebulosa_trigger", "np": np, "math": math, "Runs": Runs}
     try:
         exec(compile(init.get("code", ""), "<trigger script>", "exec"), ns)
         fn = ns.get("trigger")

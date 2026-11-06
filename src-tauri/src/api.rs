@@ -42,6 +42,23 @@ pub struct ScanResult {
     pub ms: f64,
 }
 
+/// What a script check found (`script_check`).
+#[derive(serde::Serialize, Default)]
+pub struct CheckResult {
+    /// Python's version: it loaded
+    pub info: Option<crate::script::ScriptInfo>,
+    /// why it didn't load, or the traceback of the dry run
+    pub error: Option<String>,
+    /// samples of the dry run (0: none to run it on), and the time they cover, s
+    pub n: usize,
+    pub span: f64,
+    /// triggers it found there, the first of them
+    pub found: usize,
+    pub events: Vec<crate::script::Found>,
+    pub out: String,
+    pub ms: f64,
+}
+
 #[derive(Default)]
 pub struct AppState {
     conn: Mutex<Option<Conn>>,
@@ -63,6 +80,8 @@ pub struct AppState {
     log_interval: std::sync::Mutex<Option<f64>>,
     /// the script trigger's Python
     script: std::sync::Arc<std::sync::Mutex<crate::script::ScriptHost>>,
+    /// a second one, for checking a script without touching the running one's state
+    script_check: std::sync::Arc<std::sync::Mutex<crate::script::ScriptHost>>,
 }
 
 #[derive(serde::Serialize)]
@@ -473,6 +492,61 @@ impl AppState {
         Ok(r)
     }
 
+    /// A script checked: it loads (Python's version, or the error), and a dry run on the
+    /// samples in [t0, t1) (`block`, or this backend's own) says what it would find there.
+    /// Its own Python, started fresh: the running script's state isn't touched.
+    pub async fn script_check(&self, req: ScanReq) -> Result<CheckResult, String> {
+        let h = self.script_check.clone();
+        let (python, code) = (req.python.clone(), req.code.clone());
+        let loaded = tokio::task::spawn_blocking(move || {
+            let mut h = h.lock().unwrap();
+            h.stop();
+            h.load(&python, &code)
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+        let info = match loaded {
+            Ok(i) => i,
+            Err(e) => return Ok(CheckResult { error: Some(e), ..Default::default() }),
+        };
+        let block = match &req.block {
+            Some(b) => crate::script::unbase64(b)?,
+            None => match self.pipe() {
+                Some(p) => p.lock().unwrap().sample_block(req.t0, req.t1, req.max.min(MAX_SCRIPT_SAMPLES)),
+                None => Vec::new(),
+            },
+        };
+        let (end, n) = crate::script::block_end(&block).unwrap_or((f64::NAN, 0));
+        let first = block.get(20..28).map_or(f64::NAN, |b| f64::from_le_bytes(b.try_into().unwrap()));
+        let span = if n > 0 { end - first } else { 0.0 };
+        let mut r = CheckResult { info: Some(info), n, span, ..Default::default() };
+        if n == 0 {
+            return Ok(r);
+        }
+        let timeout = Duration::from_millis(req.timeout_ms.unwrap_or(10_000).clamp(50, 60_000));
+        let h = self.script_check.clone();
+        let (python, code) = (req.python, req.code);
+        let scan = tokio::task::spawn_blocking(move || {
+            let mut h = h.lock().unwrap();
+            let s = h.scan(&python, &code, &block, timeout);
+            h.stop();
+            s
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+        match scan {
+            Ok(s) => {
+                r.found = s.events.len();
+                r.events = s.events.into_iter().take(20).collect();
+                r.out = s.out;
+                r.error = s.error;
+                r.ms = s.ms;
+            }
+            Err(e) => r.error = Some(e),
+        }
+        Ok(r)
+    }
+
     /// The trigger starts over: the script's reset(), if it has one.
     pub async fn script_reset(&self, python: String, code: String) -> Result<(), String> {
         let h = self.script.clone();
@@ -566,6 +640,7 @@ pub async fn dispatch(st: &AppState, ser: &crate::serial::SerialState, cmd: &str
         "inject_events" => json(st.inject_events(arg(a, "events")?).await?),
         "script_load" => json(st.script_load(arg(a, "python")?, arg(a, "code")?).await?),
         "script_scan" => json(st.script_scan(arg(a, "req")?).await?),
+        "script_check" => json(st.script_check(arg(a, "req")?).await?),
         "script_reset" => json(st.script_reset(arg(a, "python")?, arg(a, "code")?).await?),
         "script_stop" => json(st.script_stop().await?),
         "query_lod" => Out::Bytes(st.query_lod(arg(a, "t0")?, arg(a, "t1")?, arg(a, "bins")?).await?),
