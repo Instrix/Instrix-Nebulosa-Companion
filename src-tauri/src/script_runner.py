@@ -234,4 +234,5 @@ def main():
             reply({"error": tb(), "out": out.getvalue()[-4000:]})
 
 
-main()
+if __name__ == "__main__":  # (the tests load it as a module)
+    main()

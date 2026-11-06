@@ -1,18 +1,11 @@
 # title: Bursts grouped into events
 # about: Bursts close together counted as one event (a BLE advertising event: a burst per channel), with its charge
+# group: Bursts
 #
-# trigger(data) gets the new samples a block at a time and returns where
-# the triggers are: a list of times (s), or (time, label) pairs; labels show
-# in the event list and the CSV. Globals live on between blocks; reset(), if
-# there is one, runs when the trigger starts over.
-#
-#   data.t  times (s)    data.i  current (A)   data.v  voltage (V)
-#   data.p  power (W)    data.m  math channel (None without one)
-#   data.dt s per sample data.runs  [(t0, count)]: stretches without a gap
-#
-# np is numpy. Runs() follows stretches where a condition holds across
-# blocks: Runs().feed(data, mask) gives the ones that ended, each with t0, t1,
-# width, n, i_mean / i_min / i_max (and v_, p_), charge (C), energy (J).
+# trigger(data) gets the new samples a block at a time and returns the
+# trigger times: a list of times (s), or (time, label) pairs; labels show in
+# the event list and the CSV. The editor's Reference has the rest (data,
+# Runs(), reset(), globals between blocks).
 
 # Bursts (current above LEVEL) less than GAP apart are one event: a BLE
 # advertising event is a burst on each of its channels. It triggers at each

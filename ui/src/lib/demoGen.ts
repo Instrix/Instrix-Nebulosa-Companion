@@ -20,8 +20,31 @@ const RANGE_FS = [2, 0.2, 20e-3, 2e-3, 200e-6, 20e-6];
  *            surge sags the supply, the board browns out and reboots (rareFault)
  *   target   a microcontroller under attack: idle at 2 mA, running what the
  *            side-channel tab sends it (DemoTarget: a leaky AES, a password check)
+ *   radio    a radio sensor node on a tired battery, for the advanced triggers:
+ *            a 15 mA, 2 ms transmission every 100 ms, and among them (radioPeriod)
+ *            retries (6 ms), late ones (30 ms late), aborted wake-ups (a 5 mA runt
+ *            instead), slow starts (1.5 ms ramp) and supply dips (0.4 V, 1 ms in);
+ *            the battery swings 3.03 to 3.27 V over 20 s
  */
-export type DemoScenario = 'iot' | 'ble' | 'pwm' | 'glitch' | 'sleep' | 'boot' | 'battery' | 'target' | 'rare';
+export type DemoScenario = 'iot' | 'ble' | 'pwm' | 'glitch' | 'sleep' | 'boot' | 'battery' | 'target' | 'rare' | 'radio';
+
+/** the radio scenario: period k's transmission (fixed per k, so the showcase can count on them) */
+export function radioPeriod(k: number) {
+  const runt = k % 10 === 8;
+  return {
+    /** s into the period it starts */
+    start: k % 10 === 6 ? 0.04 : 0.01,
+    /** s long: a retry is three times as long */
+    width: k % 10 === 3 ? 6e-3 : 2e-3,
+    /** an aborted wake-up: up to 5 mA for 0.6 ms, no transmission */
+    runt,
+    /** s to ramp up (a slow start), else 30 µs */
+    rise: !runt && k % 7 === 2 ? 1.5e-3 : 30e-6,
+    /** the supply dips 0.4 V, 1 ms into it, for 0.8 ms */
+    dip: !runt && k % 13 === 5,
+  };
+}
+export const RADIO_PERIOD = 0.1;
 
 /**
  * The rare scenario's k-th fault, s after the scenario began: 9 s, then
@@ -161,6 +184,20 @@ export class Generator {
         }
         i = noise(i, i < 1e-4 ? 0.2 : 0.05);
         return [i, 3.0 - i * 0.5];
+      }
+      case 'radio': {
+        const k = Math.floor(t / RADIO_PERIOD);
+        const p = radioPeriod(k);
+        const s = t - k * RADIO_PERIOD - p.start;
+        const top = p.runt ? 5e-3 : 15e-3;
+        const width = p.runt ? 0.6e-3 : p.width;
+        let i = 50e-6;
+        if (s >= 0 && s < width) i = 50e-6 + (top - 50e-6) * Math.min(1, s / p.rise) * Math.min(1, (width - s) / 30e-6);
+        if (i > 1e-3) i += 0.6e-3 * Math.sin(s * 2 * Math.PI * 7e3);
+        i = noise(i, i < 1e-3 ? 0.15 : 0.03);
+        const bat = 3.15 + 0.12 * Math.sin((2 * Math.PI * t) / 20);
+        const dip = p.dip && s >= 1e-3 && s < 1.8e-3 ? 0.4 * Math.sin((Math.PI * (s - 1e-3)) / 0.8e-3) : 0;
+        return [i, bat - i * 2 - dip];
       }
       case 'pwm': {
         // on: the winding's current ramps up; off: it freewheels, the supply gives only the logic's 2 mA

@@ -8,7 +8,7 @@
   import { isNative } from '../device';
   import * as native from '../native';
   import { errorLine, type CheckResult } from '../script';
-  import { SCRIPT_EXAMPLES, scriptName } from '../scriptExamples';
+  import { EXAMPLE_GROUPS, scriptName } from '../scriptExamples';
   import type { TriggerState } from '../trigger.svelte';
   import { fmtTime } from '../view.svelte';
 
@@ -277,9 +277,12 @@
       <div class="drop">
         <button class="ghost small" class:on={menu === 'examples'} onclick={(e) => ((menu = menu === 'examples' ? null : 'examples'), e.stopPropagation())}>Examples ▾</button>
         {#if menu === 'examples'}
-          <div class="menu" role="menu">
-            {#each SCRIPT_EXAMPLES as ex (ex.id)}
-              <button role="menuitem" onclick={() => pickExample(ex.code)}><b>{ex.title}</b><small>{ex.about}</small></button>
+          <div class="menu examples" role="menu">
+            {#each EXAMPLE_GROUPS as g (g.group)}
+              <h4>{g.group}</h4>
+              {#each g.examples as ex (ex.id)}
+                <button role="menuitem" onclick={() => pickExample(ex.code)}><b>{ex.title}</b><small>{ex.about}</small></button>
+              {/each}
             {/each}
           </div>
         {/if}
@@ -480,6 +483,23 @@
     border-radius: var(--r);
     box-shadow: 0 8px 24px #0006;
     padding: 4px;
+  }
+  .menu.examples {
+    width: min(760px, 80vw);
+    max-height: 70vh;
+    columns: 2;
+    column-gap: 4px;
+  }
+  .menu h4 {
+    margin: 8px 8px 2px;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--accent);
+    break-after: avoid;
+  }
+  .menu.examples button[role='menuitem'] {
+    break-inside: avoid;
   }
   .menu button[role='menuitem'] {
     display: flex;

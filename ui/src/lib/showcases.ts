@@ -7,9 +7,16 @@ import type { DemoScenario } from './demo';
 import type { Signal } from './nbp';
 import type { TourStep } from './Tour.svelte';
 import type { TriggerState } from './trigger.svelte';
+import { isNative } from './device';
+import { SCRIPT_EXAMPLES } from './scriptExamples';
 
 type TrigSettings = Partial<
-  Pick<TriggerState, 'mode' | 'source' | 'kind' | 'slope' | 'level' | 'low' | 'high' | 'polarity' | 'cond' | 'minWidth' | 'maxWidth' | 'timeout' | 'position' | 'log' | 'filter' | 'hysteresis' | 'holdoff'>
+  Pick<
+    TriggerState,
+    | 'mode' | 'source' | 'kind' | 'slope' | 'level' | 'low' | 'high' | 'polarity' | 'cond' | 'minWidth' | 'maxWidth' | 'timeout' | 'position' | 'log' | 'filter' | 'hysteresis' | 'holdoff'
+    | 'measure' | 'minVal' | 'maxVal' | 'every' | 'qualOn' | 'qualSource' | 'qualPolarity' | 'qualLevel'
+    | 'seqOn' | 'seqSource' | 'seqSlope' | 'seqLevel' | 'seqDelay' | 'seqWithin' | 'scriptCode' | 'scriptDraft'
+  >
 >;
 
 /** what a showcase may do to the app */
@@ -106,6 +113,9 @@ export interface Showcase {
 
 /** the start of the most recent whole period of `period` s, at least `back` s before t */
 const lastPeriod = (t: number, period: number, back = 0) => Math.floor((t - back) / period) * period;
+
+/** the advanced triggers' showcase: each step's trigger from a clean start (no extras left over) */
+const ADV_BASE: TrigSettings = { mode: 'normal', log: true, source: 'i', seqOn: false, qualOn: false, every: 1, filter: 0, hysteresis: 0, holdoff: 0 };
 
 export const SHOWCASES: Showcase[] = [
   {
@@ -295,6 +305,109 @@ export const SHOWCASES: Showcase[] = [
         title: 'Single: one and stop',
         body: '<b>Single</b> takes the next spike and freezes, like a scope’s single shot. To arm it again, choose Single again. A <b>Pulse width</b> trigger would catch only spikes shorter or longer than a width you set.',
         enter: () => c.trigger({ mode: 'single' }),
+      },
+    ],
+  },
+  {
+    id: 'advanced',
+    title: 'Advanced triggers: find the odd ones',
+    blurb: 'A radio node sends every 100 ms, and now and then one is different: a retry, an aborted wake-up, a slow start, a late one, a supply dip. A trigger for each.',
+    features: ['Pulse by charge', 'Runt', 'Rise time', 'Interval', 'A then B', 'Qualifier', 'Python script'],
+    scenario: 'radio',
+    steps: (c) => [
+      {
+        title: 'Advanced triggers: find the odd ones',
+        body: 'The demo device now plays a radio sensor node on a tired battery: a 15 mA, 2 ms transmission every 100 ms. Most are the same, and an edge trigger fires on every one of them. Each kind of odd one needs a trigger that tells it apart: one per step.',
+        enter: () => {
+          c.mode('scope');
+          c.clearMarkers();
+          c.logAxis('i', false);
+          c.trigger({ ...ADV_BASE, mode: 'roll', kind: 'edge', slope: 'rise', level: 0.01 });
+          c.live(0.05);
+        },
+      },
+      {
+        target: 'plots',
+        title: 'Mostly the same',
+        body: 'Every 100 ms a transmission. Among them: <b>retries</b> (three times as long), <b>aborted wake-ups</b> (the current turns back at 5 mA), <b>slow starts</b>, <b>late</b> ones, and <b>supply dips</b> where the battery can’t keep up. The battery itself swings between 3.03 and 3.27 V every 20 s.',
+        enter: () => {
+          c.trigger({ ...ADV_BASE, mode: 'roll' });
+          c.live(0.05);
+        },
+      },
+      {
+        target: 'trigger',
+        title: 'Retries: a pulse by its charge',
+        body: '<b>Pulse</b>, measured by its <b>Charge</b> (∫ current dt), <b>more than 50 µC</b>. A normal transmission is 30 µC, a retry three times that: only retries fire. The trigger is where the pulse ends, so most of the screen is before it.',
+        enter: () => {
+          c.openSection('trigger');
+          c.trigger({ ...ADV_BASE, kind: 'pulse', polarity: 'high', level: 0.01, measure: 'charge', cond: 'gt', minVal: 50e-6, position: 0.85 });
+          c.live(1e-3);
+          c.bottomTab('events');
+        },
+      },
+      {
+        target: 'trigger',
+        title: 'Aborted wake-ups: a runt',
+        body: '<b>Runt</b>: a pulse over <b>Low</b> (3 mA) that turns back before <b>High</b> (10 mA). A full transmission goes past both levels and doesn’t count; a wake-up abandoned at 5 mA does. <b>Noise reject</b> 0.5 mA: a slow start’s noise around 3 mA isn’t a pulse of its own.',
+        enter: () => {
+          c.trigger({ ...ADV_BASE, kind: 'runt', polarity: 'high', low: 0.003, high: 0.01, hysteresis: 0.5e-3, position: 0.6 });
+          c.live(0.2e-3);
+        },
+      },
+      {
+        target: 'trigger',
+        title: 'Slow starts: the rise time',
+        body: '<b>Rise / fall time</b>: the time from 2 mA to 12 mA, <b>longer than 200 µs</b>. A normal start takes about 20 µs; a slow one ramps for over a millisecond (a regulator struggling, a PA that warms up).',
+        enter: () => {
+          c.trigger({ ...ADV_BASE, kind: 'slew', slope: 'rise', low: 0.002, high: 0.012, cond: 'gt', minWidth: 200e-6, position: 0.7 });
+          c.live(0.5e-3);
+        },
+      },
+      {
+        target: 'trigger',
+        title: 'Late or missing: the interval',
+        body: '<b>Interval</b>: the time since the previous rising edge through 10 mA, <b>longer than 120 ms</b>. A transmission 30 ms late fires; so does the one after an aborted wake-up (200 ms: one missing). On screen, the gap before the trigger.',
+        enter: () => {
+          c.trigger({ ...ADV_BASE, kind: 'interval', slope: 'rise', level: 0.01, cond: 'gt', minWidth: 0.12, position: 0.8 });
+          c.live(0.02);
+        },
+      },
+      {
+        target: 'trigger',
+        title: 'Supply dips: A then B',
+        body: 'Two stages: <b>A</b>, the current rising through 10 mA (a transmission starts), then <b>B</b>, the voltage falling through 2.9 V <b>within 3 ms</b>. A transmission alone isn’t enough, nor a dip alone: only a dip the transmission caused. (<b>Then B</b>, under Sequence, qualifier, every Nth.)',
+        enter: () => {
+          c.trigger({ ...ADV_BASE, kind: 'edge', slope: 'rise', level: 0.01, seqOn: true, seqSource: 'v', seqSlope: 'fall', seqLevel: 2.9, seqDelay: 0, seqWithin: 3e-3, position: 0.3 });
+          c.live(0.5e-3);
+        },
+      },
+      {
+        target: 'trigger',
+        title: 'Only while the battery is low',
+        body: 'An edge on the current again, <b>only while</b> the voltage is at or under 3.12 V. The battery swings over 20 s: for half of that every transmission fires, for the other half none. Watch the Events count stall and start again.',
+        enter: () => {
+          c.trigger({ ...ADV_BASE, kind: 'edge', slope: 'rise', level: 0.01, qualOn: true, qualSource: 'v', qualPolarity: 'low', qualLevel: 3.12, position: 0.3 });
+          c.live(1e-3);
+        },
+      },
+      {
+        target: 'trigger',
+        title: 'All of them at once: a script',
+        body: 'The <b>Script (Python)</b> type: the example <b>Odd ones out</b> checks every burst several ways at once (its charge, its peak, its start, the supply, the time since the last) and labels the odd ones: <i>retry</i>, <i>aborted</i>, <i>slow start</i>, <i>dip to 2.74 V</i>, <i>late (+30 ms)</i>. <b>Edit script…</b> to see how, or change it.',
+        when: () => isNative,
+        enter: () => {
+          const odd = SCRIPT_EXAMPLES.find((e) => e.id === 'odd')?.code ?? '';
+          c.trigger({ ...ADV_BASE, kind: 'script', scriptCode: odd, scriptDraft: odd, position: 0.3 });
+          c.live(1e-3);
+          c.bottomTab('events');
+        },
+      },
+      {
+        target: 'lists',
+        title: 'Each one, logged',
+        body: 'Every trigger is in the <b>Events</b> tab with its time, width, peak, mean and charge (and the script’s label). Click one to see it. The same triggers start the Logger’s triggered captures, to keep the seconds around each.',
+        enter: () => c.bottomTab('events'),
       },
     ],
   },
