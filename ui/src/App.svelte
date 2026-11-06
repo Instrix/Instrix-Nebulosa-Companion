@@ -435,6 +435,12 @@
     helpTab = tab;
     helpOpen = true;
   }
+  // a page of Help asked for from elsewhere (the script editor's Reference)
+  $effect(() => {
+    const on = (e: Event) => openHelp((e as CustomEvent<HelpTab>).detail);
+    addEventListener('nebulosa:help', on);
+    return () => removeEventListener('nebulosa:help', on);
+  });
 
   function helpMenu(e: MouseEvent) {
     openMenu(e, [
@@ -443,6 +449,7 @@
       { label: 'Tutorials and showcases…', run: () => (showcasesOpen = true) },
       { label: 'Configurations…', run: () => (configOpen = true) },
       { label: 'Keys and mouse', run: () => openHelp('keys') },
+      { label: 'Trigger scripts (Python)', run: () => openHelp('scripts') },
       { label: 'Troubleshooting', run: () => openHelp('trouble') },
       { sep: true },
       { label: 'About Nebulosa Companion', run: () => openHelp('about') },
@@ -1632,6 +1639,7 @@
       { group: 'Action', label: 'Disconnect', disabled: !dev, run: disconnect },
       { group: 'Help', label: 'Help', hint: 'F1', keywords: 'keys manual', run: () => openHelp('start') },
       { group: 'Help', label: 'Keys and mouse', keywords: 'shortcuts keyboard', run: () => openHelp('keys') },
+      { group: 'Help', label: 'Trigger scripts (Python)', keywords: 'python script reference guide trigger api runs numpy', run: () => openHelp('scripts') },
       { group: 'Help', label: 'Walkthrough', keywords: 'tour', run: startTour },
       { group: 'Help', label: 'Tutorials and showcases', keywords: 'learn examples', run: () => (showcasesOpen = true) },
     ];

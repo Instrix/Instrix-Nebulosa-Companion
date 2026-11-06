@@ -1,12 +1,13 @@
 <script lang="ts" module>
-  export type HelpTab = 'start' | 'keys' | 'trouble' | 'about';
+  export type HelpTab = 'start' | 'keys' | 'scripts' | 'trouble' | 'about';
 </script>
 
 <script lang="ts">
-  // Help: getting started, keys and mouse, troubleshooting, about. ? or F1.
+  // Help: getting started, keys and mouse, trigger scripts (the Python reference), troubleshooting, about. ? or F1.
   import { isNative } from './device';
   import { shellKind } from './ipc';
   import { hex, type Info } from './nbp';
+  import ScriptReference from './ScriptReference.svelte';
   // INSTRIX brand logos (Instrix-Docs/brand/logo): the white one only on the dark theme
   import logo from '../assets/instrix-horizontal.svg';
   import logoWhite from '../assets/instrix-horizontal-white.svg';
@@ -30,6 +31,7 @@
   const TABS: [HelpTab, string][] = [
     ['start', 'Getting started'],
     ['keys', 'Keys and mouse'],
+    ['scripts', 'Trigger scripts (Python)'],
     ['trouble', 'Troubleshooting'],
     ['about', 'About'],
   ];
@@ -180,6 +182,8 @@
         <span class="muted">A guided look at each part of the window:</span>
         <button class="primary" onclick={ontour}>Start the walkthrough</button>
       </div>
+    {:else if tab === 'scripts'}
+      <ScriptReference />
     {:else if tab === 'trouble'}
       <dl class="trouble">
         {#each TROUBLE as [q, a] (q)}

@@ -359,6 +359,7 @@
           <p>Globals live on: keep the last sample, a count, a state. <code>reset()</code>, if defined, runs when the trigger starts over.</p>
           <h3>Runs()</h3>
           <p>Follows stretches where a condition holds, across blocks: <code>for r in runs.feed(data, data.i &gt; 0.005)</code> gives the ones that ended, each with <code>t0</code>, <code>t1</code>, <code>width</code>, <code>n</code>, <code>i_mean</code> / <code>i_min</code> / <code>i_max</code> (and <code>v_</code>, <code>p_</code>), <code>charge</code> (C), <code>energy</code> (J). <code>runs.current</code>: the one still going.</p>
+          <p><button class="ghost small" onclick={() => dispatchEvent(new CustomEvent('nebulosa:help', { detail: 'scripts' }))}>The full guide (Help) …</button></p>
           <h3>Also</h3>
           <p><code>np</code> (numpy), <code>math</code>; <code>print()</code> shows under Printed. Any module you have installed can be imported.</p>
         </aside>
