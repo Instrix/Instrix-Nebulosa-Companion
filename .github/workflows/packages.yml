@@ -8,6 +8,9 @@
 #   Windows  NSIS setup .exe, .msi, portable .exe (zip)   (x64; arm64: no .msi, WiX has no ARM64)
 #   macOS    .dmg, .app (zip)                             (universal: Apple silicon + Intel)
 #
+# Runners: Linux x64 on the self-hosted runner (labels self-hosted, Linux,
+# X64); the rest on GitHub's.
+#
 # Windows arm64 is cross-compiled on the x64 runner; Linux arm64 builds on
 # GitHub's arm64 runner. The arm64 jobs are allowed to fail without stopping a
 # release (the runner may not be available to every repository plan).
@@ -32,6 +35,7 @@ jobs:
         include:
           - name: Linux x64
             os: ubuntu-22.04
+            runner: [self-hosted, Linux, X64]
             target: x86_64-unknown-linux-gnu
             bundles: deb,rpm,appimage
             rust-targets: wasm32-unknown-unknown
@@ -40,6 +44,7 @@ jobs:
             artifact: packages-linux-x64
           - name: Linux arm64
             os: ubuntu-22.04-arm
+            runner: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
             bundles: deb,rpm,appimage
             rust-targets: wasm32-unknown-unknown
@@ -49,6 +54,7 @@ jobs:
             optional: true
           - name: Windows x64
             os: windows-latest
+            runner: windows-latest
             target: x86_64-pc-windows-msvc
             bundles: nsis,msi
             rust-targets: wasm32-unknown-unknown
@@ -56,6 +62,7 @@ jobs:
             artifact: packages-windows-x64
           - name: Windows arm64
             os: windows-latest
+            runner: windows-latest
             target: aarch64-pc-windows-msvc
             bundles: nsis
             rust-targets: wasm32-unknown-unknown,aarch64-pc-windows-msvc
@@ -64,20 +71,24 @@ jobs:
             optional: true
           - name: macOS universal
             os: macos-latest
+            runner: macos-latest
             target: universal-apple-darwin
             bundles: app,dmg
             rust-targets: wasm32-unknown-unknown,aarch64-apple-darwin,x86_64-apple-darwin
             artifact: packages-macos
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.runner }}
     continue-on-error: ${{ matrix.optional == true }}
     steps:
       - uses: actions/checkout@v4
 
+      # the self-hosted runner may have them already, and no password-less sudo
       - name: System libraries (Linux)
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libudev-dev rpm
+          PKGS="libudev-dev rpm"
+          if ! dpkg -s $PKGS >/dev/null 2>&1; then
+            sudo -n apt-get update && sudo -n apt-get install -y $PKGS || { echo "::error::install on the runner: sudo apt-get install $PKGS"; exit 1; }
+          fi
 
       - uses: dtolnay/rust-toolchain@stable
         with:
