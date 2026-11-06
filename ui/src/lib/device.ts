@@ -57,6 +57,11 @@ export interface Link {
   /** trigger events with seq ≥ since, oldest first */
   events(since: number, max: number): Promise<TrigEvent[]>;
   clearEvents(): Promise<void>;
+  /** the script trigger: the events it found, into the log; the samples in [t0, t1) as a block for it (base64) */
+  injectEvents(e: TrigEvent[]): Promise<void>;
+  sampleBlock(t0: number, t1: number, max: number): Promise<string>;
+  /** the samples are in the desktop backend's own pipeline (the script reads them there) */
+  readonly nativePipeline?: boolean;
   /** analysis over [t0, t1) */
   analyze(t0: number, t1: number, req: AnalysisRequest): Promise<AnalysisResult>;
   /** side-channel campaigns over this link's samples */

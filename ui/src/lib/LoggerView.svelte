@@ -621,7 +621,7 @@
       const move = (ev: MouseEvent) => {
         let v = u.posToVal(Math.min(u.over.clientHeight, Math.max(0, ev.clientY - topPx)), 'y');
         if (axes[sig].log) v = Math.max(v, 1e-15);
-        if (t.kind !== 'window') t.level = v;
+        if (!t.banded) t.level = v;
         else if (k === 0) t.low = v;
         else t.high = v;
       };

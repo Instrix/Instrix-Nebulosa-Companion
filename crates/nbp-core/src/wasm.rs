@@ -60,6 +60,18 @@ impl Pipeline {
         self.0.clear_events();
     }
 
+    /// [Event] found by the script trigger
+    pub fn inject_events(&mut self, events: JsValue) -> Result<(), JsValue> {
+        let e: Vec<crate::trigger::Event> = serde_wasm_bindgen::from_value(events)?;
+        self.0.inject_events(e);
+        Ok(())
+    }
+
+    /// the samples in [t0, t1), at most max, as a script block (trigger::encode_block), in base64
+    pub fn sample_block(&self, t0: f64, t1: f64, max: usize) -> String {
+        crate::trigger::base64(&self.0.sample_block(t0, t1, max))
+    }
+
     /// analysis::run over [t0, t1): req is an analysis::Request
     pub fn analyze(&self, t0: f64, t1: f64, req: JsValue) -> Result<JsValue, JsValue> {
         let r: crate::analysis::Request = serde_wasm_bindgen::from_value(req)?;

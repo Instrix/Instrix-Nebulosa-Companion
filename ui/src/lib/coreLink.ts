@@ -67,6 +67,12 @@ export abstract class CoreLink {
   events(since: number, max: number) {
     return this.call<TrigEvent[]>('events_since', BigInt(since), max);
   }
+  async injectEvents(e: TrigEvent[]) {
+    await this.call('inject_events', e);
+  }
+  sampleBlock(t0: number, t1: number, max: number) {
+    return this.call<string>('sample_block', t0, t1, max);
+  }
   async clearEvents() {
     await this.call('clear_events');
   }

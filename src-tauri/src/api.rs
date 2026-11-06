@@ -10,6 +10,38 @@ use nbp_core::Calibration;
 use std::time::Duration;
 use tokio::sync::Mutex;
 
+/// samples handed to the trigger script per block, at most
+const MAX_SCRIPT_SAMPLES: usize = 1_000_000;
+
+/// A scan for the script trigger (`script_scan`).
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanReq {
+    pub python: String,
+    pub code: String,
+    pub t0: f64,
+    pub t1: f64,
+    pub max: usize,
+    /// base64 of a sample block from the UI's pipeline; none: this backend's own
+    pub block: Option<String>,
+    pub timeout_ms: Option<u64>,
+}
+
+#[derive(serde::Serialize, Default)]
+pub struct ScanResult {
+    /// where the next scan starts, s
+    pub next: f64,
+    /// samples scanned
+    pub n: usize,
+    /// triggers found
+    pub found: usize,
+    /// they, when the block came from the UI (it puts them in its pipeline)
+    pub events: Vec<crate::script::Found>,
+    pub out: String,
+    pub error: Option<String>,
+    pub ms: f64,
+}
+
 #[derive(Default)]
 pub struct AppState {
     conn: Mutex<Option<Conn>>,
@@ -29,6 +61,8 @@ pub struct AppState {
     sca: std::sync::Arc<std::sync::Mutex<Option<nbp_core::sca::Campaign>>>,
     /// session log interval, s (applied at connect too)
     log_interval: std::sync::Mutex<Option<f64>>,
+    /// the script trigger's Python
+    script: std::sync::Arc<std::sync::Mutex<crate::script::ScriptHost>>,
 }
 
 #[derive(serde::Serialize)]
@@ -390,6 +424,66 @@ impl AppState {
         Ok(())
     }
 
+    /// Events the script trigger found (on a pipeline elsewhere, the browser's): into the event log.
+    pub async fn inject_events(&self, events: Vec<nbp_core::trigger::Event>) -> Result<(), String> {
+        if let Some(p) = self.pipe() {
+            p.lock().unwrap().inject_events(events);
+        }
+        Ok(())
+    }
+
+    /// Starts the trigger script (Python `python`, or python3 / python): its Python and numpy versions.
+    pub async fn script_load(&self, python: String, code: String) -> Result<crate::script::ScriptInfo, String> {
+        let h = self.script.clone();
+        tokio::task::spawn_blocking(move || h.lock().unwrap().load(&python, &code)).await.map_err(|e| e.to_string())?
+    }
+
+    /// The trigger script on the samples in [t0, t1) (at most max): `block` (base64, from a
+    /// pipeline in the UI) and its events come back; without it, this backend's own pipeline's
+    /// samples, and its events go straight into its log.
+    pub async fn script_scan(&self, req: ScanReq) -> Result<ScanResult, String> {
+        let own = req.block.is_none();
+        let block = match &req.block {
+            Some(b) => crate::script::unbase64(b)?,
+            None => match self.pipe() {
+                Some(p) => p.lock().unwrap().sample_block(req.t0, req.t1, req.max.min(MAX_SCRIPT_SAMPLES)),
+                None => return Ok(ScanResult { next: req.t0, ..Default::default() }),
+            },
+        };
+        let (end, n) = crate::script::block_end(&block).ok_or("not a sample block")?;
+        let mut r = ScanResult { next: if n > 0 { end } else { req.t0 }, n, ..Default::default() };
+        if n == 0 {
+            return Ok(r);
+        }
+        let timeout = Duration::from_millis(req.timeout_ms.unwrap_or(5000).clamp(50, 60_000));
+        let h = self.script.clone();
+        let (python, code) = (req.python, req.code);
+        let scan = tokio::task::spawn_blocking(move || h.lock().unwrap().scan(&python, &code, &block, timeout)).await.map_err(|e| e.to_string())??;
+        r.out = scan.out;
+        r.error = scan.error;
+        r.ms = scan.ms;
+        r.found = scan.events.len();
+        if own {
+            if let Some(p) = self.pipe() {
+                p.lock().unwrap().inject_events(scan.events.into_iter().map(|e| e.event()).collect());
+            }
+        } else {
+            r.events = scan.events;
+        }
+        Ok(r)
+    }
+
+    /// The trigger starts over: the script's reset(), if it has one.
+    pub async fn script_reset(&self, python: String, code: String) -> Result<(), String> {
+        let h = self.script.clone();
+        tokio::task::spawn_blocking(move || h.lock().unwrap().reset(&python, &code)).await.map_err(|e| e.to_string())?
+    }
+
+    pub async fn script_stop(&self) -> Result<(), String> {
+        self.script.lock().unwrap().stop();
+        Ok(())
+    }
+
     /// [t0, t1] in `bins` columns: SampleBuffer::lod's flat f64 layout, raw bytes.
     pub async fn query_lod(&self, t0: f64, t1: f64, bins: usize) -> Result<Vec<u8>, String> {
         let v = match self.pipe() {
@@ -469,6 +563,11 @@ pub async fn dispatch(st: &AppState, ser: &crate::serial::SerialState, cmd: &str
         "sca_load" => json(st.sca_load(arg(a, "bytes")?).await?),
         "query_events" => json(st.query_events(arg(a, "since")?, arg(a, "max")?).await?),
         "clear_events" => json(st.clear_events().await?),
+        "inject_events" => json(st.inject_events(arg(a, "events")?).await?),
+        "script_load" => json(st.script_load(arg(a, "python")?, arg(a, "code")?).await?),
+        "script_scan" => json(st.script_scan(arg(a, "req")?).await?),
+        "script_reset" => json(st.script_reset(arg(a, "python")?, arg(a, "code")?).await?),
+        "script_stop" => json(st.script_stop().await?),
         "query_lod" => Out::Bytes(st.query_lod(arg(a, "t0")?, arg(a, "t1")?, arg(a, "bins")?).await?),
         "query_stats" => json(st.query_stats(arg(a, "t0")?, arg(a, "t1")?).await?),
         "query_value" => json(st.query_value(arg(a, "t")?).await?),

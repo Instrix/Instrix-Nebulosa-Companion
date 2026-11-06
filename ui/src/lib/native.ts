@@ -114,6 +114,17 @@ class NativeLink implements Link {
     return invoke<void>('clear_events');
   }
 
+  readonly nativePipeline = true;
+
+  injectEvents(events: TrigEvent[]) {
+    return invoke<void>('inject_events', { events });
+  }
+
+  /** not needed: the backend reads its own pipeline's samples for the script */
+  sampleBlock(): Promise<string> {
+    return Promise.reject(new Error('the backend reads its own samples'));
+  }
+
   analyze(t0: number, t1: number, req: AnalysisRequest) {
     return invoke<AnalysisResult>('analyze', { t0, t1, req });
   }

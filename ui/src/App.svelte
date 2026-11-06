@@ -398,10 +398,12 @@
     view.end = e.t + (1 - trig.position) * view.windowS;
   }
 
+  /** a CSV field: quoted when it needs to be */
+  const csvText = (s: string) => (/[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s);
   async function exportEvents() {
-    const head = 'seq,time_s,event,width_s,peak,mean,integral\n';
+    const head = 'seq,time_s,event,width_s,peak,mean,integral,label\n';
     const num = (x: number | null) => (x == null || !isFinite(x) ? '' : x.toExponential(6));
-    const body = trig.events.map((e) => `${e.seq},${e.t.toFixed(9)},${e.what},${num(e.width)},${num(e.peak)},${num(e.mean)},${num(e.integral)}`).join('\n');
+    const body = trig.events.map((e) => `${e.seq},${e.t.toFixed(9)},${e.what},${num(e.width)},${num(e.peak)},${num(e.mean)},${num(e.integral)},${csvText(e.label ?? '')}`).join('\n');
     const bytes = new TextEncoder().encode(head + body + '\n');
     try {
       if (isNative) {
@@ -1345,7 +1347,7 @@
   function onLoggerPick(sig: Signal, v: number) {
     loggerPick = false;
     trig.source = sig;
-    if (trig.kind === 'window') {
+    if (trig.banded) {
       const h = Math.abs(trig.high - trig.low) / 2 || Math.abs(v) * 0.1 || 1e-6;
       trig.low = v - h;
       trig.high = v + h;
@@ -2279,7 +2281,7 @@
 
   function triggerAt(sig: Signal, v: number) {
     trig.source = sig;
-    if (trig.kind === 'window') {
+    if (trig.banded) {
       const h = Math.abs(trig.high - trig.low) / 2 || Math.abs(v) * 0.1 || 1e-6;
       trig.low = v - h;
       trig.high = v + h;
@@ -2560,6 +2562,7 @@
       void fireCapture(after.length ? Math.min(...after) : store.tEnd);
     }
     trig.fetch(activeLink, m.trigger.count);
+    if (trig.kind === 'script') void trig.pumpScript(activeLink, m.t_start, m.t_end);
     runMoments = m.run;
     stats = m.stats;
     if (m.stream_id !== streamId) {

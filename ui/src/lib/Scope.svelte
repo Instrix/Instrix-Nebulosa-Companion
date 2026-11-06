@@ -648,7 +648,7 @@
   }
 
   function setLevel(k: number, v: number) {
-    if (trig.kind !== 'window') trig.level = v;
+    if (!trig.banded) trig.level = v;
     else if (k === 0) trig.low = v;
     else trig.high = v;
   }

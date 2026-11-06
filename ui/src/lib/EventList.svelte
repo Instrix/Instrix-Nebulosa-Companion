@@ -51,6 +51,12 @@
     };
   });
 
+  /** the script labelled some: a column for it */
+  const labelled = $derived.by(() => {
+    void trig.logVersion;
+    return rows.some((e) => e.label);
+  });
+
   const f = (x: number | null, u: string) => (x == null || !isFinite(x) ? '' : fmtSI(x, u, 4));
 </script>
 
@@ -83,6 +89,7 @@
           <th>peak</th>
           <th>mean</th>
           {#if integralUnit}<th>∫</th>{/if}
+          {#if labelled}<th class="l">script</th>{/if}
         </tr>
       </thead>
       <tbody>
@@ -95,6 +102,7 @@
             <td>{f(e.peak, unit)}</td>
             <td>{f(e.mean, unit)}</td>
             {#if integralUnit}<td>{f(e.integral, integralUnit)}</td>{/if}
+            {#if labelled}<td class="l label">{e.label ?? ''}</td>{/if}
           </tr>
         {/each}
       </tbody>
@@ -106,6 +114,12 @@
 </div>
 
 <style>
+  .label {
+    max-width: 16em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   .wrap {
     border: 1px solid var(--border);
     border-radius: var(--r);

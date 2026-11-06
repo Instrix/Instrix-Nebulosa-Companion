@@ -3,6 +3,7 @@ pub mod discovery;
 pub mod events;
 pub mod files;
 pub mod link;
+pub mod script;
 pub mod serial;
 
 #[cfg(feature = "server")]

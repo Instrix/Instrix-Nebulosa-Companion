@@ -157,6 +157,37 @@ impl Pipeline {
         self.trig.clear_events();
     }
 
+    /// Events from the script trigger (`Kind::Script`): into the log.
+    pub fn inject_events(&mut self, events: Vec<Event>) {
+        self.trig.inject(events);
+    }
+
+    /// The samples in [t0, t1), at most `max` (the first ones), as a block for the script
+    /// trigger (`trigger::encode_block`).
+    pub fn sample_block(&self, t0: f64, t1: f64, max: usize) -> Vec<u8> {
+        let dt = (1u64 << self.decoder.log2n) as f64 * TS_PERIOD_S;
+        let math = self.buf.has_math();
+        let (mut i, mut v, mut m) = (Vec::new(), Vec::new(), Vec::new());
+        let mut runs: Vec<(f64, u32)> = Vec::new();
+        let mut last = f64::NAN;
+        self.buf.for_each(t0, t1, |t, a, volts, _r, mx| {
+            if i.len() >= max {
+                return;
+            }
+            match runs.last_mut() {
+                Some(r) if (t - last - dt).abs() < dt / 2.0 => r.1 += 1,
+                _ => runs.push((t, 1)),
+            }
+            last = t;
+            i.push(a as f32);
+            v.push(volts as f32);
+            if math {
+                m.push(mx as f32);
+            }
+        });
+        crate::trigger::encode_block(dt, &runs, &i, &v, math.then_some(&m[..]))
+    }
+
     pub fn set_calibration(&mut self, cal: Calibration) {
         if let Some(r) = &mut self.rec {
             r.calibration(&cal);
@@ -228,7 +259,7 @@ impl Pipeline {
             if self.next_ts != Some(ts) {
                 self.trig.gap();
             }
-            self.trig.feed(ts as f64 * TS_PERIOD_S, self.trig.value(i, v, m), dt);
+            self.trig.feed_all(ts as f64 * TS_PERIOD_S, [i, v, i * v, m], dt);
         }
         if let Some(r) = &mut self.rec {
             r.sample(ts, step, pack(ic, vc, range, dirty));

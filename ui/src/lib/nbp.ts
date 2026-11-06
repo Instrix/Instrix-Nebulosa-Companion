@@ -147,8 +147,15 @@ export interface Meta {
 export type TriggerKind =
   | { type: 'edge'; slope: 'rise' | 'fall' | 'both'; level: number }
   | { type: 'window'; low: number; high: number; when: 'enter' | 'exit' | 'both' }
-  | { type: 'pulse'; polarity: 'high' | 'low'; level: number; cond: 'any' | 'gt' | 'lt' | 'within'; min: number; max: number }
-  | { type: 'timeout'; polarity: 'high' | 'low'; level: number; time: number };
+  | { type: 'pulse'; polarity: 'high' | 'low'; level: number; cond: WidthCond; min: number; max: number; measure: 'width' | 'charge' | 'peak' | 'mean' }
+  | { type: 'timeout'; polarity: 'high' | 'low'; level: number; time: number }
+  | { type: 'runt'; polarity: 'high' | 'low'; low: number; high: number }
+  | { type: 'slew'; slope: 'rise' | 'fall' | 'both'; low: number; high: number; cond: WidthCond; min: number; max: number }
+  | { type: 'interval'; slope: 'rise' | 'fall' | 'both'; level: number; cond: WidthCond; min: number; max: number }
+  /** found by the user's script (the desktop app), not the core */
+  | { type: 'script' };
+
+export type WidthCond = 'any' | 'gt' | 'lt' | 'within';
 
 /** trigger.rs TriggerCfg */
 export interface TriggerCfg {
@@ -159,18 +166,28 @@ export interface TriggerCfg {
   holdoff: number;
   /** moving average, s (0: none) */
   filter: number;
+  /** only every Nth trigger */
+  every: number;
+  /** only while another signal is above / below a level */
+  qual: { source: Signal; polarity: 'high' | 'low'; level: number } | null;
+  /** A then B: stage B (the kind above is A) */
+  seq: { source: Signal; kind: TriggerKind; delay: number; within: number } | null;
 }
 
 /** trigger.rs Event: width / peak / mean / integral are NaN (null) for edges */
 export interface TrigEvent {
   seq: number;
   t: number;
-  /** e rise, f fall, n enter, x exit, p pulse, t timeout */
-  what: 'e' | 'f' | 'n' | 'x' | 'p' | 't';
+  /** e rise, f fall, n enter, x exit, p pulse, t timeout, r runt, u rise time, d fall time, i interval, c custom (script) */
+  what: 'e' | 'f' | 'n' | 'x' | 'p' | 't' | 'r' | 'u' | 'd' | 'i' | 'c';
   width: number | null;
   peak: number | null;
   mean: number | null;
   integral: number | null;
+  /** stage A's time, in a sequence */
+  from?: number | null;
+  /** the trigger script's label for it */
+  label?: string;
 }
 
 /** units.rs Calibration */

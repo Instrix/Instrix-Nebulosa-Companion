@@ -22,6 +22,8 @@ const PIPELINE = new Set([
   'set_trigger',
   'events_since',
   'clear_events',
+  'inject_events',
+  'sample_block',
   'analyze',
   'set_math',
   'session_lod',
