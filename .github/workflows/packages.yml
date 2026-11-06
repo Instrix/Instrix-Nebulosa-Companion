@@ -21,7 +21,17 @@ name: Packages
 
 on:
   workflow_call:
+    inputs:
+      ref:
+        description: 'What to build (a tag, a branch); empty: the commit that triggered it'
+        type: string
+        default: ''
   workflow_dispatch:
+    inputs:
+      ref:
+        description: 'What to build (a tag, a branch); empty: the branch chosen above'
+        type: string
+        default: ''
 
 env:
   CARGO_TERM_COLOR: always
@@ -80,6 +90,8 @@ jobs:
     continue-on-error: ${{ matrix.optional == true }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
 
       # the self-hosted runner may have them already, and no password-less sudo
       - name: System libraries (Linux)

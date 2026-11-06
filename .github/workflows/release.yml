@@ -3,11 +3,23 @@
 # their SHA-256 checksums. Review the draft, then publish it.
 #
 #   git tag v0.2.0 && git push origin v0.2.0
+#
+# Or again for a tag already pushed: Actions > Release > Run workflow, with
+# the tag (e.g. v0.2.1).
 name: Release
 
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'The tag to release, e.g. v0.2.1'
+        required: true
+
+env:
+  # the tag: pushed, or given to Run workflow
+  TAG: ${{ inputs.tag || github.ref_name }}
 
 permissions:
   contents: write
@@ -18,9 +30,11 @@ jobs:
     runs-on: [self-hosted, Linux, X64]
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
       - name: Check
         run: |
-          TAG="${GITHUB_REF_NAME#v}"
+          TAG="${TAG#v}"
           # no Node on the self-hosted runner here: the version line read as text
           VER=$(sed -n 's/^  "version": *"\([^"]*\)".*/\1/p' src-tauri/tauri.conf.json)
           if [ "$TAG" != "$VER" ]; then
@@ -31,6 +45,8 @@ jobs:
   packages:
     needs: version
     uses: ./.github/workflows/packages.yml
+    with:
+      ref: ${{ inputs.tag || github.ref_name }}
 
   release:
     name: Draft release
@@ -50,6 +66,7 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           draft: true
-          name: Nebulosa Companion ${{ github.ref_name }}
+          tag_name: ${{ env.TAG }}
+          name: Nebulosa Companion ${{ env.TAG }}
           generate_release_notes: true
           files: release/*
