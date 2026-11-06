@@ -12,9 +12,6 @@
 # GitHub's arm64 runner. The arm64 jobs are allowed to fail without stopping a
 # release (the runner may not be available to every repository plan).
 #
-# Runners: Linux x64 builds on the self-hosted runner; the others on GitHub's,
-# only with the repository variable HOSTED_RUNNERS = true (see the plan job).
-#
 # Builds are unsigned (macOS gets an ad-hoc signature): Windows SmartScreen and
 # macOS Gatekeeper warn on first launch. See the end of this file for signing.
 name: Packages
@@ -27,55 +24,60 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Which packages, on which runners. By default only what the self-hosted
-  # runner (Linux x64: labels self-hosted, Linux, X64) builds; with the
-  # repository variable HOSTED_RUNNERS = true (Settings > Secrets and variables
-  # > Actions > Variables) also Linux arm64, Windows and macOS on GitHub's.
-  plan:
-    name: Plan
-    runs-on: [self-hosted, Linux, X64]
-    outputs:
-      include: ${{ steps.plan.outputs.include }}
-    steps:
-      - id: plan
-        env:
-          HOSTED: ${{ vars.HOSTED_RUNNERS }}
-          SELF: >-
-            [{"name":"Linux x64","os":"ubuntu-22.04","runner":["self-hosted","Linux","X64"],"target":"x86_64-unknown-linux-gnu","bundles":"deb,rpm,appimage","rust-targets":"wasm32-unknown-unknown","deb-arch":"amd64","rpm-arch":"x86_64","artifact":"packages-linux-x64"}]
-          HOSTED_LIST: >-
-            [{"name":"Linux arm64","os":"ubuntu-22.04-arm","runner":"ubuntu-22.04-arm","target":"aarch64-unknown-linux-gnu","bundles":"deb,rpm,appimage","rust-targets":"wasm32-unknown-unknown","deb-arch":"arm64","rpm-arch":"aarch64","artifact":"packages-linux-arm64","optional":true},
-            {"name":"Windows x64","os":"windows-latest","runner":"windows-latest","target":"x86_64-pc-windows-msvc","bundles":"nsis,msi","rust-targets":"wasm32-unknown-unknown","win-arch":"x64","artifact":"packages-windows-x64"},
-            {"name":"Windows arm64","os":"windows-latest","runner":"windows-latest","target":"aarch64-pc-windows-msvc","bundles":"nsis","rust-targets":"wasm32-unknown-unknown,aarch64-pc-windows-msvc","win-arch":"arm64","artifact":"packages-windows-arm64","optional":true},
-            {"name":"macOS universal","os":"macos-latest","runner":"macos-latest","target":"universal-apple-darwin","bundles":"app,dmg","rust-targets":"wasm32-unknown-unknown,aarch64-apple-darwin,x86_64-apple-darwin","artifact":"packages-macos"}]
-        run: |
-          if [ "$HOSTED" = "true" ]; then
-            echo "include=[${SELF:1:${#SELF}-2},${HOSTED_LIST:1}" | tr -d '\n' >> "$GITHUB_OUTPUT"
-          else
-            echo "include=$SELF" >> "$GITHUB_OUTPUT"
-          fi
-          echo >> "$GITHUB_OUTPUT"
-          cat "$GITHUB_OUTPUT"
-
   package:
     name: ${{ matrix.name }}
-    needs: plan
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(needs.plan.outputs.include) }}
-    runs-on: ${{ matrix.runner }}
+        include:
+          - name: Linux x64
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            bundles: deb,rpm,appimage
+            rust-targets: wasm32-unknown-unknown
+            deb-arch: amd64
+            rpm-arch: x86_64
+            artifact: packages-linux-x64
+          - name: Linux arm64
+            os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            bundles: deb,rpm,appimage
+            rust-targets: wasm32-unknown-unknown
+            deb-arch: arm64
+            rpm-arch: aarch64
+            artifact: packages-linux-arm64
+            optional: true
+          - name: Windows x64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bundles: nsis,msi
+            rust-targets: wasm32-unknown-unknown
+            win-arch: x64
+            artifact: packages-windows-x64
+          - name: Windows arm64
+            os: windows-latest
+            target: aarch64-pc-windows-msvc
+            bundles: nsis
+            rust-targets: wasm32-unknown-unknown,aarch64-pc-windows-msvc
+            win-arch: arm64
+            artifact: packages-windows-arm64
+            optional: true
+          - name: macOS universal
+            os: macos-latest
+            target: universal-apple-darwin
+            bundles: app,dmg
+            rust-targets: wasm32-unknown-unknown,aarch64-apple-darwin,x86_64-apple-darwin
+            artifact: packages-macos
+    runs-on: ${{ matrix.os }}
     continue-on-error: ${{ matrix.optional == true }}
     steps:
       - uses: actions/checkout@v4
 
-      # a self-hosted runner may have them already, and no password-less sudo
       - name: System libraries (Linux)
         if: runner.os == 'Linux'
         run: |
-          PKGS="libudev-dev rpm"
-          if ! dpkg -s $PKGS >/dev/null 2>&1; then
-            sudo -n apt-get update && sudo -n apt-get install -y $PKGS || { echo "::error::install $PKGS on the runner (sudo apt-get install $PKGS)"; exit 1; }
-          fi
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev rpm
 
       - uses: dtolnay/rust-toolchain@stable
         with:
