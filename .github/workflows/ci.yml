@@ -18,14 +18,17 @@ env:
 jobs:
   test:
     name: Tests (Linux)
-    runs-on: ubuntu-22.04
+    runs-on: [self-hosted, Linux, X64]
     steps:
       - uses: actions/checkout@v4
 
+      # a self-hosted runner may have them already, and no password-less sudo
       - name: System libraries (Tauri / WebKitGTK)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev libayatana-appindicator3-dev librsvg2-dev libudev-dev
+          PKGS="libwebkit2gtk-4.1-dev libsoup-3.0-dev libayatana-appindicator3-dev librsvg2-dev libudev-dev"
+          if ! dpkg -s $PKGS >/dev/null 2>&1; then
+            sudo -n apt-get update && sudo -n apt-get install -y $PKGS || { echo "::error::install on the runner: sudo apt-get install $PKGS"; exit 1; }
+          fi
 
       - uses: dtolnay/rust-toolchain@stable
         with:
