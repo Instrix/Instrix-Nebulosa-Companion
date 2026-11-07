@@ -3,7 +3,7 @@
 [![CI](https://github.com/Instrix/Instrix-Nebulosa-Companion/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Instrix/Instrix-Nebulosa-Companion/actions/workflows/ci.yml)
 [![Release](https://github.com/Instrix/Instrix-Nebulosa-Companion/actions/workflows/release.yml/badge.svg)](https://github.com/Instrix/Instrix-Nebulosa-Companion/actions/workflows/release.yml)
 [![Download](https://img.shields.io/badge/download-latest_release-2ea44f?logo=github)](https://github.com/Instrix/Instrix-Nebulosa-Companion/releases/latest)
-![Version](https://img.shields.io/badge/version-0.1.1-blue)
+![Version](https://img.shields.io/badge/version-0.3.0-blue)
 ![Platforms](https://img.shields.io/badge/platforms-Windows_%7C_macOS_%7C_Linux_%7C_browser-informational)
 ![License](https://img.shields.io/badge/license-proprietary-lightgrey)
 
@@ -210,7 +210,8 @@ runner. The arm64 jobs may fail without blocking a release.
   → Run workflow. `[skip ci]` in a commit message skips CI altogether.
 - **Release** (`release.yml`): push a tag matching the version in `src-tauri/tauri.conf.json`
   (`git tag v0.2.0 && git push origin v0.2.0`); it builds everything and opens a **draft**
-  GitHub Release with the packages and `SHA256SUMS.txt`. Review it, then publish.
+  GitHub Release with the packages and `SHA256SUMS.txt`, its notes from the version's
+  section of `CHANGELOG.md` (write it before tagging). Review it, then publish.
   Each package is also there without the version in its name
   (`nebulosa-companion_x64-setup.exe`, …), so
   `https://github.com/Instrix/Instrix-Nebulosa-Companion/releases/latest/download/<that name>`

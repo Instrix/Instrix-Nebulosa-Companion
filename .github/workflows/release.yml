@@ -6,6 +6,11 @@
 #
 # Or again for a tag already pushed: Actions > Release > Run workflow, with
 # the tag (e.g. v0.2.1).
+#
+# Each package is there twice: nebulosa-companion_<version>_<kind> and, the
+# same file, nebulosa-companion_<kind>; the second is what
+# https://github.com/Instrix/Instrix-Nebulosa-Companion/releases/latest/download/nebulosa-companion_<kind>
+# serves, the newest published release's (not a draft or a pre-release).
 name: Release
 
 on:
@@ -53,20 +58,44 @@ jobs:
     needs: packages
     runs-on: [self-hosted, Linux, X64]
     steps:
+      # the changelog (and a clean workspace: the runner keeps it between runs)
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
       - uses: actions/download-artifact@v4
         with:
           pattern: packages-*
           path: release
           merge-multiple: true
+      # a copy of each without the version in its name, so a link to
+      # releases/latest/download/<name> always gives the newest release's
+      # (the website's Download buttons): nebulosa-companion_x64-setup.exe, …
+      - name: Fixed names for the latest-release links
+        run: |
+          cd release
+          VER="${TAG#v}"
+          for f in nebulosa-companion_"${VER}"_*; do
+            cp -- "$f" "nebulosa-companion_${f#nebulosa-companion_${VER}_}"
+          done
+          ls -la
       - name: Checksums
         run: |
           cd release
           sha256sum * > SHA256SUMS.txt
           cat SHA256SUMS.txt
+      # the release's notes: this version's section of CHANGELOG.md (GitHub's list of
+      # the changes since the last release goes under it)
+      - name: Release notes
+        run: |
+          VER="${TAG#v}"
+          awk -v v="[$VER]" '/^## \[/ { p = index($0, v) > 0; next } p' CHANGELOG.md > notes.md
+          if [ ! -s notes.md ]; then echo "::warning::no section for $VER in CHANGELOG.md"; fi
+          cat notes.md
       - uses: softprops/action-gh-release@v2
         with:
           draft: true
           tag_name: ${{ env.TAG }}
           name: Nebulosa Companion ${{ env.TAG }}
+          body_path: notes.md
           generate_release_notes: true
           files: release/*

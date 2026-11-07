@@ -1,7 +1,7 @@
 {
   "name": "nebulosa-companion",
   "private": true,
-  "version": "0.2.1",
+  "version": "0.3.0",
   "type": "module",
   "scripts": {
     "wasm": "wasm-pack build crates/nbp-core --target web --out-dir ../../ui/src/lib/nbp-wasm --out-name nbp_core --no-pack -- --features wasm",
