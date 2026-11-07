@@ -106,11 +106,25 @@ jobs:
           awk -v v="[$VER]" '/^## \[/ { p = index($0, v) > 0; next } p' CHANGELOG.md > notes.md
           if [ ! -s notes.md ]; then echo "::warning::no section for $VER in CHANGELOG.md"; fi
           cat notes.md
-      - uses: softprops/action-gh-release@v2
-        with:
-          draft: true
-          tag_name: ${{ env.TAG }}
-          name: Nebulosa Companion ${{ env.TAG }}
-          body_path: notes.md
-          generate_release_notes: true
-          files: release/*
+      # the draft, then its files one at a time, each retried: ~30 uploads at
+      # once (softprops/action-gh-release) timed out connecting to
+      # uploads.github.com. Run again, it fills in the same draft.
+      - name: Draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --json isDraft >/dev/null 2>&1; then
+            echo "release $TAG exists: adding its files"
+          else
+            gh release create "$TAG" --draft --verify-tag --title "Nebulosa Companion $TAG" --notes-file notes.md --generate-notes
+          fi
+          for f in release/*; do
+            for i in 1 2 3 4 5 6; do
+              if gh release upload "$TAG" "$f" --clobber; then echo "uploaded ${f#release/}"; break; fi
+              if [ "$i" = 6 ]; then echo "::error::${f#release/}: upload failed"; exit 1; fi
+              echo "retrying ${f#release/} ($i)"; sleep $((i * 10))
+            done
+          done
+          gh release view "$TAG" --json assets --jq '.assets | length | "\(.) files on the release"'
