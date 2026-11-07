@@ -103,7 +103,9 @@ jobs:
       - name: Release notes
         run: |
           VER="${TAG#v}"
-          awk -v v="[$VER]" '/^## \[/ { p = index($0, v) > 0; next } p' CHANGELOG.md > notes.md
+          # the version's section, and those after it marked "not published" (their release
+          # failed: their changes come out in this one)
+          awk -v v="[$VER]" '/^## \[/ { if (index($0, v)) { p = 1; next } if (p && index($0, "not published")) { print; next } p = 0; next } p' CHANGELOG.md > notes.md
           if [ ! -s notes.md ]; then echo "::warning::no section for $VER in CHANGELOG.md"; fi
           cat notes.md
       # the draft, then its files one at a time, each retried: ~30 uploads at

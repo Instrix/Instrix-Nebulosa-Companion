@@ -4,7 +4,18 @@ What changed in each release of Nebulosa Companion. The release workflow
 (`.github/workflows/release.yml`) puts a version's section at the top of its
 GitHub Release.
 
-## [0.3.0] - 2026-11-07
+## [0.3.1] - 2026-11-07
+
+The first published release with the 0.3 features: 0.3.0's release never finished
+uploading, so everything listed under 0.3.0 below is new here too.
+
+### Fixed
+
+- Releases: the files are uploaded one at a time, each retried, from GitHub's
+  runner (all at once, uploads timed out). Run workflow can release an earlier
+  run's packages without building them again (`packages_from_run`).
+
+## [0.3.0] - 2026-11-07 (not published: see 0.3.1)
 
 ### Added
 

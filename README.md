@@ -3,7 +3,7 @@
 [![CI](https://github.com/Instrix/Instrix-Nebulosa-Companion/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Instrix/Instrix-Nebulosa-Companion/actions/workflows/ci.yml)
 [![Release](https://github.com/Instrix/Instrix-Nebulosa-Companion/actions/workflows/release.yml/badge.svg)](https://github.com/Instrix/Instrix-Nebulosa-Companion/actions/workflows/release.yml)
 [![Download](https://img.shields.io/badge/download-latest_release-2ea44f?logo=github)](https://github.com/Instrix/Instrix-Nebulosa-Companion/releases/latest)
-![Version](https://img.shields.io/badge/version-0.3.0-blue)
+![Version](https://img.shields.io/badge/version-0.3.1-blue)
 ![Platforms](https://img.shields.io/badge/platforms-Windows_%7C_macOS_%7C_Linux_%7C_browser-informational)
 ![License](https://img.shields.io/badge/license-proprietary-lightgrey)
 
