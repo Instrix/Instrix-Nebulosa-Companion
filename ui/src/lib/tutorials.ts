@@ -731,6 +731,7 @@ export const TUTORIALS: Showcase[] = [
   {
     kind: 'tutorial',
     id: 't-sca',
+    beta: 'sca',
     title: 'Break AES with power analysis',
     blurb: 'Capture power traces, see the leak (TVLA), then recover the whole AES key by correlation — on the demo target.',
     features: ['Capture', 'T-test', 'CPA', 'Key recovery'],

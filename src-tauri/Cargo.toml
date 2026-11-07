@@ -24,7 +24,7 @@ required-features = ["server"]
 
 [features]
 default = ["tauri-app"]
-tauri-app = ["dep:tauri", "dep:tauri-plugin-dialog", "dep:tauri-build"]
+tauri-app = ["dep:tauri", "dep:tauri-plugin-dialog", "dep:tauri-build", "dep:axum", "dep:tower-http", "dep:getrandom"]
 server = ["dep:axum", "dep:tower-http", "dep:getrandom"]
 
 [build-dependencies]

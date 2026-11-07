@@ -2,6 +2,8 @@
   // Learn: hands-on tutorials (one feature each), showcases (real loads), and the window tour.
   import { SHOWCASES, type Showcase } from './showcases';
   import { TUTORIALS } from './tutorials';
+  import { beta } from './beta.svelte';
+  const shown = (s: Showcase) => !s.beta || beta[s.beta];
 
   let {
     realDevice,
@@ -46,7 +48,7 @@
         <span class="blurb">What each part is for, in a dozen short steps.</span>
         <span class="go">Start ▶</span>
       </button>
-      {#each TUTORIALS as s (s.id)}
+      {#each TUTORIALS.filter(shown) as s (s.id)}
         <button class="card" onclick={() => onpick(s)}>
           <span class="title">{s.title}</span>
           <span class="blurb">{s.blurb}</span>
@@ -57,7 +59,7 @@
 
     <h3>Showcases <span>real measurements, set up for you step by step</span></h3>
     <div class="grid">
-      {#each SHOWCASES as s (s.id)}
+      {#each SHOWCASES.filter(shown) as s (s.id)}
         <button class="card" onclick={() => onpick(s)}>
           <span class="title">{s.title}</span>
           <span class="blurb">{s.blurb}</span>

@@ -107,7 +107,7 @@
 
     // the data (bars, lines, gaps): drawn once per new data into a layer;
     // each paint copies it and draws the window and markers over it
-    const layerKey = `${lodVersion}|${lodAxis}|${W}x${H}|${document.documentElement.dataset.theme}`;
+    const layerKey = `${lodVersion}|${lodAxis}|${W}x${H}|${document.documentElement.dataset.theme}/${document.documentElement.dataset.palette ?? ""}`;
     if (layerKey !== drawnLayer) {
       drawnLayer = layerKey;
       drawData(L, W, H, bins, dpr, x);

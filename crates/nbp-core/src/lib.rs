@@ -23,6 +23,7 @@
 pub mod analysis;
 pub mod board;
 pub mod buffer;
+pub mod debug;
 pub mod export;
 pub mod frame;
 pub mod math;

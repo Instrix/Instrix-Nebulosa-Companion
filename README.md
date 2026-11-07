@@ -97,6 +97,100 @@ npm test           # nbp-core unit tests
 Without hardware: run the debugger's simulator
 (`../Instrix-Nebulosa-Debugger/build/nebulosa-sim`) and connect to `127.0.0.1`.
 
+### Debug tab (build option)
+
+The Nebulosa Debugger's functions in a **Debug** tab (Ctrl 4): the device's and
+the host's stream counters with a throughput plot; the range switch (EN_TAP
+outputs, comparators, manual / automatic, timing in FPGA clock cycles, forced
+comparators); the RS1473 ADC link (lock, phases, change maps, eye, round trip,
+RECAL, fixed / measured phases, clk_fast / echo engine, phase sweep); all 45
+FPGA registers, read and write; the board's low-level controls (LEDs, USB3
+mux, PROGRAM_B, screen, its UI driven from the keyboard); the SPI flash (read,
+save, erase, write and verify); PING round trips; any raw NBP command; a log.
+
+It is left out of the normal builds (and the releases). The debug variants:
+
+```sh
+npm run linux:debug       # Linux desktop app with the Debug tab
+npm run linux:dist:debug  # Linux packages with it
+npm run dev:debug         # Tauri, with it
+npm run build:debug       # Tauri installers with it
+npm run dev:ui:debug      # browser, with it (also: npm run build:ui:debug)
+```
+
+The tab has two parts. **Tools** is the above. **AFE bring-up** is the
+debugger's bring-up tab (Instrix-Nebulosa `Design/afe1-x10-bringup.md`):
+
+- the bench: a Siglent SPD3303C (`/dev/usbtmcN`) and a Korad KEL102 (its serial
+  port, 115200), or `tcp:HOST[:PORT]` for SCPI over LAN, or `sim` for simulated
+  ones; the desktop backend carries the lines (`src-tauri/src/instruments.rs`),
+  the SCPI is in `ui/src/lib/bringup/instruments.ts`;
+- **ALL OFF** (the load's input and CH1), also when the Nebulosa's link is lost
+  and when the window closes; the load interlocked to 1.1 × FS of the tap that
+  is on; taps stepped down one at a time;
+- the **playbook**: tap identification with the DMM, or every tap / one tap
+  (zero, then 10 / 50 / 85 % FS from the load or through the decade box), with
+  operator dialogs, expected against read, pass / fail limits, retry / skip /
+  back / jump;
+- the **bench**: instrument controls, taps, the 0.5 µs bring-up overlap, measure
+  against the load / V over the box / a typed reference, and the sequences:
+  zero + noise, linearity, ladder ratio transfer, comparator trip points;
+- **results**, saved as CSV.
+
+Measurements read the raw ADC codes of one range through the core's probe
+(`Pipeline::probe_arm` / `probe_take`). With the demo device and `sim`
+instruments, the simulated loop current drives the demo's ADC, so the whole
+playbook runs without hardware (every tap: 92 steps, 78 checks).
+
+`NEBULOSA_DEBUG=1` before any build does the same; in the UI, `?mode=debug`
+opens on the tab. The demo device (`?demo`) simulates the registers, the range
+switch and an RS1473 link, so the tab can be tried without hardware. Code:
+`ui/src/lib/DebugView.svelte`, `ui/src/lib/debug.ts`, `crates/nbp-core/src/debug.rs`.
+
+## Remote control
+
+**Settings → Remote control** serves the Companion on a port (default 8765) of this
+computer, or also of the local network. Open the link it shows in a browser: the page
+mirrors the app's window. It joins the device (or recording) the window has open, and
+the instrument's settings (acquisition, trigger, logger) and streaming stay in step
+both ways; the view, layout and theme are each browser's own. A demo device stays in
+the UI that started it. The desktop app only (the backend owns the device); the link
+carries a token, kept across restarts (Settings → New token revokes it).
+
+The same port has a JSON API for scripts and test benches; the app's window carries
+the calls out:
+
+```sh
+T=…   # the token, from Settings
+curl -H "Authorization: Bearer $T" http://127.0.0.1:8765/api/v1/status
+curl -H "Authorization: Bearer $T" -d '{"key":"usb:2:114"}' http://127.0.0.1:8765/api/v1/connect
+curl -H "Authorization: Bearer $T" -X POST http://127.0.0.1:8765/api/v1/start
+curl -H "Authorization: Bearer $T" "http://127.0.0.1:8765/api/v1/measure?seconds=1"
+```
+
+| Action | Arguments | Does |
+|---|---|---|
+| `status` | | connected, streaming, rate, mode, recording / logging, the settings |
+| `devices` | | scans; the keys for `connect` |
+| `connect` | `key`, or `host` [`port`] | opens a device (no key: the first found) |
+| `demo` / `disconnect` | | the demo device / closes |
+| `start` / `stop` | | streaming |
+| `measure` | `seconds` (1) | mean, min, max, σ of current, voltage, power; charge, energy |
+| `value` | | the newest sample |
+| `settings` / `set` | `acquisition`, `trigger`, `logger`, `display`, `view` | as in a configuration file |
+| `markers` / `marker` / `clear_markers` | `t0` [`t1`] [`name`] | markers and their measurements |
+| `record` / `log` | `on` | raw recording / the session log to a file |
+| `mode` | `scope` or `logger` | the view |
+| `screenshot` | | the scope as PNG (base64) |
+
+Answers are `{"ok": …}` or `{"error": "…"}`. On the local network anyone with the link
+controls the instrument, reads and writes files and runs trigger scripts on this
+computer, over plain http: turn it on for a network you trust only.
+
+**Never expose it to the internet**: no port forwarding on the router, public reverse
+proxy, tunnel (ngrok, Cloudflare Tunnel, …) or firewall rule opening it to the outside.
+It is meant for this computer or a trusted local network only.
+
 ## Packages and releases
 
 GitHub Actions builds every package (`.github/workflows/packages.yml`):
@@ -110,11 +204,17 @@ GitHub Actions builds every package (`.github/workflows/packages.yml`):
 Windows arm64 is cross-compiled on the x64 runner; Linux arm64 builds on GitHub's arm64
 runner. The arm64 jobs may fail without blocking a release.
 
-- **CI** (`ci.yml`): tests on every push and pull request; on `main` and manual runs also
-  the packages, as build artifacts.
+- **CI** (`ci.yml`): tests on every push and pull request (on the self-hosted runner;
+  changes to only `*.md` / `docs/` skip it). The packages, as build artifacts, only when
+  asked for: put `[package]` in the message of a commit pushed to `main`, or Actions → CI
+  → Run workflow. `[skip ci]` in a commit message skips CI altogether.
 - **Release** (`release.yml`): push a tag matching the version in `src-tauri/tauri.conf.json`
   (`git tag v0.2.0 && git push origin v0.2.0`); it builds everything and opens a **draft**
   GitHub Release with the packages and `SHA256SUMS.txt`. Review it, then publish.
+  Each package is also there without the version in its name
+  (`nebulosa-companion_x64-setup.exe`, …), so
+  `https://github.com/Instrix/Instrix-Nebulosa-Companion/releases/latest/download/<that name>`
+  always downloads the newest published release's (the website links to these).
   The version lives in `src-tauri/tauri.conf.json`, `Cargo.toml`, `package.json`,
   `electron/package.json` and the version badge at the top of this file (a private
   repository can't have it read from the releases).

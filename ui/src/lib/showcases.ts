@@ -3,6 +3,7 @@
 // runs its `enter` when it comes up (forward or back), so any step can be
 // reached on its own; the app stays usable underneath to try things.
 
+import type { BetaId } from './beta.svelte';
 import type { DemoScenario } from './demo';
 import type { Signal } from './nbp';
 import type { TourStep } from './Tour.svelte';
@@ -75,7 +76,7 @@ export interface ShowcaseCtx {
     trig: TriggerState;
     bottomTab(): 'markers' | 'events' | 'serial';
     meterScope(): string;
-    appMode(): 'scope' | 'logger' | 'sca';
+    appMode(): 'scope' | 'logger' | 'sca' | 'debug';
     mathOn(): boolean;
     mathExpr(): string;
     logView(): { follow: boolean; last: number };
@@ -108,6 +109,8 @@ export interface Showcase {
   /** the features it shows */
   features: string[];
   scenario: DemoScenario;
+  /** listed only with this beta feature on */
+  beta?: BetaId;
   steps(c: ShowcaseCtx): TourStep[];
 }
 
@@ -681,6 +684,7 @@ export const SHOWCASES: Showcase[] = [
   },
   {
     id: 'aes',
+    beta: 'sca',
     title: 'Recover an AES key from power',
     blurb: 'Watch the workbench capture power traces, flag the leak with a t-test, and pull the full AES-128 key out by correlation.',
     features: ['Capture', 'T-test (TVLA)', 'CPA', 'Key recovery'],

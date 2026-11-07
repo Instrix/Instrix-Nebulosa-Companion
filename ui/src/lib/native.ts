@@ -4,7 +4,7 @@
 import { channel as ipcChannel, invoke, pickOpen, pickSave as ipcPickSave } from './ipc';
 import type { Candidate, Link, LinkEvents } from './device';
 import type { ScaEngine } from './sca';
-import { hex, type ExportCfg, type AnalysisRequest, type AnalysisResult, type Calibration, type Info, type Meta, type RawSpanStats, type Reply, type TrigEvent, type TriggerCfg, type AlignResult, type ScaInfo, type ScaResult, type TraceMeta } from './nbp';
+import { hex, type ExportCfg, type AnalysisRequest, type AnalysisResult, type Calibration, type Info, type Meta, type RawSpanStats, type Reply, type TrigEvent, type TriggerCfg, type AlignResult, type ScaInfo, type ScaResult, type TraceMeta, type ProbeResult } from './nbp';
 
 type Event = ({ event: 'meta' } & Meta) | { event: 'closed'; reason: string };
 
@@ -120,6 +120,14 @@ class NativeLink implements Link {
     return invoke<void>('inject_events', { events });
   }
 
+  probeArm(range: number) {
+    return invoke<void>('probe_arm', { range });
+  }
+
+  probeTake() {
+    return invoke<ProbeResult | null>('probe_take');
+  }
+
   /** not needed: the backend reads its own pipeline's samples for the script */
   sampleBlock(): Promise<string> {
     return Promise.reject(new Error('the backend reads its own samples'));
@@ -139,6 +147,20 @@ function channel(ev: LinkEvents) {
     if (m.event === 'meta') ev.onMeta(m);
     else ev.onClosed(m.reason);
   });
+}
+
+/** what the backend has open, joined by this UI (remote control: another UI opened it) */
+export interface OpenInfo {
+  description: string;
+  playback: boolean;
+  log: boolean;
+  header: string | null;
+}
+
+/** Joins what another UI opened (a device, a recording): its Meta on `ev` too. Null: nothing is open. */
+export async function attach(ev: LinkEvents): Promise<{ link: Link; open: OpenInfo } | null> {
+  const o = await invoke<OpenInfo | null>('remote_attach', { events: channel(ev) });
+  return o ? { link: new NativeLink(o.description, o.playback), open: o } : null;
 }
 
 async function open(target: Target, ev: LinkEvents): Promise<Link> {

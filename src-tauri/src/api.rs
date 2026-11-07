@@ -82,6 +82,25 @@ pub struct AppState {
     script: std::sync::Arc<std::sync::Mutex<crate::script::ScriptHost>>,
     /// a second one, for checking a script without touching the running one's state
     script_check: std::sync::Arc<std::sync::Mutex<crate::script::ScriptHost>>,
+    /// bench instruments for the bring-up (the Debug tab)
+    pub instruments: crate::instruments::Instruments,
+    /// remote control: the other UIs on the open connection, what it is, and
+    /// the UIs keeping their settings in step
+    viewers: crate::events::Viewers,
+    open: std::sync::Mutex<Option<OpenInfo>>,
+    pub peers: crate::events::Peers,
+    /// remote control's HTTP API: the UI that carries out its calls
+    pub api: crate::remote::ApiHost,
+}
+
+/// What is open (a device, a recording, a log), for a UI that joins it (`attach`).
+#[derive(serde::Serialize, Clone)]
+pub struct OpenInfo {
+    pub description: String,
+    pub playback: bool,
+    pub log: bool,
+    /// a recording's or log's header (JSON)
+    pub header: Option<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -101,6 +120,26 @@ impl AppState {
         self.pipe.lock().unwrap().clone()
     }
 
+    /// nothing open any more: the viewers of what was go
+    fn forget_open(&self) {
+        self.viewers.clear();
+        *self.open.lock().unwrap() = None;
+    }
+
+    /// Joins what is open (another UI opened it): its events come on `events` too.
+    /// None: nothing is open.
+    pub async fn attach(&self, events: Events) -> Result<Option<OpenInfo>, String> {
+        let open = self.open.lock().unwrap().clone();
+        let live = self.conn.lock().await.is_some() || self.pipe().is_some();
+        match open {
+            Some(o) if live => {
+                self.viewers.add(events);
+                Ok(Some(o))
+            }
+            _ => Ok(None),
+        }
+    }
+
 
     pub async fn list_usb(&self) -> Result<Vec<link::usb::UsbDev>, String> {
         tokio::task::spawn_blocking(link::usb::list).await.map_err(|e| e.to_string())?
@@ -115,6 +154,8 @@ impl AppState {
         let mut slot = self.conn.lock().await;
         slot.take(); // drop (and stop) a previous connection first
         self.pipe.lock().unwrap().take();
+        self.forget_open();
+        let events = self.viewers.fan(events);
         let samples = self.buffer_samples.lock().unwrap().unwrap_or(nbp_core::pipeline::DEFAULT_BUFFER_SAMPLES);
         let cal = self.cal.lock().unwrap().clone();
         let c = Conn::open(target, events, samples, cal).await?;
@@ -126,6 +167,7 @@ impl AppState {
         let d = c.description.clone();
         *self.pipe.lock().unwrap() = Some(c.pipe.clone());
         *slot = Some(c);
+        *self.open.lock().unwrap() = Some(OpenInfo { description: d.clone(), playback: false, log: false, header: None });
         Ok(d)
     }
 
@@ -135,6 +177,7 @@ impl AppState {
         let _ = self.stop_export().await;
         self.conn.lock().await.take();
         self.pipe.lock().unwrap().take();
+        self.forget_open();
         Ok(())
     }
 
@@ -279,8 +322,12 @@ impl AppState {
         let _ = self.stop_recording().await;
         let _ = self.stop_logging().await;
         self.conn.lock().await.take();
+        self.forget_open();
+        let events = self.viewers.fan(events);
+        let name = file_name(&path);
         let (p, header) = tokio::task::spawn_blocking(move || files::open_log(&path, &events)).await.map_err(|e| e.to_string())??;
         *self.pipe.lock().unwrap() = Some(std::sync::Arc::new(std::sync::Mutex::new(p)));
+        *self.open.lock().unwrap() = Some(OpenInfo { description: format!("Log {name}"), playback: true, log: true, header: Some(header.clone()) });
         Ok(header)
     }
 
@@ -288,10 +335,14 @@ impl AppState {
     pub async fn open_recording(&self, path: String, events: Events) -> Result<String, String> {
         let _ = self.stop_recording().await;
         self.conn.lock().await.take();
+        self.forget_open();
+        let events = self.viewers.fan(events);
+        let name = file_name(&path);
         let math = self.math.lock().unwrap().clone();
         let (mut p, header) = tokio::task::spawn_blocking(move || files::open(&path, &events)).await.map_err(|e| e.to_string())??;
         let _ = p.set_math(math.as_deref());
         *self.pipe.lock().unwrap() = Some(std::sync::Arc::new(std::sync::Mutex::new(p)));
+        *self.open.lock().unwrap() = Some(OpenInfo { description: format!("Recording {name}"), playback: true, log: false, header: Some(header.clone()) });
         Ok(header)
     }
 
@@ -443,6 +494,18 @@ impl AppState {
         Ok(())
     }
 
+    /// The bring-up's probe: raw current codes of `range` (negative: any) from now on.
+    pub async fn probe_arm(&self, range: i32) -> Result<(), String> {
+        let p = self.pipe().ok_or("not connected")?;
+        p.lock().unwrap().probe_arm(u8::try_from(range).ok());
+        Ok(())
+    }
+
+    /// What the probe collected since probe_arm (null: not armed); disarms it.
+    pub async fn probe_take(&self) -> Result<Option<nbp_core::debug::ProbeResult>, String> {
+        Ok(self.pipe().and_then(|p| p.lock().unwrap().probe_take()))
+    }
+
     /// Events the script trigger found (on a pipeline elsewhere, the browser's): into the event log.
     pub async fn inject_events(&self, events: Vec<nbp_core::trigger::Event>) -> Result<(), String> {
         if let Some(p) = self.pipe() {
@@ -577,6 +640,10 @@ impl AppState {
 
 }
 
+fn file_name(path: &str) -> String {
+    std::path::Path::new(path).file_name().map_or_else(|| path.to_string(), |n| n.to_string_lossy().into_owned())
+}
+
 /// A command's answer: JSON, or raw bytes (the plot data).
 pub enum Out {
     Json(serde_json::Value),
@@ -651,6 +718,36 @@ pub async fn dispatch(st: &AppState, ser: &crate::serial::SerialState, cmd: &str
         "serial_signals" => json(ser.serial_signals(arg(a, "rts")?, arg(a, "dtr")?).await?),
         "serial_close" => json(ser.serial_close().await?),
         "serial_list" => json(crate::serial::serial_list().await?),
+        "probe_arm" => json(st.probe_arm(arg(a, "range")?).await?),
+        "probe_take" => json(st.probe_take().await?),
+        "inst_open" => json(st.instruments.open(arg(a, "id")?, arg(a, "path")?, arg(a, "baud")?).await?),
+        "inst_close" => json(st.instruments.close(arg(a, "id")?).await?),
+        "inst_io" => json(st.instruments.io(arg(a, "id")?, arg(a, "line")?, arg(a, "reply")?, arg(a, "gapMs")?, arg(a, "timeoutMs")?).await?),
+        "inst_list" => json(st.instruments.list().await?),
+        "remote_attach" => json(st.attach(ev.clone().ok_or("no channel")?).await?),
+        "sync_join" => json(st.peers.join(ev.clone().ok_or("no channel")?)),
+        "sync_leave" => {
+            st.peers.leave(arg(a, "id")?);
+            Out::Json(serde_json::Value::Null)
+        }
+        "sync_send" => {
+            st.peers.send(arg(a, "from")?, &arg::<serde_json::Value>(a, "msg")?);
+            Out::Json(serde_json::Value::Null)
+        }
+        "api_host" => {
+            st.api.host(ev.clone().ok_or("no channel")?);
+            Out::Json(serde_json::Value::Null)
+        }
+        "api_reply" => {
+            st.api.reply(arg(a, "id")?, arg(a, "ok")?, arg(a, "err")?);
+            Out::Json(serde_json::Value::Null)
+        }
+        #[cfg(any(feature = "server", feature = "tauri-app"))]
+        "remote_start" => json(crate::remote::start(arg(a, "port")?, arg(a, "lan")?, arg(a, "token")?).await?),
+        #[cfg(any(feature = "server", feature = "tauri-app"))]
+        "remote_stop" => json(crate::remote::stop()),
+        #[cfg(any(feature = "server", feature = "tauri-app"))]
+        "remote_status" => json(crate::remote::status()),
         _ => return Err(format!("unknown command {cmd}")),
     })
 }

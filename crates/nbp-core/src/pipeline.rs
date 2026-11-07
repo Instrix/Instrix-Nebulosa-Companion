@@ -104,6 +104,8 @@ pub struct Pipeline {
     cal: Calibration,
     accum: Accum,
     stream_id: u32,
+    /// raw ADC codes of one range, for the bring-up's measurements (debug.rs Probe)
+    probe: Option<crate::debug::Probe>,
 }
 
 impl Default for Pipeline {
@@ -132,7 +134,19 @@ impl Pipeline {
             cal: Calibration::default(),
             accum: Accum::default(),
             stream_id: 0,
+            probe: None,
         }
+    }
+
+    /// Starts collecting the raw current codes of range `range` (any range: None),
+    /// from the samples decoded from now on; replaces a probe already armed.
+    pub fn probe_arm(&mut self, range: Option<u8>) {
+        self.probe = Some(crate::debug::Probe::new(range));
+    }
+
+    /// What the probe collected since it was armed (None: not armed); disarms it.
+    pub fn probe_take(&mut self) -> Option<crate::debug::ProbeResult> {
+        self.probe.take().map(|p| p.result())
     }
 
     /// Resizes the sample buffer (drops what it holds).
@@ -254,6 +268,9 @@ impl Pipeline {
         let i = self.cal.current(ic, range);
         let v = self.cal.voltage(vc);
         let m = self.buf.push_phys(ts, step, ic, vc, range, dirty, i, v);
+        if let Some(p) = &mut self.probe {
+            p.sample(ic, vc, range, dirty);
+        }
         if self.trig.enabled() {
             let dt = step as f64 * TS_PERIOD_S;
             if self.next_ts != Some(ts) {

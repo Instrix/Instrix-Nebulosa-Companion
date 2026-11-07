@@ -142,6 +142,8 @@ export class Generator {
   private inBlock = 0;
   private range = -1;
   private first = true;
+  /** the bring-up's simulated bench: a fixed raw current code on a fixed range (null: the scenario) */
+  bench: { range: number; code: number } | null = null;
 
   /** `n` samples' worth of DATA messages */
   next(n: number): Uint8Array[] {
@@ -156,9 +158,10 @@ export class Generator {
       const [i0, v0] = this.sample(t);
       const i = Math.max(0, i0);
       const v = Math.max(0, v0 + (Math.random() - 0.5) * 2e-3);
-      const r = rangeFor(i);
+      const b = this.bench;
+      const r = b ? b.range : rangeFor(i);
       if (r !== this.range || this.inBlock >= 256) this.header(r);
-      const ic = Math.min(16383, Math.round((i / RANGE_FS[r]) * 16384));
+      const ic = b ? Math.max(0, Math.min(16383, Math.round(b.code + gauss() * 1.2))) : Math.min(16383, Math.round((i / RANGE_FS[r]) * 16384));
       const vc = Math.min(16383, Math.round(v / 1e-3));
       this.words.push(((1 << 31) | (ic << 14) | vc) >>> 0);
       this.inBlock++;

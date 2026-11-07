@@ -190,6 +190,22 @@ export interface TrigEvent {
   label?: string;
 }
 
+/** debug.rs ProbeResult: raw codes of one range since probe_arm */
+export interface ProbeResult {
+  /** clean samples */
+  n: number;
+  dirty: number;
+  /** samples of other ranges */
+  other: number;
+  mean: number;
+  sd: number;
+  min: number;
+  max: number;
+  v_mean: number;
+  /** no clean sample: mean / sd over the DIRTY ones */
+  all_dirty: boolean;
+}
+
 /** units.rs Calibration */
 export interface Calibration {
   i_fs: number[];

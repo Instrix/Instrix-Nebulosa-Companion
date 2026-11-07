@@ -15,7 +15,12 @@ try {
   /* not a git checkout */
 }
 
-export default defineConfig({
+// The Debug tab (registers, range timing, the RS1473 link, flash, raw
+// commands: the Nebulosa Debugger's functions) is a build option:
+// NEBULOSA_DEBUG=1, or `vite --mode debug`. Without it the tab and its code
+// are left out of the build. npm run build:ui:debug / build:debug /
+// linux:debug make the debug variants.
+export default defineConfig(({ mode }) => ({
   root: 'ui',
   plugins: [svelte()],
   clearScreen: false,
@@ -25,6 +30,7 @@ export default defineConfig({
     __APP_VERSION__: JSON.stringify(pkg.version),
     __APP_COMMIT__: JSON.stringify(commit),
     __APP_BUILT__: JSON.stringify(new Date().toISOString().slice(0, 10)),
+    __DEBUG_TAB__: JSON.stringify(process.env.NEBULOSA_DEBUG === '1' || mode === 'debug'),
   },
   // the core's worker (ui/src/lib/pipeline.worker.ts) is an ES module: it imports the WASM
   worker: { format: 'es' },
@@ -33,4 +39,4 @@ export default defineConfig({
     emptyOutDir: true,
     target: 'es2022',
   },
-});
+}));

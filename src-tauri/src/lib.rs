@@ -2,7 +2,9 @@ pub mod api;
 pub mod discovery;
 pub mod events;
 pub mod files;
+pub mod instruments;
 pub mod link;
+pub mod remote;
 pub mod script;
 pub mod serial;
 

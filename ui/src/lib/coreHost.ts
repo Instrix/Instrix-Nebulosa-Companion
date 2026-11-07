@@ -24,6 +24,8 @@ const PIPELINE = new Set([
   'clear_events',
   'inject_events',
   'sample_block',
+  'probe_arm',
+  'probe_take',
   'analyze',
   'set_math',
   'session_lod',
@@ -96,6 +98,9 @@ export class CoreHost {
       }
       case 'demo.stream':
         this.streaming = !!args[0];
+        return;
+      case 'demo.bench':
+        if (this.gen) this.gen.bench = (args[0] as { range: number; code: number } | null) ?? null;
         return;
       case 'demo.scenario':
         if (this.gen) this.gen.scenario = args[0] as DemoScenario;

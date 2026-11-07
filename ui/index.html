@@ -5,14 +5,17 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Nebulosa Companion</title>
     <script>
-      // the theme before the first paint (lib/uiScale.svelte.ts keeps it after): dark by default
+      // the theme before the first paint (lib/uiScale.svelte.ts keeps it after): dark by default.
+      // data-theme is the base scheme, data-palette a dark variant (charcoal, oled, contrast)
       (() => {
         let t = 'dark';
         try {
           t = new URLSearchParams(location.search).get('theme') || localStorage.getItem('nebulosa.theme') || 'dark';
         } catch {}
-        if (t === 'system') t = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-        document.documentElement.dataset.theme = t === 'light' ? 'light' : 'dark';
+        if (t === 'system') t = matchMedia('(prefers-contrast: more)').matches ? 'contrast' : matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+        const root = document.documentElement;
+        root.dataset.theme = t === 'light' ? 'light' : 'dark';
+        if (t === 'charcoal' || t === 'oled' || t === 'contrast') root.dataset.palette = t;
       })();
     </script>
     <style>
@@ -31,6 +34,14 @@
       :root[data-theme='dark'] #splash {
         background: #161826;
         color: #e9e9ed;
+      }
+      :root[data-palette='charcoal'] #splash {
+        background: #18181a;
+      }
+      :root[data-palette='oled'] #splash,
+      :root[data-palette='contrast'] #splash {
+        background: #000;
+        color: #fff;
       }
       #splash.done {
         opacity: 0;

@@ -46,14 +46,39 @@ export function restoreScale() {
 }
 
 
-// ---- theme: dark (the default), light, or the system's -------------------------
-export type Theme = 'dark' | 'light' | 'system';
+// ---- theme ---------------------------------------------------------------------
+// Each theme is a base scheme (data-theme: dark or light, which the CSS and the
+// logos key on) and, for the dark variants, a palette on top (data-palette,
+// app.css). "system" follows the OS: light or dark, and high contrast when the
+// OS asks for more contrast.
+
+export type Theme = 'dark' | 'charcoal' | 'oled' | 'contrast' | 'light' | 'system';
+
+export interface ThemeInfo {
+  id: Theme;
+  label: string;
+  detail: string;
+  /** for the settings' preview: ground, panel, border, text, accent */
+  swatch: [string, string, string, string, string];
+}
+
+export const THEMES: ThemeInfo[] = [
+  { id: 'dark', label: 'Dark', detail: 'Blue-tinted charcoal, the INSTRIX default', swatch: ['#161826', '#1d2030', '#2c3044', '#e9e9ed', '#2f80c0'] },
+  { id: 'charcoal', label: 'Charcoal', detail: 'Neutral grey, no tint', swatch: ['#18181a', '#222225', '#36363c', '#e8e8ea', '#3a8fd0'] },
+  { id: 'oled', label: 'OLED black', detail: 'Pure black ground: dark rooms, OLED screens', swatch: ['#000000', '#0b0b0d', '#222329', '#e6e6ea', '#2f80c0'] },
+  { id: 'contrast', label: 'High contrast', detail: 'Black, white and bright edges: the most legible', swatch: ['#000000', '#000000', '#c9ced8', '#ffffff', '#1a78cc'] },
+  { id: 'light', label: 'Light', detail: 'Paper white', swatch: ['#f6f7f9', '#ffffff', '#e3e6eb', '#292b31', '#23699f'] },
+  { id: 'system', label: "The system's", detail: 'Light or dark (and high contrast) as the OS is set', swatch: ['#f6f7f9', '#1d2030', '#2c3044', '#e9e9ed', '#2f80c0'] },
+];
+
 const THEME_KEY = 'nebulosa.theme';
+
+export const isTheme = (v: unknown): v is Theme => THEMES.some((t) => t.id === v);
 
 function loadTheme(): Theme {
   try {
     const v = new URLSearchParams(location.search).get('theme') ?? localStorage.getItem(THEME_KEY);
-    return v === 'light' || v === 'system' ? v : 'dark';
+    return isTheme(v) ? v : 'dark';
   } catch {
     return 'dark';
   }
@@ -61,12 +86,17 @@ function loadTheme(): Theme {
 
 export const uiTheme = $state({ value: loadTheme() });
 
-const systemDark = typeof matchMedia !== 'undefined' ? matchMedia('(prefers-color-scheme: dark)') : null;
+const mq = (q: string) => (typeof matchMedia !== 'undefined' ? matchMedia(q) : null);
+const systemDark = mq('(prefers-color-scheme: dark)');
+const systemMore = mq('(prefers-contrast: more)');
 
-/** data-theme on <html>: what the CSS reads (index.html sets it first, before the first paint) */
+/** data-theme (and data-palette) on <html>: what the CSS reads (index.html sets them first, before the first paint) */
 function applyTheme() {
-  const t = uiTheme.value === 'system' ? (systemDark?.matches ? 'dark' : 'light') : uiTheme.value;
-  document.documentElement.dataset.theme = t;
+  const t: Exclude<Theme, 'system'> = uiTheme.value === 'system' ? (systemMore?.matches ? 'contrast' : systemDark?.matches ? 'dark' : 'light') : uiTheme.value;
+  const root = document.documentElement;
+  root.dataset.theme = t === 'light' ? 'light' : 'dark';
+  if (t === 'light' || t === 'dark') delete root.dataset.palette;
+  else root.dataset.palette = t;
 }
 
 export function setTheme(t: Theme) {
@@ -81,5 +111,7 @@ export function setTheme(t: Theme) {
 
 if (typeof document !== 'undefined') {
   applyTheme();
-  systemDark?.addEventListener('change', () => uiTheme.value === 'system' && applyTheme());
+  const follow = () => uiTheme.value === 'system' && applyTheme();
+  systemDark?.addEventListener('change', follow);
+  systemMore?.addEventListener('change', follow);
 }

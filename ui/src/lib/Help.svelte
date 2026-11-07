@@ -149,7 +149,7 @@
         ['⤢ on a section heading', 'Its own window (Trigger, Logger, File output, Serial monitor, Math): drag the title to move; it sizes itself to its contents'],
         ['⤡ or Esc in a window', 'Back in the sidebar'],
         ['Ctrl + / Ctrl − / Ctrl 0', 'UI scale: bigger / smaller / 100 %'],
-        ['Ctrl 1 / 2 / 3', 'Scope / Logger / Side-channel'],
+        ['Ctrl 1 / 2 / 3', 'Scope / Logger / Side-channel (a beta feature: Settings)'],
         ['? or F1', 'Help'],
       ],
     ],

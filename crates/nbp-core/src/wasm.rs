@@ -68,6 +68,16 @@ impl Pipeline {
     }
 
     /// the samples in [t0, t1), at most max, as a script block (trigger::encode_block), in base64
+    /// the bring-up's probe: raw current codes of `range` (negative: any) from now on
+    pub fn probe_arm(&mut self, range: i32) {
+        self.0.probe_arm(u8::try_from(range).ok());
+    }
+
+    /// [debug::ProbeResult] since probe_arm (null: not armed); disarms it
+    pub fn probe_take(&mut self) -> JsValue {
+        to_js(&self.0.probe_take())
+    }
+
     pub fn sample_block(&self, t0: f64, t1: f64, max: usize) -> String {
         crate::trigger::base64(&self.0.sample_block(t0, t1, max))
     }
@@ -299,4 +309,55 @@ pub fn enc_range_set(automatic: bool, manual: u8, min: u8, max: u8) -> Vec<u8> {
 #[wasm_bindgen]
 pub fn enc_reg(index: u8, value: u32) -> Vec<u8> {
     msg::enc_reg(index, value)
+}
+
+// ---- the Debug tab (debug.rs) -------------------------------------------------
+
+#[wasm_bindgen]
+pub fn reg_name(i: u8) -> String {
+    crate::debug::reg_name(i).into()
+}
+
+/// REG_READ's value (undefined: a short response)
+#[wasm_bindgen]
+pub fn parse_reg(p: &[u8]) -> Option<u32> {
+    crate::debug::parse_reg(p)
+}
+
+#[wasm_bindgen]
+pub fn enc_range_timing(up_filt: u8, down_filt: u8, overlap: u8, hold: u16) -> Vec<u8> {
+    crate::debug::enc_range_timing(up_filt, down_filt, overlap, hold)
+}
+
+#[wasm_bindgen]
+pub fn enc_range_force(enable: bool, value: u8) -> Vec<u8> {
+    crate::debug::enc_range_force(enable, value)
+}
+
+#[wasm_bindgen]
+pub fn enc_range_cfg(settle: u16, align: bool, dirty_up: bool, dirty_down: bool) -> u32 {
+    crate::debug::enc_range_cfg(settle, align, dirty_up, dirty_down)
+}
+
+/// [debug::RangeDecoded]
+#[wasm_bindgen]
+pub fn decode_range(status: u32, ctrl: u32, timing: u32, cfg: u32) -> JsValue {
+    to_js(&crate::debug::decode_range(status, ctrl, timing, cfg))
+}
+
+/// [debug::AdcLink]
+#[wasm_bindgen]
+pub fn decode_adc(ctrl: u32, timing: u32, delay: u32, errors: u32) -> JsValue {
+    to_js(&crate::debug::decode_adc(ctrl, timing, delay, errors))
+}
+
+#[wasm_bindgen]
+pub fn adc_phases(a: u8, b: u8) -> u32 {
+    crate::debug::adc_phases(a, b)
+}
+
+/// FLASH_READ's bytes (undefined: a short response)
+#[wasm_bindgen]
+pub fn parse_flash_read(p: &[u8]) -> Option<Vec<u8>> {
+    crate::debug::parse_flash_read(p)
 }

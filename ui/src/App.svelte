@@ -28,6 +28,8 @@
   import { fmtSI, fmtRate, fmtBytes as fmtBytesSize } from './lib/si';
   import { siInput } from './lib/siInput';
   import * as native from './lib/native';
+  import { isRemote } from './lib/ipc';
+  import { Sync, hostApi, loadRemoteCfg, remoteStart, type SyncMsg } from './lib/remote';
   import * as web from './lib/webusb';
   import { DemoLink, demoRequested, demoSelection } from './lib/demo';
   import { rareFault, RARE } from './lib/demoGen';
@@ -45,7 +47,7 @@
   import Section from './lib/panels/Section.svelte';
   import Help, { type HelpTab } from './lib/Help.svelte';
   import Tour, { markTourSeen, tourSeen, type TourStep } from './lib/Tour.svelte';
-  import { SCALES, canScale, restoreScale, setScale, setTheme, stepScale, uiScale, uiTheme } from './lib/uiScale.svelte';
+  import { SCALES, THEMES, canScale, isTheme, restoreScale, setScale, setTheme, stepScale, uiScale, uiTheme } from './lib/uiScale.svelte';
   import instrixIcon from './assets/instrix-icon.svg';
   import instrixIconWhite from './assets/instrix-icon-white.svg';
   import * as boardCmd from './lib/board';
@@ -57,9 +59,14 @@
   import { drag, stored, store as save } from './lib/drag';
   import Showcases from './lib/Showcases.svelte';
   import SideChannel from './lib/SideChannel.svelte';
+  import { loadDebugView } from './lib/debugTab';
   import SectionNav from './lib/panels/SectionNav.svelte';
   import SerialList from './lib/SerialList.svelte';
   import ConfigDialog from './lib/ConfigDialog.svelte';
+  import SettingsDialog from './lib/SettingsDialog.svelte';
+  import { beta } from './lib/beta.svelte';
+  import UpdateDialog from './lib/UpdateDialog.svelte';
+  import { autoCheck, checkForUpdate, skippedVersion, type UpdateCheck } from './lib/appUpdate';
   import { CONFIG_VERSION, SECTION_IDS, listConfigs, defaultConfigName, asConfig, type Config, type SectionId } from './lib/config';
 
   import { SerialMonitor, defaultSerialConfig, type SerialConfig } from './lib/serialMonitor.svelte';
@@ -79,6 +86,8 @@
   let dev = $state<Device | null>(null);
   let info = $state<Info | null>(null);
   let streaming = $state(false);
+  /** the device (or recording) was opened by another UI and joined here (remote control) */
+  let viewer = $state(false);
 
   // ---- acquisition --------------------------------------------------------
   let source = $state<number>(stored('nebulosa.source', SRC.STUB_RANDOM));
@@ -239,6 +248,7 @@
       trig.mode = 'roll';
       clearData();
       fitPending = true;
+      sync.send({ t: 'opened' });
     } catch (e) {
       error = String(e);
     } finally {
@@ -452,6 +462,7 @@
       { label: 'Trigger scripts (Python)', run: () => openHelp('scripts') },
       { label: 'Troubleshooting', run: () => openHelp('trouble') },
       { sep: true },
+      { label: 'Check for updates…', run: checkUpdates },
       { label: 'About Nebulosa Companion', run: () => openHelp('about') },
     ]);
   }
@@ -462,7 +473,7 @@
   function startTour() {
     helpOpen = false;
     // every part on show
-    leftOpen = rightOpen = true;
+    sides.main = { left: true, right: true };
     touring = true;
   }
 
@@ -530,7 +541,7 @@
     {
       target: 'config',
       title: 'Save your setup',
-      body: 'The <b>⚙</b> button keeps <b>configurations</b>: save the current settings as a named profile, apply one, pick one to load on boot, or share a file and apply only part of it (just the trigger, say). Set up the bench once, then recall it with a click.',
+      body: 'The <b>⚙</b> button opens the <b>settings</b> (theme, UI scale, layout) and the <b>configurations</b>: save the current settings as a named profile, apply one, pick one to load on boot, or share a file and apply only part of it (just the trigger, say). Set up the bench once, then recall it with a click.',
     },
     {
       target: 'help',
@@ -692,8 +703,14 @@
   }
 
   // ---- scope / logger ------------------------------------------------------------
-  let appMode = $state<'scope' | 'logger' | 'sca'>(stored('nebulosa.modeIsLogger', 0) === 1 ? 'logger' : 'scope');
-  function setAppMode(m: 'scope' | 'logger' | 'sca') {
+  /** Scope, Logger, Side-channel, and Debug (in builds with the Debug tab: NEBULOSA_DEBUG=1) */
+  type AppMode = 'scope' | 'logger' | 'sca' | 'debug';
+  let appMode = $state<AppMode>(stored('nebulosa.modeIsLogger', 0) === 1 ? 'logger' : 'scope');
+  /** a tab that fills the window on its own (no plots, no view history) */
+  const wholeTab = $derived(appMode === 'sca' || appMode === 'debug');
+  function setAppMode(m: AppMode) {
+    if (m === 'debug' && !__DEBUG_TAB__) m = 'scope';
+    if (m === 'sca' && !beta.sca) m = 'scope'; // a beta feature (Settings → Beta features)
     appMode = m;
     save('nebulosa.modeIsLogger', m === 'logger' ? 1 : 0);
   }
@@ -706,6 +723,10 @@
     for (let k = 0; k < 40 && !sca; k++) await new Promise((r) => setTimeout(r, 25));
     return !!sca;
   }
+  // the beta turned off while its tab is open: back to the scope
+  $effect(() => {
+    if (!beta.sca && appMode === 'sca') setAppMode('scope');
+  });
   let scaScenarioSet = false;
   $effect(() => {
     const d = dev?.link;
@@ -762,10 +783,10 @@
   });
   const hist = $derived(appMode === 'logger' ? loggerHist : scopeHist);
   function navBack() {
-    if (appMode !== 'sca' && !hist.back()) toast('Nothing to go back to');
+    if (!wholeTab && !hist.back()) toast('Nothing to go back to');
   }
   function navForward() {
-    if (appMode !== 'sca') hist.forward();
+    if (!wholeTab) hist.forward();
   }
 
   /** the Logger at [t0, t1], not following */
@@ -902,6 +923,14 @@
 
   // ---- saved configurations (profiles) -----------------------------------
   let configOpen = $state(false);
+  let settingsOpen = $state(false);
+  /** the updates dialog: open, and a check the boot check already made */
+  let updateOpen = $state(false);
+  let updateFound = $state<UpdateCheck | null>(null);
+  function checkUpdates() {
+    updateFound = null;
+    updateOpen = true;
+  }
   const SECTION_KEYS = ['device', 'board', 'acquisition', 'trigger', 'display', 'math', 'calibration', 'logger', 'monitor', 'output'];
 
   function sectionOpenStates(): Record<string, boolean> {
@@ -978,7 +1007,7 @@
       if (typeof v.rightW === 'number') { rightW = v.rightW; save('nebulosa.rightW', rightW); }
       if (typeof v.listH === 'number') listH = v.listH;
       if (typeof v.uiScale === 'number' && canScale) setScale(v.uiScale);
-      if (typeof v.theme === 'string') setTheme(v.theme as 'system' | 'dark' | 'light');
+      if (isTheme(v.theme)) setTheme(v.theme);
       const so = v.sections as Record<string, boolean> | undefined;
       if (so) for (const [id, open] of Object.entries(so)) {
         try { localStorage.setItem(`nebulosa.section.${id}`, open ? '1' : '0'); } catch { /* ignore */ }
@@ -1565,7 +1594,7 @@
   function gotoSection(id: string) {
     if (!info) return toast('Connect a device first (or try the demo device)');
     if (LOGGER_SECTIONS.some((x) => x.id === id) && appMode !== 'logger') setAppMode('logger');
-    else if (appMode === 'sca') setAppMode('scope');
+    else if (wholeTab) setAppMode('scope');
     if (!leftOpen) toggleSide('left');
     requestAnimationFrame(() => {
       dispatchEvent(new CustomEvent('nebulosa:open-section', { detail: id }));
@@ -1580,11 +1609,12 @@
 
   /** everything the search finds: actions, views, the settings sections and each option in them */
   function commands(): Command[] {
-    const live = appMode !== 'sca';
+    const live = !wholeTab;
     const c: Command[] = [
       { group: 'View', label: 'Scope', hint: 'Ctrl 1', run: () => setAppMode('scope') },
       { group: 'View', label: 'Logger', hint: 'Ctrl 2', keywords: 'long term session', run: () => setAppMode('logger') },
-      { group: 'View', label: 'Side-channel', hint: 'Ctrl 3', keywords: 'sca cpa aes power analysis', run: () => setAppMode('sca') },
+      ...(beta.sca ? [{ group: 'View', label: 'Side-channel', hint: 'Ctrl 3', keywords: 'sca cpa aes power analysis', run: () => setAppMode('sca') }] : []),
+      ...(__DEBUG_TAB__ ? [{ group: 'View', label: 'Debug', hint: 'Ctrl 4', keywords: 'debugger registers fpga range timing comparators rs1473 adc phase flash raw command ping', run: () => setAppMode('debug') } as Command] : []),
       { group: 'Action', label: streaming ? 'Stop the stream' : 'Start the stream', disabled: !dev, keywords: 'run acquisition', run: () => (streaming ? stop() : start()) },
       { group: 'Action', label: appMode === 'logger' ? (lv.follow ? 'Hold (stay here)' : 'Live (follow the newest)') : view.live ? 'Hold' : 'Live', hint: 'Space', disabled: !live, keywords: 'follow freeze pause', run: () => (appMode === 'logger' ? toggleFollow() : toggleLive()) },
       { group: 'Action', label: 'Back to the view before', hint: 'Alt ←', disabled: !live, keywords: 'history previous undo zoom', run: navBack },
@@ -1626,15 +1656,16 @@
         disabled: !info,
         run: () => {
           if (view && appMode !== view) setAppMode(view);
-          else if (appMode === 'sca') setAppMode('scope');
+          else if (wholeTab) setAppMode('scope');
           popoutSection(id);
         },
       })),
       { group: 'Action', label: 'Hide / show the settings panel', hint: '[', keywords: 'sidebar left', run: () => toggleSide('left') },
       { group: 'Action', label: 'Hide / show the meter', hint: ']', keywords: 'sidebar right panel', run: () => toggleSide('right') },
       { group: 'Action', label: 'Configurations…', keywords: 'profiles save load settings', run: () => (configOpen = true) },
-      { group: 'Action', label: 'Theme: dark', keywords: 'appearance colours', run: () => setTheme('dark') },
-      { group: 'Action', label: 'Theme: light', keywords: 'appearance colours', run: () => setTheme('light') },
+      { group: 'Action', label: 'Check for updates…', keywords: 'new version release download upgrade', run: checkUpdates },
+      { group: 'Action', label: 'Settings…', hint: 'Ctrl ,', keywords: 'preferences options appearance theme scale layout', run: () => (settingsOpen = true) },
+      ...THEMES.map((t) => ({ group: 'Action', label: `Theme: ${t.label.toLowerCase()}`, detail: t.detail, keywords: 'appearance colours dark mode', run: () => setTheme(t.id) })),
       { group: 'Action', label: 'Try the demo device', disabled: !!dev, keywords: 'connect synthetic', run: startDemo },
       { group: 'Action', label: 'Disconnect', disabled: !dev, run: disconnect },
       { group: 'Help', label: 'Help', hint: 'F1', keywords: 'keys manual', run: () => openHelp('start') },
@@ -1797,7 +1828,7 @@
     view.clearMarkers();
     bottomTab = 'markers';
     meterScope = 'window';
-    leftOpen = rightOpen = true;
+    sides.main = { left: true, right: true };
     resetView();
     await tick();
     showcase = { s, steps: s.steps(showcaseCtx) };
@@ -1813,12 +1844,20 @@
   // ---- sidebar widths --------------------------------------------------------
   const LEFT_W = 280, RIGHT_W = 280;
   let leftW = $state(stored('nebulosa.leftW', LEFT_W, (v) => v >= 200 && v <= 600));
-  /** the sidebars shown (hidden: more room for the plots) */
-  let leftOpen = $state(stored('nebulosa.leftOpen', 1, (v) => v === 0 || v === 1) === 1);
-  let rightOpen = $state(stored('nebulosa.rightOpen', innerWidth < 1100 ? 0 : 1, (v) => v === 0 || v === 1) === 1);
+  /** the sidebars shown (hidden: more room for the plots); the Debug tab keeps its own pair, both hidden at first */
+  const bit = (v: number) => v === 0 || v === 1;
+  let sides = $state({
+    main: { left: stored('nebulosa.leftOpen', 1, bit) === 1, right: stored('nebulosa.rightOpen', innerWidth < 1100 ? 0 : 1, bit) === 1 },
+    debug: { left: stored('nebulosa.debugLeftOpen', 0, bit) === 1, right: stored('nebulosa.debugRightOpen', 0, bit) === 1 },
+  });
+  const sideSet = $derived(appMode === 'debug' ? 'debug' : 'main');
+  const leftOpen = $derived(sides[sideSet].left);
+  const rightOpen = $derived(sides[sideSet].right);
   function toggleSide(side: 'left' | 'right') {
-    if (side === 'left') save('nebulosa.leftOpen', (leftOpen = !leftOpen) ? 1 : 0);
-    else save('nebulosa.rightOpen', (rightOpen = !rightOpen) ? 1 : 0);
+    const s = sides[sideSet];
+    s[side] = !s[side];
+    const key = sideSet === 'debug' ? (side === 'left' ? 'nebulosa.debugLeftOpen' : 'nebulosa.debugRightOpen') : side === 'left' ? 'nebulosa.leftOpen' : 'nebulosa.rightOpen';
+    save(key, s[side] ? 1 : 0);
   }
   let rightW = $state(stored('nebulosa.rightW', RIGHT_W, (v) => v >= 200 && v <= 600));
 
@@ -2055,24 +2094,30 @@
       { label: canScale ? 'Bigger / smaller: Ctrl + / Ctrl −' : 'Use Ctrl + / Ctrl − / Ctrl 0', disabled: true },
       { sep: true },
       { head: 'Theme' },
-      { label: 'Dark', checked: uiTheme.value === 'dark', run: () => setTheme('dark') },
-      { label: 'Light', checked: uiTheme.value === 'light', run: () => setTheme('light') },
-      { label: "The system's", checked: uiTheme.value === 'system', run: () => setTheme('system') },
+      ...THEMES.map((t) => ({ label: t.label, checked: uiTheme.value === t.id, run: () => setTheme(t.id) })),
+      { sep: true },
+      { label: 'Settings…', hint: 'Ctrl ,', run: () => (settingsOpen = true) },
     ]);
   }
 
   function onKey(e: KeyboardEvent) {
     // Ctrl / ⌘ + − 0: the UI scale (the browser zooms by itself)
     if (e.ctrlKey || e.metaKey) {
+      // Ctrl / ⌘ + ,: the settings
+      if (e.key === ',') {
+        e.preventDefault();
+        settingsOpen = true;
+        return;
+      }
       // Ctrl / ⌘ + K: find a setting or an action
       if (e.key === 'k' || e.key === 'K') {
         e.preventDefault();
         paletteOpen = true;
         return;
       }
-      // Ctrl / ⌘ + 1 / 2 / 3: Scope / Logger / Side-channel
-      if (e.key === '1' || e.key === '2' || e.key === '3') {
-        setAppMode(e.key === '2' ? 'logger' : e.key === '3' ? 'sca' : 'scope');
+      // Ctrl / ⌘ + 1 / 2 / 3 (/ 4): Scope / Logger / Side-channel (/ Debug)
+      if (e.key === '1' || e.key === '2' || (beta.sca && e.key === '3') || (__DEBUG_TAB__ && e.key === '4')) {
+        setAppMode(e.key === '2' ? 'logger' : e.key === '3' ? 'sca' : e.key === '4' ? 'debug' : 'scope');
         e.preventDefault();
         return;
       }
@@ -2107,7 +2152,7 @@
       return;
     }
     // the rest moves the view on screen: the Logger's keys in the Logger, the Scope's in the Scope
-    if (appMode === 'sca') return;
+    if (wholeTab) return;
     const page = e.shiftKey ? 1 : 0.1;
     if (appMode === 'logger') {
       if (e.key === ' ') {
@@ -2494,6 +2539,7 @@
       streaming = false;
       clearData();
       await applyDecimation();
+      sync.send({ t: 'opened' });
     } catch (e) {
       if (!retry) error = String(e);
       await disconnect();
@@ -2516,6 +2562,7 @@
     recording = null;
     info = null;
     streaming = false;
+    viewer = false;
     stats = null;
     throughput = 0;
   }
@@ -2548,7 +2595,212 @@
     reset();
     if (d && wasStreaming && !d.link.playback) await d.stop().catch(() => undefined);
     if (d) await d.link.close().catch(() => undefined);
+    // the other UIs on this backend (remote control) had it open too
+    if (d && !(d.link instanceof DemoLink)) sync.send({ t: 'closed' });
   }
+
+  // ---- remote control: the UIs on one backend in step (lib/remote.ts) ------------------
+  const sync = new Sync();
+  /** a remote browser publishes its settings only once it has the window's (else its stale ones win) */
+  let syncReady = !isRemote;
+  let lastSync = '';
+  let syncTimer: ReturnType<typeof setTimeout> | undefined;
+
+  /** the instrument's settings: the same for every UI (the view and layout are each one's own) */
+  function syncSettings() {
+    return {
+      acquisition: { source, log2n, decimMode, rangeAuto, rangeManual, rangeMin, rangeMax, bufferMB },
+      trigger: trig.dump(),
+      logger: { logInterval, out: $state.snapshot(out) },
+    };
+  }
+  function syncState(): SyncMsg {
+    return { t: 'state', settings: syncSettings(), streaming, rateHz };
+  }
+
+  $effect(() => {
+    if (!isNative) return;
+    const st = syncState() as Extract<SyncMsg, { t: 'state' }>;
+    const key = JSON.stringify([st.settings, st.streaming, st.rateHz]);
+    untrack(() => {
+      if (key === lastSync || !syncReady) return;
+      lastSync = key;
+      clearTimeout(syncTimer);
+      syncTimer = setTimeout(() => sync.send(syncState()), 120);
+    });
+  });
+
+  /** joins what another UI has open; false: nothing is */
+  async function attachShared(): Promise<boolean> {
+    let link: Link | null = null;
+    const a = await native
+      .attach({
+        onMeta,
+        onClosed: (reason) => {
+          if (viewer && dev?.link === link) {
+            reset();
+            error = `Disconnected: ${reason}`;
+          }
+        },
+      })
+      .catch(() => null);
+    if (!a) return false;
+    reset();
+    link = a.link;
+    viewer = true;
+    const d = new Device(a.link);
+    dev = d;
+    if (a.open.playback) {
+      try {
+        playback = JSON.parse(a.open.header ?? '{}');
+      } catch {
+        playback = {};
+      }
+      if (a.open.log) setAppMode('logger');
+      fitPending = true;
+    }
+    store.attach(a.link);
+    setLink(a.link);
+    if (!a.open.playback) info = await d.info().catch(() => null);
+    return true;
+  }
+
+  function onSync(m: SyncMsg) {
+    if (m.t === 'hello') {
+      if (syncReady) sync.send(syncState());
+    } else if (m.t === 'state') {
+      lastSync = JSON.stringify([m.settings, m.streaming, m.rateHz]);
+      applyConfig({ v: CONFIG_VERSION, name: 'sync', saved: 0, sections: m.settings } as Config, new Set(['acquisition', 'trigger', 'logger']));
+      if (dev && !(dev.link instanceof DemoLink)) {
+        streaming = m.streaming;
+        rateHz = m.rateHz;
+      }
+      syncReady = true;
+    } else if (m.t === 'opened') {
+      // another UI opened something: join it (a demo of this UI's own stays)
+      if (!(dev?.link instanceof DemoLink)) void attachShared();
+    } else if (m.t === 'closed') {
+      if (dev && !(dev.link instanceof DemoLink)) reset();
+    }
+  }
+
+  // ---- the HTTP API (remote.rs /api/v1/<action>): this window carries the calls out ------
+  const sigOut = (m: { n: number; mean: number; m2: number; min: number; max: number }) =>
+    m.n ? { mean: m.mean, min: m.min, max: m.max, std: m.n > 1 ? Math.sqrt(m.m2 / (m.n - 1)) : 0, n: m.n } : null;
+  const needDev = () => {
+    if (!dev) throw new Error('not connected');
+    return dev;
+  };
+  const num = (v: unknown, d: number) => (typeof v === 'number' && Number.isFinite(v) ? v : typeof v === 'string' && v !== '' && Number.isFinite(+v) ? +v : d);
+
+  const API: Record<string, (a: Record<string, unknown>) => unknown> = {
+    status: () => ({
+      version: __APP_VERSION__,
+      connected: !!dev,
+      device: dev?.link.description ?? null,
+      playback: !!dev?.link.playback,
+      firmware: info?.fw_version_str ?? null,
+      streaming,
+      rate_hz: rateHz,
+      mode: appMode,
+      recording: !!recording?.active,
+      logging: !!(logging?.active || exporting),
+      t_start: store.empty ? null : store.tStart,
+      t_end: store.empty ? null : store.tEnd,
+      settings: syncSettings(),
+    }),
+    devices: async () => {
+      await scan();
+      return candidates.map((c) => ({ key: c.key, label: c.label, detail: c.detail }));
+    },
+    connect: async (a) => {
+      if (typeof a.host === 'string') await connect(native.tcpCandidate(a.host, a.port == null ? undefined : num(a.port, 0)));
+      else {
+        if (!candidates.length) await scan();
+        const c = candidates.find((x) => x.key === a.key) ?? (a.key == null ? candidates[0] : undefined);
+        if (!c) throw new Error(a.key == null ? 'no device found' : `no device ${String(a.key)}: see devices`);
+        await connect(c);
+      }
+      if (!dev) throw new Error(error || 'could not connect');
+      return { device: dev.link.description };
+    },
+    demo: async () => {
+      await disconnect();
+      startDemo();
+      return { device: dev?.link.description ?? null };
+    },
+    disconnect: async () => {
+      await disconnect();
+      return null;
+    },
+    start: async () => {
+      needDev();
+      await start();
+      if (error) throw new Error(error);
+      return { streaming };
+    },
+    stop: async () => {
+      needDev();
+      await stop();
+      return { streaming };
+    },
+    measure: async (a) => {
+      const d = needDev();
+      if (store.empty) throw new Error('no data yet');
+      const t1 = store.tEnd;
+      const t0 = Math.max(store.tStart, t1 - num(a.seconds, 1));
+      const st = await d.link.stats(t0, t1);
+      if (!st) throw new Error('no data');
+      return { t0, t1, current: sigOut(st.m.i), voltage: sigOut(st.m.v), power: sigOut(st.m.p), math: sigOut(st.m.m), charge: st.charge, energy: st.energy };
+    },
+    value: async () => {
+      const d = needDev();
+      const v = store.empty ? null : await d.link.valueAt(store.tEnd);
+      if (!v) throw new Error('no data yet');
+      return { t: store.tEnd, current: v[0], voltage: v[1], range: v[2], math: v[3] };
+    },
+    settings: () => syncSettings(),
+    set: (a) => {
+      const pick = new Set((['acquisition', 'trigger', 'logger', 'display', 'view'] as SectionId[]).filter((k) => a[k] != null));
+      if (!pick.size) throw new Error('nothing to set: acquisition, trigger, logger, display or view');
+      applyConfig({ v: CONFIG_VERSION, name: 'api', saved: 0, sections: a } as Config, pick);
+      return syncSettings();
+    },
+    markers: () => markerRows.map((r) => ({ id: r.id, name: r.name, t0: r.t0, dt: r.dt, ch: r.ch })),
+    marker: (a) => {
+      const t0 = num(a.t0, NaN);
+      if (!Number.isFinite(t0)) throw new Error('t0 (s) is needed');
+      const m = a.t1 == null ? view.addSingle(t0) : view.addDual(t0, num(a.t1, t0));
+      if (typeof a.name === 'string') view.setName(m.id, a.name);
+      return { id: m.id };
+    },
+    clear_markers: () => {
+      view.clearMarkers();
+      return null;
+    },
+    record: async (a) => {
+      needDev();
+      if (!!a.on !== !!recording?.active) await toggleRecording();
+      if (error) throw new Error(error);
+      return { recording: !!a.on };
+    },
+    log: async (a) => {
+      needDev();
+      if (a.on) {
+        if (!(logging?.active || exporting) && !(await startLog())) throw new Error(error || 'could not start the log');
+      } else await stopLog();
+      return { logging: !!a.on };
+    },
+    mode: (a) => {
+      if (a.mode !== 'scope' && a.mode !== 'logger') throw new Error('mode: scope or logger');
+      setAppMode(a.mode);
+      return { mode: appMode };
+    },
+    screenshot: async () => {
+      if (!scope) throw new Error("the scope isn't shown (mode scope)");
+      return { png_base64: scope.snapshot().toDataURL('image/png').split(',')[1] };
+    },
+  };
 
   function onMeta(m: Meta) {
     store.update(m);
@@ -2575,7 +2827,7 @@
       void fireCapture(after.length ? Math.min(...after) : store.tEnd);
     }
     trig.fetch(activeLink, m.trigger.count);
-    if (trig.kind === 'script') void trig.pumpScript(activeLink, m.t_start, m.t_end);
+    if (trig.kind === 'script' && !viewer) void trig.pumpScript(activeLink, m.t_start, m.t_end); // one UI runs the script
     runMoments = m.run;
     stats = m.stats;
     if (m.stream_id !== streamId) {
@@ -2641,8 +2893,8 @@
 
   onMount(() => {
     restoreScale();
-    // a default configuration applied on boot (not during screenshot runs)
-    if (!demoRequested) {
+    // a default configuration applied on boot (not during screenshot runs, nor in a remote browser: the window's settings are the ones)
+    if (!demoRequested && !isRemote) {
       const def = defaultConfigName();
       const c = def ? listConfigs()[def] : null;
       if (c) {
@@ -2652,6 +2904,33 @@
     }
     scan();
     refreshRecordings();
+    // remote control: the UIs on this backend in step; the window answers the API and starts the server
+    if (isNative) {
+      void sync.join(onSync).then(async () => {
+        if (isRemote) {
+          sync.send({ t: 'hello' });
+          setTimeout(() => (syncReady = true), 1500);
+          await attachShared();
+        }
+      });
+      if (!isRemote) {
+        void hostApi(API).catch((e) => console.warn('remote API', e));
+        const rc = loadRemoteCfg();
+        if (rc.on) remoteStart(rc).catch((e) => (error = `Remote control: ${e}`));
+      }
+    }
+    // a newer release on GitHub: once per boot, quietly (no network, no news: nothing said)
+    if (autoCheck() && !demoRequested && !isRemote) {
+      setTimeout(() => {
+        checkForUpdate()
+          .then((r) => {
+            if (!r.newer || r.latest.version === skippedVersion()) return;
+            updateFound = r;
+            toast(`Nebulosa Companion ${r.latest.version} is available (this is ${r.current})`, { label: 'Details', run: () => (updateOpen = true) });
+          })
+          .catch(() => undefined);
+      }, 4000);
+    }
     // drag a recording / log onto the window to open it (desktop app)
     let dropOff: (() => void) | undefined;
     if (isNative) {
@@ -2687,6 +2966,7 @@
       if (q.get('tab') === 'events') bottomTab = 'events';
       if (q.get('mode') === 'logger') appMode = 'logger';
       if (q.get('mode') === 'scope') appMode = 'scope';
+      if (q.get('mode') === 'debug' && __DEBUG_TAB__) appMode = 'debug';
       const mx = q.get('math');
       if (mx) {
         mathDraft = { name: q.get('mname') ?? 'Math', unit: q.get('munit') ?? '', expr: mx };
@@ -2751,6 +3031,28 @@
   <Tour steps={TOUR} connected={!!dev} ondemo={startDemo} onclose={() => (touring = false)} />
 {/if}
 
+{#if updateOpen}
+  <UpdateDialog found={updateFound} onclose={() => (updateOpen = false)} />
+{/if}
+{#if settingsOpen}
+  <SettingsDialog
+    {leftOpen}
+    {rightOpen}
+    ontoggleside={toggleSide}
+    onresetlayout={() => {
+      leftW = LEFT_W;
+      rightW = RIGHT_W;
+      listH = 190;
+      save('nebulosa.leftW', leftW);
+      save('nebulosa.rightW', rightW);
+      save(SPLIT_KEY, listH);
+    }}
+    onconfigs={() => ((settingsOpen = false), (configOpen = true))}
+    onupdates={() => ((settingsOpen = false), checkUpdates())}
+    ontour={() => ((settingsOpen = false), startTour())}
+    onclose={() => (settingsOpen = false)}
+  />
+{/if}
 {#if configOpen}
   <ConfigDialog gather={gatherConfig} onapply={applyConfig} onclose={() => (configOpen = false)} />
 {/if}
@@ -2825,11 +3127,17 @@
       <img class="logo dark" src={instrixIconWhite} alt="INSTRIX" />
       <strong>Nebulosa</strong>
       <span class="muted companion">Companion</span>
+      {#if isRemote}<span class="remote-chip" title="Remote control: this browser mirrors the Companion's window (the same device, settings and streaming)">Remote</span>{/if}
     </div>
     <div class="modes" role="tablist" aria-label="View" data-tour="modes">
       <button class:on={appMode === 'scope'} onclick={() => setAppMode('scope')} title="Waveforms: µs to seconds, triggers, markers">Scope</button>
       <button class:on={appMode === 'logger'} onclick={() => setAppMode('logger')} title="The whole session: minutes to days, logging to disk">Logger</button>
-      <button class:on={appMode === 'sca'} onclick={() => setAppMode('sca')} title="Side-channel power analysis: capture traces, t-test, timing (ChipWhisperer-style). Beta — for slow targets.">Side-channel <span class="beta">beta</span></button>
+      {#if beta.sca}
+        <button class:on={appMode === 'sca'} onclick={() => setAppMode('sca')} title="Side-channel power analysis: capture traces, t-test, timing (ChipWhisperer-style). Beta — for slow targets.">Side-channel <span class="beta">beta</span></button>
+      {/if}
+      {#if __DEBUG_TAB__}
+        <button class:on={appMode === 'debug'} onclick={() => setAppMode('debug')} title="Registers, the range switch's timing, the RS1473 ADC link, the board's low-level controls, flash, raw commands (the Nebulosa Debugger's functions)">Debug</button>
+      {/if}
     </div>
     <div class="status">
       {#if dev}
@@ -2845,7 +3153,7 @@
       {/if}
       <button class="ghost find" onclick={() => (paletteOpen = true)} title="Find a setting or action (Ctrl K)" aria-label="Find a setting or action">⌕ <kbd>Ctrl K</kbd></button>
       <button class="ghost" onclick={() => (showcasesOpen = true)} title="Tutorials and showcases: hands-on lessons and real measurements on the demo device" data-tour="showcases">Learn</button>
-      <button class="ghost side-btn" onclick={() => (configOpen = true)} title="Configurations: save, load and apply setting profiles" aria-label="Configurations" data-tour="config">⚙</button>
+      <button class="ghost side-btn" onclick={() => (settingsOpen = true)} title="Settings: theme, UI scale, layout, configurations (Ctrl ,)" aria-label="Settings" data-tour="config">⚙</button>
       <button class="ghost side-btn" onclick={(e) => scaleMenu(e)} title="Appearance: UI scale (Ctrl + / −), theme" aria-label="UI scale"
         >Aa{#if canScale && uiScale.value !== 1}<small class="scale-pct">{Math.round(uiScale.value * 100)}%</small>{/if}</button
       >
@@ -3209,7 +3517,13 @@
   </aside>
 
   <main bind:this={mainEl}>
-    {#if appMode === 'sca'}
+    {#if loadDebugView && appMode === 'debug'}
+      <div class="sca-wrap">
+        {#await loadDebugView() then m}
+          <m.default dev={dev} {info} {streaming} {stats} {throughput} {board} onstart={start} onstartadc={() => ((source = SRC.AD7387), start())} onstop={stop} onnote={(msg: string) => (note = msg)} />
+        {/await}
+      </div>
+    {:else if appMode === 'sca'}
       <div class="sca-wrap">
         <SideChannel
           bind:this={sca}
@@ -3502,6 +3816,15 @@
   }
   .logo.dark {
     display: none;
+  }
+  .remote-chip {
+    margin-left: 6px;
+    padding: 1px 7px;
+    border-radius: var(--r-lg);
+    font-size: 11px;
+    font-weight: 600;
+    color: #fff;
+    background: var(--accent-2);
   }
   :global(:root[data-theme='dark']) .logo.light {
     display: none;

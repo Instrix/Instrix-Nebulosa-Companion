@@ -37,7 +37,25 @@ function wsToken(): string | null {
   }
 }
 
+/** a browser on the remote-control server (remote.rs), not the app's own window: ?remote=1, kept for reloads */
+function remoteFlag(): boolean {
+  if (!w) return false;
+  try {
+    const q = new URLSearchParams(location.search);
+    if (q.get('remote') === '1') {
+      sessionStorage.setItem('nebulosa.remote', '1');
+      q.delete('remote');
+      history.replaceState(null, '', location.pathname + (q.size ? `?${q}` : '') + location.hash);
+    }
+    return sessionStorage.getItem('nebulosa.remote') === '1';
+  } catch {
+    return false;
+  }
+}
+
 export const shellKind: 'tauri' | 'ws' | 'web' = !w ? 'web' : '__TAURI_INTERNALS__' in w ? 'tauri' : wsToken() ? 'ws' : 'web';
+/** this UI is a remote-control browser (it mirrors the app's window) */
+export const isRemote = shellKind === 'ws' && remoteFlag();
 /** the Electron shell's extras (dialogs, zoom, dropped files), if it is there */
 export const shell: Shell | undefined = w?.nebulosaShell;
 

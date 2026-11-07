@@ -1,11 +1,16 @@
-# Tests on every push / pull request. On main (and manual runs) also every
-# package for Linux, Windows and macOS, as build artifacts. Releases: release.yml.
+# Tests on every push / pull request (not for documentation-only changes),
+# on the self-hosted runner: free. The packages for Linux, Windows and macOS
+# (GitHub-hosted runners: billed, macOS at 10x) only when asked for: a commit
+# on main whose message has [package] in it, or Run workflow. Releases (a
+# vX.Y.Z tag): release.yml. [skip ci] in a message skips the run altogether.
 name: CI
 
 on:
   push:
     branches: ['**']
+    paths-ignore: ['**.md', 'docs/**', 'LICENSE*']
   pull_request:
+    paths-ignore: ['**.md', 'docs/**', 'LICENSE*']
   workflow_dispatch:
 
 concurrency:
@@ -58,9 +63,16 @@ jobs:
         run: npm run check
       - name: UI build
         run: npx vite build
+      - name: UI build with the Debug tab
+        run: npx vite build --mode debug && test -n "$(ls dist/assets/DebugView-*.js)"
+      - name: The normal build leaves the Debug tab out
+        run: npx vite build && ! ls dist/assets/DebugView-*.js 2>/dev/null
 
   packages:
     name: Packages
     needs: test
-    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    # on demand only: Run workflow, or [package] in the message of the commit pushed to main
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[package]'))
     uses: ./.github/workflows/packages.yml

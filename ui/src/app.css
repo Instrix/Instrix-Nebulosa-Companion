@@ -52,6 +52,63 @@
   color-scheme: dark;
 }
 
+/* dark variants (data-palette on <html>, over data-theme='dark'): Settings → Theme */
+:root[data-theme='dark'][data-palette='charcoal'] {
+  /* neutral greys, no blue tint */
+  --bg: #18181a;
+  --panel: #222225;
+  --border: #36363c;
+  --text: #e8e8ea;
+  --muted: #9b9ba3;
+  --grid: #2d2d32;
+  --accent: #3a8fd0;
+  --scope-bg: #0a0a0b;
+  --scope-border: #26262b;
+}
+:root[data-theme='dark'][data-palette='oled'] {
+  /* true black: the pixels off */
+  --bg: #000000;
+  --panel: #0b0b0d;
+  --border: #222329;
+  --text: #e6e6ea;
+  --muted: #8c909d;
+  --grid: #16171c;
+  --scope-bg: #000000;
+  --scope-border: #1a1b20;
+  --scope-grid: rgba(255, 255, 255, 0.08);
+}
+:root[data-theme='dark'][data-palette='contrast'] {
+  /* black and white, bright edges, saturated status colours */
+  --bg: #000000;
+  --panel: #000000;
+  --border: #c9ced8;
+  --text: #ffffff;
+  --muted: #d6dae2;
+  --grid: #4a4d55;
+  --accent: #1a78cc;
+  --signal: #6cc4ff;
+  --accent-2: #3ff0d4;
+  --ok: #4dff94;
+  --warn: #ffc94d;
+  --danger: #ff7a7a;
+  --scope-bg: #000000;
+  --scope-border: #c9ced8;
+  --scope-grid: rgba(255, 255, 255, 0.22);
+  --scope-axis: rgba(255, 255, 255, 0.6);
+  --scope-text: #e6eaf0;
+  --trace-i: #ffe600;
+  --trace-v: #00e5ff;
+  --trace-p: #ff9a3d;
+  --trace-m: #d9a6ff;
+}
+:root[data-palette='contrast'] :focus-visible {
+  outline: 2px solid #ffe600;
+  outline-offset: 1px;
+}
+:root[data-palette='contrast'] button.ghost:hover:not(:disabled) {
+  background: #ffffff1f;
+}
+
 * {
   box-sizing: border-box;
 }

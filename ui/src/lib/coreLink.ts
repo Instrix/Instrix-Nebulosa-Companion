@@ -3,7 +3,7 @@
 // by a core host (coreClient.ts), in a worker when one starts.
 
 import type { LinkEvents } from './device';
-import type { AlignResult, AnalysisRequest, AnalysisResult, Calibration, ExportCfg, RawSpanStats, ScaInfo, ScaResult, TraceMeta, TrigEvent, TriggerCfg } from './nbp';
+import type { AlignResult, AnalysisRequest, AnalysisResult, Calibration, ExportCfg, RawSpanStats, ScaInfo, ScaResult, TraceMeta, TrigEvent, TriggerCfg, ProbeResult } from './nbp';
 import type { ScaEngine } from './sca';
 import { openCore, type CoreClient } from './coreClient';
 import type { HostEvent } from './coreHost';
@@ -69,6 +69,12 @@ export abstract class CoreLink {
   }
   async injectEvents(e: TrigEvent[]) {
     await this.call('inject_events', e);
+  }
+  async probeArm(range: number) {
+    await this.call('probe_arm', range);
+  }
+  probeTake() {
+    return this.call<ProbeResult | null>('probe_take').then((r) => r ?? null);
   }
   sampleBlock(t0: number, t1: number, max: number) {
     return this.call<string>('sample_block', t0, t1, max);

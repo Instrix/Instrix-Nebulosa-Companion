@@ -227,9 +227,127 @@ class FakeBoard {
  * generator and the pipeline run in the core host (a worker): the UI only
  * gets Meta and answers to its queries.
  */
+/**
+ * A simulated FPGA behind the demo's registers (for the Debug tab): the
+ * register map (ID 0x4E42000B, 100 MHz), the range switch's state, timing
+ * and forced comparators, and an RS1473 link that locks at some sample
+ * phases and loses frames at the others.
+ */
+class FakeFpga {
+  regs = new Uint32Array(45);
+  t0 = performance.now();
+  /** phases where each isolator group reads settled bits */
+  good = [0b01110, 0b11100];
+  /** RANGE_STATUS 29:24, the raw comparator pins */
+  pins = 0;
+  /** where the lines change (the eyes' edges) */
+  maps = [0b10001, 0b00011];
+  constructor() {
+    const r = this.regs;
+    r[34] = 0x4e42000b;
+    r[41] = 100_000_000;
+    r[31] = 2; // the ADCs
+    r[37] = 1 | (0 << 8) | (5 << 12); // automatic 0..5
+    r[38] = 2 | (16 << 6) | (26 << 12) | (27 << 20);
+    r[40] = 40 | (1 << 16) | (1 << 17) | (1 << 18);
+    r[43] = 7 | (8 << 8);
+    this.setRange(3);
+    this.relock();
+  }
+  setRange(k: number) {
+    const r = this.regs;
+    r[35] = k | (1 << (8 + k)) | (r[35] & (0x3f << 16));
+    r[36]++;
+  }
+  /** ADC_TIMING from ADC_CTRL: the measured phases (the middle of each eye), or the fixed ones */
+  relock() {
+    const c = this.regs[31];
+    const manual = (c & (1 << 4)) !== 0;
+    let t = manual ? 1 << 31 : 0;
+    for (let k = 0; k < 2; k++) {
+      const p = manual ? (c >> (5 + 3 * k)) & 7 : k ? 3 : 2;
+      const ok = ((this.good[k] >> p) & 1) !== 0;
+      const tmap = this.maps[k];
+      t |= (p | (ok ? 1 << 3 : 0) | (tmap << 4) | (2 << 9)) << (16 * k);
+      if (!ok) this.regs[44] += 37;
+    }
+    this.regs[42] = t >>> 0;
+    const echo = (c & (1 << 11)) !== 0;
+    this.regs[43] = echo ? 0x8080 | (0b00110 << 16) | (0b01100 << 24) : 7 | (8 << 8);
+  }
+  request(cmd: number, p: Uint8Array): Uint8Array | null {
+    const dv = new DataView(p.buffer, p.byteOffset, p.byteLength);
+    const r = this.regs;
+    const u32 = (...v: number[]) => {
+      const o = new Uint8Array(4 * v.length);
+      const d = new DataView(o.buffer);
+      v.forEach((x, i) => d.setUint32(4 * i, x >>> 0, true));
+      return o;
+    };
+    switch (cmd) {
+      case 0x01: // PING
+        return p.slice();
+      case 0x03: {
+        // REG_READ
+        const i = p[0] ?? 0;
+        if (i >= r.length) return null;
+        if (i === 32) r[32] = (Math.random() * 64) | 0;
+        if (r[31] & (1 << 4) && i === 44) this.relock(); // a bad fixed phase keeps losing frames
+        const o = new Uint8Array(8);
+        o[0] = i;
+        new DataView(o.buffer).setUint32(4, r[i], true);
+        return o;
+      }
+      case 0x04: {
+        // REG_WRITE
+        const i = p[0] ?? 0;
+        if (i >= r.length || p.length < 8) return null;
+        r[i] = dv.getUint32(4, true);
+        if (i === 31) this.relock();
+        return new Uint8Array();
+      }
+      case 0x12: // GET_STATS
+        return u32(performance.now() - this.t0, 2, 0, 0, 0, r[33], r[32], r[35], r[39], r[31], 0, 0, 0, 0, 0, 0);
+      case 0x20: // SET_SOURCE: bits 0-1 of ADC_CTRL
+        r[31] = (r[31] & ~3) | ((p[0] ?? 0) & 3);
+        return new Uint8Array();
+      case 0x21: {
+        // SET_RANGE (clears the force bits)
+        const [auto, man, lo, hi] = p;
+        r[37] = (auto ? 1 : 0) | ((man & 7) << 4) | ((lo & 7) << 8) | ((hi & 7) << 12);
+        r[35] &= ~(0x3f << 16);
+        if (!auto) this.setRange(Math.min(5, man));
+        return new Uint8Array();
+      }
+      case 0x22: // GET_RANGE (the comparator pins from the bring-up's simulated bench)
+        return u32((r[35] & ~(0x3f << 24)) | (this.pins << 24), r[36], r[37], r[38]);
+      case 0x23: // SET_RANGE_TIMING
+        r[38] = (p[0] & 0x3f) | ((p[1] & 0x3f) << 6) | (p[2] << 12) | ((dv.getUint16(4, true) & 0xfff) << 20);
+        return new Uint8Array();
+      case 0x24: {
+        // SET_RANGE_FORCE: automatic mode steps one range per forced UP / DOWN
+        r[37] = p[0] ? r[37] | 2 : r[37] & ~2;
+        r[35] = (r[35] & ~(0x3f << 16)) | ((p[0] ? p[1] & 0x3f : 0) << 16);
+        if (p[0] && r[37] & 1) {
+          const up = (p[1] & 0b010101) !== 0,
+            down = (p[1] & 0b101010) !== 0;
+          const k = r[35] & 7;
+          const lo = (r[37] >> 8) & 7,
+            hi = (r[37] >> 12) & 7;
+          if (up && !down && k > lo) this.setRange(k - 1);
+          else if (down && !up && k < hi) this.setRange(k + 1);
+        }
+        return new Uint8Array();
+      }
+    }
+    return null;
+  }
+}
+
 export class DemoLink extends CoreLink implements Link {
   readonly description = 'Demo device (synthetic, 2 MS/s)';
   private board = new FakeBoard();
+  private fpga = new FakeFpga();
   private scenarioNow: DemoScenario = 'iot';
 
   constructor(ev: LinkEvents) {
@@ -250,7 +368,16 @@ export class DemoLink extends CoreLink implements Link {
       new DataView(out.buffer).setUint32(4, RATE >> (payload[0] ?? 0), true);
       return { ty: cmd | 0x40, status: 0, payload: out };
     }
+    const f = this.fpga.request(cmd, payload);
+    if (f) return { ty: cmd | 0x40, status: 0, payload: f };
+    if (cmd === 0x03 || cmd === 0x04) return { ty: cmd | 0x40, status: 3, payload: new Uint8Array() }; // BAD_ARG
     return { ty: cmd | 0x40, status: 0, payload: new Uint8Array() };
+  }
+
+  /** the bring-up's simulated bench: its loop current as raw codes on `range`, the comparator pins (null: back to the scenario) */
+  setBench(b: { range: number; code: number; pins: number } | null) {
+    this.fpga.pins = b?.pins ?? 0;
+    void this.call('demo.bench', b ? { range: b.range, code: b.code } : null);
   }
 
   /** what the demo device measures from now on */
