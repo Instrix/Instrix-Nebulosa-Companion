@@ -5,7 +5,9 @@
 #   git tag v0.2.0 && git push origin v0.2.0
 #
 # Or again for a tag already pushed: Actions > Release > Run workflow, with
-# the tag (e.g. v0.2.1).
+# the tag (e.g. v0.2.1). To only publish what an earlier run built (its upload
+# failed, say), give that run's ID too (the number in its URL): nothing is
+# built again.
 #
 # Each package is there twice: nebulosa-companion_<version>_<kind> and, the
 # same file, nebulosa-companion_<kind>; the second is what
@@ -21,6 +23,10 @@ on:
       tag:
         description: 'The tag to release, e.g. v0.2.1'
         required: true
+      packages_from_run:
+        description: "Optional: an earlier Release run's ID; its packages are released, nothing is built"
+        required: false
+        default: ''
 
 env:
   # the tag: pushed, or given to Run workflow
@@ -28,6 +34,8 @@ env:
 
 permissions:
   contents: write
+  # the packages of an earlier run (packages_from_run)
+  actions: read
 
 jobs:
   version:
@@ -49,16 +57,21 @@ jobs:
 
   packages:
     needs: version
+    if: ${{ !inputs.packages_from_run }}
     uses: ./.github/workflows/packages.yml
     with:
       ref: ${{ inputs.tag || github.ref_name }}
 
   release:
     name: Draft release
-    needs: packages
-    runs-on: [self-hosted, Linux, X64]
+    needs: [version, packages]
+    # the packages built here, or (packages_from_run) an earlier run's
+    if: ${{ !cancelled() && needs.version.result == 'success' && (needs.packages.result == 'success' || (needs.packages.result == 'skipped' && inputs.packages_from_run != '')) }}
+    # GitHub's runner: a minute of downloading and uploading (the self-hosted one
+    # couldn't reach uploads.github.com)
+    runs-on: ubuntu-latest
     steps:
-      # the changelog (and a clean workspace: the runner keeps it between runs)
+      # the changelog
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.TAG }}
@@ -67,6 +80,8 @@ jobs:
           pattern: packages-*
           path: release
           merge-multiple: true
+          run-id: ${{ inputs.packages_from_run || github.run_id }}
+          github-token: ${{ github.token }}
       # a copy of each without the version in its name, so a link to
       # releases/latest/download/<name> always gives the newest release's
       # (the website's Download buttons): nebulosa-companion_x64-setup.exe, …
